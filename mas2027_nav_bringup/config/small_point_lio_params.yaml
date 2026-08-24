@@ -86,61 +86,6 @@ fake_vel_transform:
     # 给 Nav2 用的里程计：位姿与 /Odometry 相同，twist 旋转到 base_link_fake 轴系。
     # Nav2 不会变换 odom twist，直接当作 robot_base_frame(base_link_fake) 中的当前速度，
     # 而 /Odometry 的 twist 在随车体转动的 base_link 中，两者相差一个车体 yaw，
-    # 不修正会让 DWB 的可达速度窗口锚错方向，速度越高横向跑偏越大。
-    output_odom_topic: /Odometry_fake
+    output_odom_topic: /Odometry_world_fixed  # Nav2 里程计话题，位姿与 /Odometry 相同，twist 在 base_link_fake 中
     init_spin_speed: 0.0                              # 未收到 /cmd_spin 时的默认自旋角速度，单位 rad/s
 
-# 局部地形分析参数
-# 坐标与高度调参方法：
-# 1. 输入 /Odometry 表示 odom -> base_link，/cloud_registered 也必须位于 odom 坐标系。
-# 2. 机器人在平地静止时，从点云读取地面 z，并计算 ground_rel_z = ground_z - base_link_z。
-# 3. 所有 RelZ/BoundZ 参数都以 base_link 为高度原点；先覆盖 ground_rel_z，再用实际台阶、斜坡和顶棚数据微调。
-terrainAnalysis:
-  ros__parameters:
-    scanVoxelSize: 0.05
-    decayTime: 0.5
-    noDecayDis: 0.0
-    clearingDis: 0.0
-    useSorting: true          # 取分位点作为地面高度，坡面上正负高差可相互抵消，能上坡；不要与 considerDrop 同开
-    quantileZ: 0.2
-    considerDrop: false       # 开启则对地面高差取绝对值，凹地也算障碍
-    limitGroundLift: false
-    maxGroundLift: 0.3
-    clearDyObs: true
-    minDyObsDis: 0.3
-    minDyObsAngle: 0.0
-    minDyObsRelZ: -0.3
-    absDyObsRelZThre: 0.2
-    minDyObsVFOV: -28.0
-    maxDyObsVFOV: 33.0
-    minDyObsPointNum: 1
-    noDataObstacle: false
-    noDataBlockSkipNum: 0
-    minBlockPointNum: 10
-    vehicleHeight: 0.5        # 保留的最大离地高度；按机器人可通行净高设置，过小会删掉高障碍，过大会保留顶棚
-    voxelPointUpdateThre: 100
-    voxelTimeUpdateThre: 1.0
-    minRelZ: -1.0             # 相对 base_link 的最低点；建议设为 ground_rel_z 再减 0.1~0.2 m 裕量
-    maxRelZ: 0.5              # 相对 base_link 的最高点；至少覆盖需要检测的最高障碍，过大会引入车体或顶棚
-    disRatioZ: 0.2            # 随水平距离放宽高度窗口的比例；斜坡漏点时增大，顶棚/噪点增多时减小
-
-# 扩展地形分析参数
-terrainAnalysisExt:
-  ros__parameters:
-    scanVoxelSize: 0.1
-    decayTime: 0.2
-    noDecayDis: 0.0
-    clearingDis: 20.0
-    useSorting: true
-    quantileZ: 0.2
-    vehicleHeight: 1.0        # 扩展区域保留的最大离地高度，应与局部地图的 vehicleHeight 保持一致
-    voxelPointUpdateThre: 100
-    voxelTimeUpdateThre: 2.0
-    lowerBoundZ: -1.5         # 相对 base_link 的最低点；以 ground_rel_z 为中心向下留 0.1~0.2 m 裕量
-    upperBoundZ: 0.5          # 相对 base_link 的最高点；按远处需检测的障碍高度设置，过大会纳入顶棚
-    disRatioZ: 0.2            # 远距离高度窗口扩张比例；斜坡漏点时增大，远处噪点过多时减小
-    checkTerrainConn: false   # 顶棚误判明显时开启；开启后用地面高差连通性筛除悬空区域
-    terrainConnThre: 0.5      # 相邻地面允许的最大高差；坡面被断开时增大，顶棚连入地面时减小
-    terrainUnderVehicle: -0.75 # 车下无点时的地面高度，应设为实测 ground_rel_z，而不是固定使用雷达安装高度
-    ceilingFilteringThre: 2.0 # 超过该垂直高差的区域视为顶棚；误删坡道时增大，顶棚残留时减小
-    localTerrainMapRadius: 4.0 # 内圈使用 terrain_map、外圈自行计算；应不大于局部地图有效覆盖半径

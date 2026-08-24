@@ -57,7 +57,7 @@ controller_server:
     # 必须用 /Odometry_fake：Nav2 不变换 odom twist，直接当作 robot_base_frame(base_link_fake)
     # 中的当前速度。而 /Odometry 的 twist 在随车体转动的 base_link 中，两者相差一个车体 yaw，
     # 用错会把 DWB 的可达速度窗口锚在错误方向上，表现为速度越高横向跑偏越大。
-    odom_topic: /Odometry_fake
+    odom_topic: /Odometry_world_fixed
     # 控制周期，单位 Hz，需与局部代价地图更新率匹配。
     # 上游 navi_minco_bit 用 100.0，本仓库保留 DWB 时期已验证的 20.0：
     #   1) 与 FollowPath 的 dt: 0.05（MPC 时域步长）正好一致；
@@ -129,9 +129,7 @@ controller_server:
       map_frame: odom
       # MPC 状态反馈的里程计。上游把话题名硬编码成 /aft_mapped_to_init，本仓库改成了参数。
       # 必须是**未旋转**的 /Odometry（twist 在随车体转动的 base_link 里）：
-      # 控制器内部 compensateLeverArm() 自己按 yaw 旋到全局系，喂 /Odometry_fake
-      # 会重复旋转。注意这与上面 controller_server 的 odom_topic: /Odometry_fake
-      # 不是同一件事——那个是 Nav2 自己的速度反馈，Nav2 不做变换所以必须预先旋好。
+      # 控制器内部 compensateLeverArm() 自己按 yaw 旋到全局系
       odom_topic: /Odometry
       # DWB 每周期发的 local_plan，MPC 版本由本仓库补上（上游没有这个话题）。
       # 下游 fake_vel_transform 用它判定控制器激活、并与 /Odometry 做近似时间同步，
@@ -649,7 +647,7 @@ velocity_smoother:
     min_velocity: [-1.0, -1.0, 0.0]        # [x, y, theta] 输出速度下限
     max_accel: [1.0, 1.0, 0.0]             # [x, y, theta] 加速度上限，单位 m/s²、rad/s²
     max_decel: [-1.0, -1.0, 0.0]           # [x, y, theta] 减速度上限（负值）
-    odom_topic: /Odometry_fake             # 仅 CLOSED_LOOP 模式使用；与控制器同源，twist 在 base_link_fake 轴系
+    odom_topic: /Odometry_world_fixed      # 仅 CLOSED_LOOP 模式使用；与控制器同源，twist 在 base_link_fake 轴系
     odom_duration: 0.1                     # 里程计反馈缓存时长，单位秒，仅 CLOSED_LOOP 使用
     deadband_velocity: [0.0, 0.0, 0.0]     # 输出死区，低于该值直接归零，用于抑制底盘抖动
     velocity_timeout: 0.5                  # 超过该时间未收到新指令则输出零速，单位秒
