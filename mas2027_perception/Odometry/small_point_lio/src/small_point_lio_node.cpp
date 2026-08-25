@@ -26,8 +26,8 @@ namespace small_point_lio {
         bool align_odom_with_gravity = declare_parameter<bool>("align_odom_with_gravity", true);
         bool save_pcd = declare_parameter<bool>("save_pcd");
         small_point_lio = std::make_unique<small_point_lio::SmallPointLio>(*this);
-        odometry_publisher = create_publisher<nav_msgs::msg::Odometry>("/Odometry", 1000);
-        pointcloud_publisher = create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered", 1000);
+        odometry_publisher = create_publisher<nav_msgs::msg::Odometry>("/Odometry", rclcpp::QoS(10).best_effort());
+        pointcloud_publisher = create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered", rclcpp::QoS(10).best_effort());
         tf_broadcaster = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
         tf_buffer = std::make_unique<tf2_ros::Buffer>(get_clock());
         tf_listener = std::make_shared<tf2_ros::TransformListener>(*tf_buffer);

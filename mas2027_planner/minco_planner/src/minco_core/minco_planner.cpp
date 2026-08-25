@@ -320,9 +320,11 @@ void MincoPlanner::configure(const nav2_util::LifecycleNode::WeakPtr & parent,
   node->get_parameter(prefix + "exploration.prefer_goal_direction", exploration_prefer_goal_direction_);
 
   std::string configured_global_frame = "map";
+  
   nav2_util::declare_parameter_if_not_declared(
     node, prefix + "global_frame", rclcpp::ParameterValue(configured_global_frame));
   node->get_parameter(prefix + "global_frame", configured_global_frame);
+
   global_frame_ = costmap_ros_ ? costmap_ros_->getGlobalFrameID() : configured_global_frame;
   if (!configureRogMap(node, prefix)) {
     ensureMapAvailable();

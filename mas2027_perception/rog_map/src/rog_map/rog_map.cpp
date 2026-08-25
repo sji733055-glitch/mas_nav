@@ -695,12 +695,20 @@ void ROGMap::refreshLayers()
   const bool field_geometry_changed =
     !field_ ||
     !field_->matchesGeometry(layer_->width(), layer_->height(), layer_->resolution(), layer_->origin());
+  // field.update_rate 以前只被 Config 读进来，没有任何地方使用，改 YAML 不会有效果。
+  // 这里按周期限流，但几何变化（地图滑动）和 field 失效必须立刻重建，否则
+  // getQueryInterface() 里的 matchesGeometry 会判定 field 无效，规划器直接拿不到 ESDF。
+  const double field_period = cfg_.field_update_rate > 0.0 ? 1.0 / cfg_.field_update_rate : 0.0;
+  const bool field_period_ready =
+    field_period <= 0.0 || !std::isfinite(last_field_update_time_) ||
+    (current_update_time_ - last_field_update_time_) >= field_period;
+  const bool field_forced = field_geometry_changed || !field_ || !field_->isValid();
   const bool should_update_field = cfg_.field_en && field_ && !layer_->empty() &&
-                                   (layer_updated || mask_changed || field_geometry_changed ||
-                                    !field_->isValid());
+                                   (layer_updated || mask_changed || field_forced) &&
+                                   (field_period_ready || field_forced);
   runtime_stats_.field_enabled = cfg_.field_en ? 1.0 : 0.0;
   runtime_stats_.field_dirty_before = 0.0;
-  runtime_stats_.field_period_ready = 1.0;
+  runtime_stats_.field_period_ready = field_period_ready ? 1.0 : 0.0;
   runtime_stats_.field_should_update = should_update_field ? 1.0 : 0.0;
   if (should_update_field) {
     // field 紧随 projection 更新；inflation_radius 会整体减小 ESDF 距离。
@@ -751,6 +759,10 @@ void ROGMap::refreshLayers()
       runtime_stats_.field_skip_layer_empty_count = 1.0;
     } else if (!layer_updated && !field_geometry_changed && field_->isValid()) {
       runtime_stats_.field_skip_reason = "layer_not_updated";
+    } else if (!field_period_ready) {
+      // 被 field.update_rate 限流：field 只是旧了一帧，几何没变，仍然可用，
+      // 不能置 field_stale_，否则规划器这一帧拿不到 ESDF。
+      runtime_stats_.field_skip_reason = "rate_limited";
     } else {
       runtime_stats_.field_skip_reason = "unknown";
       field_stale_ = true;

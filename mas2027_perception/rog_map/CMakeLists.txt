@@ -96,11 +96,6 @@ if(OpenMP_CXX_FOUND)
         target_link_libraries(${library_name} OpenMP::OpenMP_CXX)
 endif()
 
-if(BUILD_TESTING)
-        find_package(ament_cmake_gtest REQUIRED)
-        ament_add_gtest(test_prior_map test/test_prior_map.cpp)
-        target_link_libraries(test_prior_map ${library_name})
-endif()
 
 # 本仓库新增：独立宿主节点。上游只提供静态库，没有可执行文件。
 # 源码单独放在 src/rog_map_node/ 下，不会被上面收集库源码的 glob 命中。

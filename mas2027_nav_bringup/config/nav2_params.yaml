@@ -300,7 +300,7 @@ planner_server:
       plugin: minco_planner/MincoPlanner
       # 上游用 PRIORMAP（需要 map 坐标系 + 先验 PGM，由 icp_relocalization 提供）。
       # 本仓库没有 map 帧也没有先验图，只能用 EXPLORATION：完全依赖在线 ROG-Map。
-      planner_mode: EXPLORATION
+      planner_mode: PRIORMAP
       frames:
         # 本仓库全程在 odom 下运行，没有 map 帧，两项都填 odom。
         map_frame: odom
@@ -481,9 +481,9 @@ planner_server:
           # 标准 Nav2 YAML/PGM 静态先验；启用后只增加二维硬障碍，不清除在线障碍。
           prior_map:
             enable: false
-            yaml_path: ""
+            yaml_path: "/home/ros2_ws/src/mas2027_nav_bringup/map/rmuc.yaml"
             # 留空时使用 YAML 的 image 字段，并相对 YAML 所在目录解析。
-            pgm_path: ""
+            pgm_path: "/home/ros2_ws/src/mas2027_nav_bringup/map/rmuc.pgm"
             frame_id: map
 
           # [absolute Z coordinate, m]
@@ -581,6 +581,8 @@ planner_server:
           summary_rate: 1.0
           # [performance][bool] 是否启用 dirty column 增量刷新；开启可减少 projection/field 全量刷新计算量。
           # 定位实时性问题时可以临时置 false 做 A/B，看增量刷新是否真的生效。
+          # 置 false 时 refreshLayers() 每帧全量扫 40401 列 x 34 个 z 层 ≈ 1.37M 次体素
+          # 查询，实测 projection_time 稳定在 11~17 ms；跑车时保持 true。
           dirty_column_enable: true
           # [performance][比例] dirty column 超过地图总列数比例时转全量刷新；调低更常全量，调高更依赖增量更新。
           dirty_full_ratio: 0.30
