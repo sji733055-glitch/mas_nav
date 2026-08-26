@@ -15,6 +15,11 @@ namespace small_point_lio {
         int point_filter_num;
         float min_distance_squared;
         float max_distance_squared;
+        // 盲区球心，雷达坐标系，单位 m。min_distance 这个盲区球以它为球心，
+        // 而不是以雷达原点为球心。雷达装在车体一角时，以雷达为心的球会把车身另一侧
+        // 的近场地面一起裁掉；把球心挪到车体中心，同样的半径就只裁车身。
+        // max_distance 仍以雷达原点为心——那是量程，不是盲区。
+        Eigen::Vector3f blind_center;
         bool space_downsample;
         float space_downsample_leaf_size;
 

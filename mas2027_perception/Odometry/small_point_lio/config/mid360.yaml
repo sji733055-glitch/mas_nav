@@ -8,7 +8,11 @@ small_point_lio:
 
         # 点云过滤
         point_filter_num: 1                        # 多少个点取一个点
-        min_distance: 0.5                          # 点云半径最小值，小于该值会被过滤
+        # 盲区球心，雷达坐标系，单位米。(0,0,0) 表示球心就在雷达原点。
+        # 雷达不在车体中心时，填 base_link 原点在雷达坐标系中的坐标，
+        # 盲区就只裹车身而不会把另一侧的近场地面一起裁掉。
+        blind_center: [ 0.0, 0.0, 0.0 ]
+        min_distance: 0.5                          # 盲区半径（以 blind_center 为球心），小于该值会被过滤
         max_distance: 1000.0                       # 点云半径最大值，大于该值会被过滤
         space_downsample: true                     # 是否启用点云降采样
         space_downsample_leaf_size: 0.5            # 点云降采样时使用的栅格大小

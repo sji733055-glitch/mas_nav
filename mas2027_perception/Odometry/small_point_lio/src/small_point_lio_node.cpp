@@ -27,7 +27,13 @@ namespace small_point_lio {
         bool save_pcd = declare_parameter<bool>("save_pcd");
         small_point_lio = std::make_unique<small_point_lio::SmallPointLio>(*this);
         odometry_publisher = create_publisher<nav_msgs::msg::Odometry>("/Odometry", rclcpp::QoS(10).best_effort());
-        pointcloud_publisher = create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered", rclcpp::QoS(10).best_effort());
+        // 点云用 SensorDataQoS().keep_last(1)：best_effort + 深度 1，让 ROGMap 之类的下游永远消费最新一帧。
+        // 深度 10 在高负载时会让旧帧在 rmw 队列里排队，下游拿到的是几十毫秒前的点云，
+        // 膨胀/ESDF 也就跟着滞后；点云是可丢的传感数据，宁可丢帧也不要攒延迟。
+        // /cloud_registered_full 是稠密去畸变点云（主输出），/cloud_registered 保留同样内容，
+        // 供 mapping_launch.py、loam_interface、terrain_analysis 等既有下游继续使用。
+        pointcloud_full_publisher = create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered_full", rclcpp::SensorDataQoS().keep_last(1));
+        pointcloud_publisher = create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered", rclcpp::SensorDataQoS().keep_last(1));
         tf_broadcaster = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
         tf_buffer = std::make_unique<tf2_ros::Buffer>(get_clock());
         tf_listener = std::make_shared<tf2_ros::TransformListener>(*tf_buffer);
@@ -186,7 +192,12 @@ namespace small_point_lio {
             odometry_publisher->publish(odometry_msg);
         });
         small_point_lio->set_pointcloud_callback([this, save_pcd, odom_frame](const std::vector<Eigen::Vector3f> &pointcloud) {
-            if (pointcloud_publisher->get_subscription_count() > 0) {
+            // 只在真的有人订阅时才组装消息：没有订阅者时序列化这一帧稠密点云纯属浪费。
+            // 注意 get_subscription_count() 只统计 QoS 兼容（即 matched）的订阅，
+            // 所以 reliable 的订阅端不会点亮这个门限，也就一条都收不到。
+            const bool has_full_subscriber = pointcloud_full_publisher->get_subscription_count() > 0;
+            const bool has_legacy_subscriber = pointcloud_publisher->get_subscription_count() > 0;
+            if (has_full_subscriber || has_legacy_subscriber) {
                 builtin_interfaces::msg::Time time_msg;
                 time_msg.sec = std::floor(last_odometry.timestamp);
                 time_msg.nanosec = static_cast<uint32_t>((last_odometry.timestamp - time_msg.sec) * 1e9);
@@ -256,7 +267,13 @@ namespace small_point_lio {
                     ++pointer;
                 }
                 msg.is_dense = false;
-                pointcloud_publisher->publish(msg);
+                // 同一份数据发两个话题：组装只做一次，publish 各自拷进中间件。
+                if (has_full_subscriber) {
+                    pointcloud_full_publisher->publish(msg);
+                }
+                if (has_legacy_subscriber) {
+                    pointcloud_publisher->publish(msg);
+                }
             }
             if (save_pcd) {
                 for (const auto &point: pointcloud) {

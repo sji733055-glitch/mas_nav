@@ -130,7 +130,7 @@ controller_server:
       # MPC 状态反馈的里程计。上游把话题名硬编码成 /aft_mapped_to_init，本仓库改成了参数。
       # 必须是**未旋转**的 /Odometry（twist 在随车体转动的 base_link 里）：
       # 控制器内部 compensateLeverArm() 自己按 yaw 旋到全局系
-      odom_topic: /Odometry
+      odom_topic: /Odometry_world_fixed
       # DWB 每周期发的 local_plan，MPC 版本由本仓库补上（上游没有这个话题）。
       # 下游 fake_vel_transform 用它判定控制器激活、并与 /Odometry 做近似时间同步，
       # 以取到与该速度同时刻的车体 yaw；RViz 的 "Local Plan" 显示也读它。
@@ -229,7 +229,7 @@ global_costmap:
   global_costmap:
     ros__parameters:
       use_sim_time: false
-      update_frequency: 3.0                # 地图更新频率，单位 Hz，与 planner 频率对齐
+      update_frequency: 10.0                # 地图更新频率，单位 Hz，与 planner 频率对齐
       publish_frequency: 1.0               # 可视化发布频率，单位 Hz
       global_frame: odom
       robot_base_frame: base_link_fake
@@ -273,9 +273,9 @@ global_costmap:
           clearing: false                  # 不做射线清除
           observation_persistence: 0.5     # 观测保留时长，单位秒，比局部层更长以稳定全局路径
           expected_update_rate: 0.0        # 0 表示不检查话题超时
-          obstacle_min_range: 0.2          # 参与标记的最小距离，单位米
+          obstacle_min_range: 0.1          # 参与标记的最小距离，单位米
           obstacle_max_range: 25.0         # 参与标记的最大距离，单位米，大于 rog_map 实际可达范围，不构成额外裁剪
-          min_obstacle_height: 0.0         # 该观测源的高度下限，单位米
+          min_obstacle_height: -0.2         # 该观测源的高度下限，单位米
           max_obstacle_height: 2.0         # 该观测源的高度上限，单位米
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
@@ -397,7 +397,10 @@ planner_server:
         opt_accuracy: 0.001                 # L-BFGS 收敛阈值（上游取值，代码默认 1.0e-4 更严、更慢）
         # 代码默认是 true，就是日志里每次优化都刷一整块 "[MincoOpt] Opt finish" 的来源。
         # 上游关掉了；本仓库同样关掉，需要看优化过程时再临时打开。
-        print_optimizer_log: false
+        # TODO 临时打开中：查 validateTrajectory 一直报 |a| 超限的原因。看 iter num
+        # 是不是只有三四次（L-BFGS 的 delta 判据是相对的，cost 大时会提前收敛退出），
+        # 以及 Pos/Vel/Acc/Time 哪一项撑起了 cost 的地板。查完改回 false。
+        print_optimizer_log: true
 
         # === 惩罚权重 ===
         # penalty_weight_time 是全局时间惩罚（代码里对应 minco_config.rho）。
@@ -422,7 +425,7 @@ planner_server:
       # ROG-Map 配置。**这是全仓库唯一一份 ROG-Map 参数**，改参数就改这里。
       # 取值搬自上游 navi_minco_bit 的 sentry1.yaml，其中 frame_id、visualization.frame_id、
       # ros_callback.odom_topic、ros_callback.cloud_topic 四项按本仓库链路改过，
-      # 由 test/test_rog_map_params_consistency.py 钉住，别在同步上游时覆盖回去。
+      # 别在同步上游时覆盖回去。
       rog_map:
         frame_id: odom
         resolution: 0.05
@@ -440,6 +443,8 @@ planner_server:
 
         ros_callback:
           enable: true
+          # 吃 small_point_lio 的稠密去畸变点云；订阅端已是 SensorDataQoS().keep_last(1)，
+          # 发布端同为 keep_last(1)，高负载时直接丢旧帧而不是排队攒延迟。
           cloud_topic: /cloud_registered
           odom_topic: /Odometry
           odom_timeout: 0.08
@@ -450,7 +455,7 @@ planner_server:
           # [raycasting][帧] 每批处理点云帧数；调大可攒批减少调度开销，但会增加地图更新延迟。
           batch_update_size: 1
           # [raycasting][m,m] 射线有效距离 [min,max]；min 过大会忽略近处点，max 过大会增加计算量并可能引入远处噪声。
-          ray_range: [0.03, 10.0]
+          ray_range: [0.01, 8.0]
           # [raycasting][m,m,m] 每次局部更新盒尺寸；调大覆盖更多点但 raycasting 和 dirty column 数量上升。
           local_update_box: [10.0, 10.0, 2.5]
           # [raycasting][概率] unknown 判断阈值相关参数；影响 UNKNOWN/FREE/OCCUPIED 判定，进而影响 projection layer。
@@ -480,6 +485,11 @@ planner_server:
 
           # 标准 Nav2 YAML/PGM 静态先验；启用后只增加二维硬障碍，不清除在线障碍。
           prior_map:
+            # 之前为了「只用先验图的 ESDF 测 MPC」把 enable 开成 true、frame_id 改成 odom，
+            # 那是临时实验配置，跑真车必须关回来。原因：rmuc.pgm 的 origin 是
+            # (-7.76, -5.97)，坐标定义在 map 系里；写成 odom 就等于把整张赛场按 odom 原点
+            # （车开机的地方）贴上去，实测 odom 原点周围 1 m 内有 296/1681 个格子是墙。
+            # 真要用先验图，得先起 map_server 并有 map->odom 的 TF，frame_id 保持 map。
             enable: false
             yaml_path: "/home/ros2_ws/src/mas2027_nav_bringup/map/rmuc.yaml"
             # 留空时使用 YAML 的 image 字段，并相对 YAML 所在目录解析。
@@ -489,7 +499,7 @@ planner_server:
           # [absolute Z coordinate, m]
           # ROGMap frame 中参与单柱扫描的绝对 Z 下界。
           # 这是坐标值，不是地面相对高度，也不是高度差。
-          scan_z_min_abs: -0.20
+          scan_z_min_abs: -1.2
 
           # [absolute Z coordinate, m]
           # ROGMap frame 中参与单柱扫描的绝对 Z 上界。
@@ -500,13 +510,13 @@ planner_server:
           unknown_as_occupied: false
 
           # 每个 XY 柱中 KNOWN_FREE + OCCUPIED 的最小观测体素数。
-          min_observed_voxels: 2
+          min_observed_voxels: 1
 
           # [vertical height difference, m]
           # 同一 XY 柱中最高与最低占据体素的垂直高度差 H。
           # 不超过该值时，分类为地面或坡面薄表面。
           # 这是差值，不是 ROGMap frame 中的绝对 Z 坐标。
-          surface_height_delta_max: 0.2
+          surface_height_delta_max: 0.1
 
           # [vertical height difference, m]
           # 判定竖直墙所需的最小单柱垂直高度差 H。
@@ -549,6 +559,12 @@ planner_server:
           denoise_occ_max: 0
         field:
           enable: true
+          # [field][m] ESDF 整体外扩：field_layer.cpp:99 是 inflated = raw - inflation_radius，
+          # 也就是每个格子的距离直接减掉这个数。MINCO 的 Pos 惩罚用 safe_dist 0.40 判净空，
+          # 所以这里填 R 等于要求离障碍 0.40+R 米。填 0.5 时要求 0.9 m，而车内切半径只有 0.30，
+          # 近处有障碍时整条轨迹处处违反净空 → Pos 惩罚变成搬不动的常数（cost 地板 1e4~5e4）
+          # → L-BFGS 的相对收敛判据（|Δf|/|f| < opt_accuracy）立刻满足 → 三次迭代就退出、
+          # 返回没优化过的初始猜测 → validateTrajectory 报 |a| 超限。别再填非零值。
           inflation_radius: 0.0
           # [field][m] ESDF 正向最大截断距离；调大提供更远梯度但代价有限，过小会让远离障碍区域梯度变少。
           max_distance: 6.0

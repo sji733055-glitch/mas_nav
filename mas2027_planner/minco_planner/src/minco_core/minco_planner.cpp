@@ -1602,7 +1602,13 @@ bool MincoPlanner::validateTrajectory(
       return false;
     }
     if (v.norm() > vmax_severe || a.norm() > amax_severe) {
+      // 打 t/dur 是为了分清成因：t=0 说明起点状态本身就带着大加速度（HOT_START 会从上一条
+      // 轨迹继承 getAcc），t>0 才是优化出来的轨迹自己超限；dur 很小说明轨迹退化了
+      // ——|v| 只有 0.1 而 |a| 有 2 就意味着分段时长只有 v/a ≈ 0.05 s 量级。
+      // 注意校验失败时 has_last_traj_ 不会置位（见函数末尾），所以连续失败时走的一直是
+      // COLD_START，起点速度取实测、加速度为零，这种情况下超限只可能来自优化结果本身。
       std::cout << YELLOW << "[MincoPlanner] validateTrajectory: severe dynamics violation."
+                << " t=" << t << "/" << dur
                 << " |v|=" << v.norm() << " (limit=" << vmax_severe << ")"
                 << ", |a|=" << a.norm() << " (limit=" << amax_severe << ")" << RESET << std::endl;
       last_validation_failure_reason_ = "KINEMATIC_VIOLATION";

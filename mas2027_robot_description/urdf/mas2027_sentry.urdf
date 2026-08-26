@@ -55,38 +55,15 @@
   </link>
 
   <!-- MID-360 LiDAR Joint -->
+  <!-- rpy 的 roll 就是雷达前倾角（0.5046 rad = 28.91°），由静止 IMU 实测得到：
+       scripts/measure_lidar_mount.py。改这里之后 small_point_lio_params.yaml 的
+       blind_center 和 gravity 要跟着改，脚本会把三行一起算出来。 -->
   <joint name="lidar_joint" type="fixed">
     <parent link="base_link"/>
     <child link="lidar_link"/>
-    <origin xyz="0.09 0.03 0.11" rpy="0.3572 0 1.5708"/>
+    <origin xyz="0.09 0.03 0.11" rpy="0.5046 0 1.5708"/>
   </joint>
 
-  <!-- Lakibeam Link -->
-  <link name="lakibeam_frame">
-    <visual>
-      <geometry>
-        <mesh filename="package://mas2027_robot_description/meshes/LakiBeam.STL"/>
-      </geometry>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <material name="black">
-        <color rgba="0.1 0.1 0.1 1"/>
-      </material>
-    </visual>
-    
-    <collision>
-      <geometry>
-        <mesh filename="package://mas2027_robot_description/meshes/LakiBeam.STL"/>
-      </geometry>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-    </collision>
-  </link>
-
-  <!-- lakibeam Joint -->
-  <joint name="lakibeam_joint" type="fixed">
-    <parent link="base_link"/>
-    <child link="lakibeam_frame"/>
-    <origin xyz="-0.17 0.01 0.17" rpy="0 0 0"/>
-  </joint>
 
   <link name="chassis_link"/>
 

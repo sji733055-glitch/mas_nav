@@ -94,6 +94,10 @@ namespace small_point_lio {
             time_predict_cov_last = timestamp;
         }
 
+        // 当前状态 x 对应的时刻（predict_state 已推进到这里）。
+        // 稠密点云去畸变需要知道“状态有效时刻”，才能把点从这个时刻前推到自己的采样时刻。
+        [[nodiscard]] inline double time_state() const { return time_predict_state_last; }
+
         inline void predict_state(double timestamp) {
             auto dt_state = static_cast<state::value_type>(timestamp - time_predict_state_last);
             if (dt_state > 0) [[likely]] {

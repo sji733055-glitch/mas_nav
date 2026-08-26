@@ -16,7 +16,7 @@
 //
 // 输入：
 //   /Odometry         nav_msgs/Odometry     small_point_lio，父坐标系 odom
-//   /cloud_registered sensor_msgs/PointCloud2  small_point_lio，odom 坐标系
+//   /cloud_registered_full sensor_msgs/PointCloud2  small_point_lio 稠密去畸变点云，odom 坐标系
 //
 // 输出：/rog_map/* 下的可视化点云、OccupancyGrid 与 MarkerArray，详见 README。
 

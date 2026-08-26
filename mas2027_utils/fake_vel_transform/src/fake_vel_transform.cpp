@@ -62,7 +62,14 @@ FakeVelTransform::FakeVelTransform(const rclcpp::NodeOptions & options)
     input_cmd_vel_topic_, 10,
     std::bind(&FakeVelTransform::cmdVelCallback, this, std::placeholders::_1));
 
-  odom_sub_filter_.subscribe(this, odom_topic_);
+  // odom 必须显式指定 best_effort：上游 small_point_lio 以 QoS(10).best_effort() 发布 /Odometry，
+  // 而 message_filters::Subscriber::subscribe(node, topic) 默认走 rmw_qos_profile_default（reliable），
+  // QoS 不兼容会让本节点一条 odom 都收不到，current_robot_base_angle_ 永远停在 0。
+  rmw_qos_profile_t odom_qos_profile = rmw_qos_profile_sensor_data;
+  odom_qos_profile.depth = 10;  // 与发布端 depth 对齐，避免 odom 高频时在 rmw 队列里丢样本
+  odom_sub_filter_.subscribe(this, odom_topic_, odom_qos_profile);
+  // local_plan 保持 reliable 默认值：minco_controller 也用默认 QoS 发布，
+  // 且它是控制链的一部分（同步 + 控制器激活判定），丢包会把下游推进 CONTROLLER_TIMEOUT 分支。
   local_plan_sub_filter_.subscribe(this, local_plan_topic_);
   odom_sub_filter_.registerCallback(
     std::bind(&FakeVelTransform::odometryCallback, this, std::placeholders::_1));

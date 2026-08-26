@@ -15,6 +15,19 @@ namespace small_point_lio {
         auto max_distance = node.declare_parameter<float>("max_distance");
         min_distance_squared = min_distance * min_distance;
         max_distance_squared = max_distance * max_distance;
+        // 默认 (0,0,0)：球心留在雷达原点，与加这个参数之前的行为完全一致。
+        std::vector<double> blind_center_temp =
+                node.declare_parameter<std::vector<double>>("blind_center", std::vector<double>{0.0, 0.0, 0.0});
+        if (blind_center_temp.size() != 3) {
+            RCLCPP_ERROR(
+                    node.get_logger(),
+                    "blind_center must have 3 elements, got %zu; falling back to lidar origin",
+                    blind_center_temp.size());
+            blind_center_temp = {0.0, 0.0, 0.0};
+        }
+        blind_center << static_cast<float>(blind_center_temp[0]),
+                static_cast<float>(blind_center_temp[1]),
+                static_cast<float>(blind_center_temp[2]);
         space_downsample = node.declare_parameter<bool>("space_downsample");
         space_downsample_leaf_size = node.declare_parameter<float>("space_downsample_leaf_size");
 

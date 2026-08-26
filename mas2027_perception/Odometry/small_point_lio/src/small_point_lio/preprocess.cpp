@@ -25,10 +25,14 @@ namespace small_point_lio {
         filtered_points.reserve(pointcloud.size());
         for (size_t i = 0; i < pointcloud.size(); i++) {
             const auto &point = pointcloud[i];
-            float dist = point.position.squaredNorm();
+            // 盲区（min_distance）以 blind_center 为球心量，量程（max_distance）仍以雷达原点量：
+            // 前者要贴合车身，后者是传感器能力。blind_center 默认 (0,0,0) 时两者同心，行为不变。
+            const float dist_from_blind_center = (point.position - parameters->blind_center).squaredNorm();
+            const float dist_from_lidar = point.position.squaredNorm();
             const bool in_distance_range =
-                    dist >= parameters->min_distance_squared && dist <= parameters->max_distance_squared;
-            // dense_points 只用于发布 /cloud_registered，同样要过滤半径，
+                    dist_from_blind_center >= parameters->min_distance_squared &&
+                    dist_from_lidar <= parameters->max_distance_squared;
+            // dense_points 只用于发布 /cloud_registered_full（及兼容话题 /cloud_registered），同样要过滤半径，
             // 否则车体自身（雷达上方的云台）会进入地形分析并被标成障碍
             if (point.timestamp >= last_timestamp_dense_point && in_distance_range) {
                 dense_points.push_back(point);
