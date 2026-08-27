@@ -34,9 +34,12 @@ RUN apt update && apt install -y \
     iputils-ping \
     ros-humble-octomap* \
     libomp-dev \
+    libdw-dev \
     libasio-dev\
     ros-humble-pcl-ros ros-humble-pcl-conversions ros-humble-visualization-msgs ros-humble-rosbag2-storage-mcap ros-humble-rqt-tf-tree libceres-dev \
-    clang-tidy
+    clang-tidy \
+    python3-pip \
+    python3-dev
 
 # 5. 初始化 rosdep
 RUN mkdir -p /etc/ros/rosdep/sources.list.d && \
@@ -50,6 +53,16 @@ RUN mkdir -p /etc/ros/rosdep/sources.list.d && \
 
 # 6. 创建工作空间目录
 RUN mkdir -p /home/ros2_ws/src /home/ros2_ws/build /home/ros2_ws/install /home/ros2_ws/log
+
+# 7. ERASOR2 聚类（Humble 是 Ubuntu 22.04，不需要 LD_PRELOAD）
+#    kitti_clustering.py: open3d + hdbscan + pypatchworkpp + matplotlib + tqdm
+RUN python3 -m pip install --no-cache-dir \
+      -i https://mirrors.ustc.edu.cn/pypi/simple \
+      "open3d>=0.15.0" \
+      "numpy<=2" \
+      "hdbscan>=0.8.28" \
+      "pypatchworkpp>=1.3.1" \
+      matplotlib tqdm
 
 # 设置工作目录
 WORKDIR /home/ros2_ws

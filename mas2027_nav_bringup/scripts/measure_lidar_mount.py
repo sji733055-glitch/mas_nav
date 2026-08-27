@@ -49,7 +49,7 @@ LIDAR_HEIGHT = 0.21
 # Mid360 垂直视场，厂家标称值，仓库里没有东西能验证它
 FOV_MIN_DEG, FOV_MAX_DEG = -7.0, 52.0
 # 现在配置里 gravity 的模长（单位 g，IMU 的标度误差就体现在这 0.4% 上）
-CURRENT_NORM = 0.995710
+CURRENT_NORM = 0.995636
 URDF_REL_PATH = "mas2027_robot_description/urdf/mas2027_sentry.urdf"
 
 

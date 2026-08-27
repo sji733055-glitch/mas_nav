@@ -31,10 +31,10 @@ small_point_lio:
     # 点云过滤
     point_filter_num: 1                               # 每 N 个点保留一个点
     # 盲区球心，雷达坐标系，单位米。取 base_link 原点在 lidar_link 中的坐标：
-    # URDF lidar_joint 是 xyz="0.09 0.03 0.11" rpy="0.5046 0 1.5708"，反解得 (-0.030, 0.026, -0.1398)。
+    # URDF lidar_joint 是 xyz="0.09 0.03 0.11" rpy="0.8389 0 1.5708"，反解得 (-0.030, -0.022, -0.1405)。
     # 改 URDF 里雷达的安装位姿时这三个数要跟着重算，跑 scripts/measure_lidar_mount.py 会直接给出来。
     # 模长恒为 0.1453（只跟 xyz 有关，跟倾角无关），可以拿来自查。
-    blind_center: [ -0.030, 0.026, -0.1398 ]
+    blind_center: [ -0.030, -0.022, -0.1405 ]
     # 盲区半径（以 blind_center 为球心），单位米。0.38 = 底盘 0.5x0.5 的对角半径 0.354 加余量，
     # 刚好裹住车身和 lakibeam（距车心 0.241），不多裁近场地面。
     # 之前是 0.5 且以雷达原点为球心：雷达偏车心 0.095 m，地面空洞在车体一侧 0.55 m、另一侧 0.36 m；
@@ -47,9 +47,9 @@ small_point_lio:
     # IMU 处理
     # 重力向量（雷达系，单位 g），= 静止时 IMU 加速度均值取反，由 scripts/measure_lidar_mount.py 实测。
     # fix_gravity_direction 为 true 时只有模长被用到（缩放 IMU 加速度），方向启动时重估。
-    # 模长 0.9946 是 IMU 的标度误差，不要手改：它同时决定滤波器内部加速度的单位，
+    # 模长 0.9956 是 IMU 的标度误差，不要手改：它同时决定滤波器内部加速度的单位，
     # 改了等于把 acceleration_cov / ba_cov / satu_acc 全部重新标定一遍。
-    gravity: [ 0.004848, -0.480897, -0.870639 ]
+    gravity: [ -0.001711, -0.740676, -0.665347 ]
     fix_gravity_direction: true                       # 启动时保持静止：用前 200 帧 IMU 均值估计内部世界的重力方向，供滤波和 odom 水平化使用
     check_satu: true                                  # 是否检查 IMU 饱和
     satu_acc: 3.0                                     # 加速度计饱和阈值，当前 IMU 单位为 g

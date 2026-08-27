@@ -104,6 +104,7 @@ ament_target_dependencies(${library_name}
 target_link_libraries(${library_name}
   OpenMP::OpenMP_CXX
   yaml-cpp
+  dw
 )
 
 pluginlib_export_plugin_description_file(nav2_core global_planner_plugin.xml)
