@@ -18,7 +18,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -47,6 +47,7 @@ def generate_launch_description():
     use_rviz = LaunchConfiguration("use_rviz")
     use_terrain_analysis_near = LaunchConfiguration("use_terrain_analysis_near")
     use_rog_map = LaunchConfiguration("use_rog_map")
+    use_odom_localizer = LaunchConfiguration("use_odom_localizer")
 
     # Declare the launch arguments
 
@@ -126,6 +127,15 @@ def generate_launch_description():
         description="Start the layer_value_to_cloud bridge that feeds both costmaps",
     )
 
+    declare_use_odom_localizer_cmd = DeclareLaunchArgument(
+        "use_odom_localizer",
+        default_value="True",
+        description=(
+            "Publish dynamic map->odom via GICP against the ERASOR2 prior PCD. "
+            "Set False to keep the identity static transform (mapping / map-free)."
+        ),
+    )
+
     # ROG-Map 实例的归属：整条链路只有一份 ROG-Map，由 MincoPlanner 插件在
     # planner_server 进程里建，配置在 nav2_params.yaml 的
     # planner_server.ros__parameters.MincoPlanner.rog_map 段——那是唯一一份
@@ -168,6 +178,28 @@ def generate_launch_description():
             "use_sim_time": use_sim_time,
         }.items(),
     )
+    tf_map2odom = Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name='static_tf_map_to_odom',
+            arguments=['0', '0', '0', '0', '0', '0', 'map', 'odom'],
+            output='screen',
+            condition=UnlessCondition(use_odom_localizer))
+
+    start_odom_localizer_node = Node(
+        package="odom_localizer",
+        executable="odom_localizer_node",
+        name="odom_localizer",
+        output="screen",
+        emulate_tty=True,
+        condition=IfCondition(use_odom_localizer),
+        parameters=[
+            os.path.join(
+                get_package_share_directory("odom_localizer"), "config", "params.yaml"
+            )
+        ],
+    )
+
     # mid360启动
     start_mid360_driver_node = Node(
         package="mid360_driver",
@@ -255,8 +287,11 @@ def generate_launch_description():
     ld.add_action(declare_use_ros2_comm_cmd)
     ld.add_action(declare_use_rviz_cmd)
     ld.add_action(declare_use_rog_map_cmd)
+    ld.add_action(declare_use_odom_localizer_cmd)
 
     # Add the actions to launch all of the navigation nodes
+    ld.add_action(tf_map2odom)
+    ld.add_action(start_odom_localizer_node)
     ld.add_action(start_robot_state_publisher_cmd)
     ld.add_action(start_mid360_driver_node)
     ld.add_action(start_small_point_lio_node)

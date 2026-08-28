@@ -53,7 +53,7 @@ ros2 launch pcd2pgm pcd2pgm.launch.py
 ### 2.5 保存栅格地图
 
 ```sh
-ros2 run nav2_map_server map_saver_cli -f /home/ros2_ws/src/mas2027_nav_bringup/map/
+ros2 run nav2_map_server map_saver_cli -f /home/ros2_ws/src/mas2027_nav_bringup/map/lab
 ```
 
 ## 三. 参数说明

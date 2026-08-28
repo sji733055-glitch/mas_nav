@@ -27,6 +27,7 @@
   <exec_depend>terrain_analysis_ext</exec_depend>
   <exec_depend>sensor_scan_generation</exec_depend>
   <exec_depend>small_point_lio</exec_depend>
+  <exec_depend>odom_localizer</exec_depend>
   <exec_depend>rog_map</exec_depend>
   <!-- MINCO 全局规划器与 MPC 控制器，作为 nav2_core 插件由 planner_server /
        controller_server 动态加载，nav2_params.yaml 里配置 -->

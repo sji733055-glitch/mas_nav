@@ -134,7 +134,7 @@ python3 /home/ros2_ws/src/mas2027_utils/ERASOR2/scripts/export_lio_bag.py \
 ```bash
 python3 - <<'PY'
 import open3d as o3d
-p = o3d.io.read_point_cloud("/home/ros2_ws/src/data/erasor2_out/lab_0_frame_0_to_84_streaming_estimated.pcd")
+p = o3d.io.read_point_cloud("/home/ros2_ws/src/data/sequences/lab/accumulated_preview.pcd")
 print("points:", len(p.points))
 if p.is_empty():
     raise SystemExit("empty cloud — check the path")
@@ -178,11 +178,11 @@ sudo apt-get install -y libyaml-cpp-dev libopencv-dev libomp-dev libpcl-dev
 cmake -B build -S . -DERASOR2_ENABLE_RERUN=OFF
 cmake --build build -j$(nproc)
 
-cp /home/ros2_ws/src/data/sequences/rmuc/erasor2_seq.yaml config/erasor2/rmuc.yaml
+cp /home/ros2_ws/src/data/sequences/lab/erasor2_seq.yaml config/erasor2/lab.yaml
 # 如需改输出目录，编辑 dataloader.abs_save_dir（默认 .../data/erasor2_out）
 # mapgen 会读到 end_frame + accum_interval，序列里至少多留 1 帧
-./build/mapgen      config/erasor2/rmuc.yaml
-./build/run_erasor2 config/erasor2/rmuc.yaml
+./build/mapgen      config/erasor2/lab.yaml
+./build/run_erasor2 config/erasor2/lab.yaml
 ```
 
 干净地图在 `abs_save_dir`，文件名类似：

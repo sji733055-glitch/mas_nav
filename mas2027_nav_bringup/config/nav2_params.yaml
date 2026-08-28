@@ -490,10 +490,10 @@ planner_server:
             # (-7.76, -5.97)，坐标定义在 map 系里；写成 odom 就等于把整张赛场按 odom 原点
             # （车开机的地方）贴上去，实测 odom 原点周围 1 m 内有 296/1681 个格子是墙。
             # 真要用先验图，得先起 map_server 并有 map->odom 的 TF，frame_id 保持 map。
-            enable: false
-            yaml_path: "/home/ros2_ws/src/mas2027_nav_bringup/map/rmuc.yaml"
+            enable: true
+            yaml_path: "/home/ros2_ws/src/mas2027_nav_bringup/map/lab3.yaml"
             # 留空时使用 YAML 的 image 字段，并相对 YAML 所在目录解析。
-            pgm_path: "/home/ros2_ws/src/mas2027_nav_bringup/map/rmuc.pgm"
+            pgm_path: "/home/ros2_ws/src/mas2027_nav_bringup/map/lab3.pgm"
             frame_id: map
 
           # [absolute Z coordinate, m]

@@ -1,0 +1,71 @@
+/**:
+  ros__parameters:
+    general:
+      enable_debug: true
+      # ROG-Map already uses a wide OpenMP team; keep this small.
+      num_threads: 2
+      # Nav2 transform_tolerance is 0.3 s — 1 Hz TF expires. Publish ahead of that.
+      publish_rate_hz: 20.0
+
+    frames:
+      map: "map"
+      odom: "odom"
+      base: "base_link"
+
+    topics:
+      # small_point_lio publishes best_effort keep_last(1). SensorDataQoS is required.
+      registered_cloud: "/cloud_registered"
+      initialpose: "/initialpose"
+
+    # Prior cloud from ERASOR2 mapgen/run_erasor2.
+    #
+    # Frame: mapping-session odom == map. export_lio_bag.py writes each scan in a
+    # yaw-only lidar-origin frame, then ERASOR2 transforms it back with T_map_lidar,
+    # which is an identity round-trip into /cloud_registered's odom. Ground z ~ 0,
+    # XY min x ~ -4.44 matches lab.yaml origin. Do NOT apply T_base_lidar to this
+    # file (that PolarBear step is for lidar-odom maps such as Point-LIO scan.pcd).
+    #
+    # The exporter metadata still records the old URDF lidar_joint
+    # xyz="0.09 0.03 0.11" rpy="0.8389 0 1.5708". That only affects per-frame VOI
+    # heights inside ERASOR2, not this accumulated cloud's frame.
+    map:
+      prior_pcd_file: "/home/ros2_ws/src/data/erasor2_out/lab_0_frame_0_to_1774_streaming_estimated.pcd"
+      downsample_resolution: 0.05
+      covariance_neighbors: 20
+      publish_prior_cloud: true
+
+    source:
+      registered_window_frames: 6
+      min_points_raw: 800
+      min_points_downsampled: 400
+      downsample_resolution: 0.05
+      covariance_neighbors: 20
+
+    startup:
+      # Identity: this stack's LIO zeros position and yaw at boot, so map->odom
+      # equals the parking pose in the mapping-session map. Put a measured static
+      # TF here if the usual parking spot is not the mapping origin.
+      # Format [x, y, z, qx, qy, qz, qw].
+      initial_transform: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+      bootstrap_duration_s: 10.0
+
+    registration:
+      period_s: 1.0
+      gicp:
+        # Bootstrap uses the wider gate so a ~0.5 m / 10 deg parking error can lock.
+        # After the first accepted pose the locked distance is used.
+        bootstrap_max_correspondence_distance: 2.0
+        locked_max_correspondence_distance: 0.75
+        max_iterations: 32
+        translation_eps: 0.001
+        rotation_eps: 0.001
+      quality:
+        max_normalized_error: 0.35
+        min_overlap_ratio: 0.45
+        min_information_eigenvalue: 1.0e+2
+        max_information_condition_number: 1.0e+7
+
+    update:
+      ema_ratio: 0.6
+      max_translation_step: 0.3
+      max_rotation_step: 0.15
