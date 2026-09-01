@@ -83,6 +83,16 @@ void MincoFsm::callMainFsmOnce()
       return;
     }
 
+    // SMAC treats start-within-tolerance as a 1-pose path and fails. Check the
+    // mission goal here so GENERATE_TRAJ can complete without searching.
+    if (planner_->checkGoalReached(current_pose, goal_)) {
+      if (planner_->getCurrentSpeed().head<2>().norm() < 0.3) {
+        has_goal_ = false;
+        changeState("GOAL_REACHED", State::WAIT_GOAL);
+      }
+      return;
+    }
+
     auto handle_generate_replan_failure = [this, &current_pose](
                                             const char * escape_reason, const char * emer_reason) {
       Eigen::Vector2d escape_vel;

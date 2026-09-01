@@ -440,6 +440,14 @@ bool SmacPlanner2DSimple::createPath(const unsigned int & start_x,
   }
 
   if (path.size() < 2u) {
+    if (goal_reached) {
+      // Start is already inside tolerance. Callers require >= 2 poses; emit
+      // goal then start so the reversed path is start -> goal.
+      path.clear();
+      path.emplace_back(static_cast<float>(goal_x), static_cast<float>(goal_y));
+      path.emplace_back(static_cast<float>(start_x), static_cast<float>(start_y));
+      return true;
+    }
     logFailure("path has fewer than 2 poses", start_x, start_y, goal_x, goal_y, iterations);
     return false;
   }

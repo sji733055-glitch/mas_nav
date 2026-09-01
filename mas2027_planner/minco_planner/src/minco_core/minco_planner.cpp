@@ -1876,6 +1876,16 @@ bool MincoPlanner::getRobotPose(geometry_msgs::msg::PoseStamped & pose) const
   }
 }
 
+bool MincoPlanner::checkGoalReached(
+  const geometry_msgs::msg::PoseStamped & current_pose,
+  const geometry_msgs::msg::PoseStamped & goal) const
+{
+  const double dx = current_pose.pose.position.x - goal.pose.position.x;
+  const double dy = current_pose.pose.position.y - goal.pose.position.y;
+  const double dist = std::hypot(dx, dy);
+  return std::isfinite(dist) && dist <= traj_goal_tolerance_;
+}
+
 bool MincoPlanner::checkGoalReached(const geometry_msgs::msg::PoseStamped & current_pose)
 {
   std::lock_guard<std::mutex> lock(path_mutex_);

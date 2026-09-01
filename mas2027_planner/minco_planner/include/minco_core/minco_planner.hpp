@@ -63,6 +63,9 @@ public:
   double getLookaheadDist() const { return lookahead_dist_; }
   bool getRobotPose(geometry_msgs::msg::PoseStamped & pose) const;
   bool checkGoalReached(const geometry_msgs::msg::PoseStamped & current_pose);
+  bool checkGoalReached(
+    const geometry_msgs::msg::PoseStamped & current_pose,
+    const geometry_msgs::msg::PoseStamped & goal) const;
   bool consumePendingGoal(geometry_msgs::msg::PoseStamped & goal_out);
   void cancelGoal();
   Eigen::Vector3d getCurrentSpeed() const;
