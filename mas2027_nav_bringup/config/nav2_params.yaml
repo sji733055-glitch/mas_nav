@@ -1,7 +1,7 @@
 # Nav2 局部导航参数（不加载全局地图，全部在里程计坐标系下运行）
 # 数据输入：
 #   TF：odom -> base_link -> base_link_fake
-#   里程计：/Odometry_fake（fake_vel_transform 转发 /Odometry，twist 旋到 base_link_fake 轴系）
+#   里程计：/Odometry_world_fixed（fake_vel_transform 转发 /Odometry，twist 旋到 base_link_fake 轴系）
 #   障碍物：局部图和全局图都用 /rog_map/terrain_map（rog_map ProjectionLayer 经
 #           layer_value_to_cloud 桥接发布）。terrain_analysis / terrain_analysis_ext
 #           已不再使用，两个节点默认不启动（use_terrain_analysis 默认 False）。
@@ -17,7 +17,7 @@ bt_navigator:
     use_sim_time: false
     global_frame: odom                     # 无全局地图，导航参考系直接用里程计坐标系
     robot_base_frame: base_link_fake       # yaw 固定的机器人坐标系，让规划与车体朝向解耦
-    odom_topic: /Odometry_fake             # 速度反馈来源，twist 已旋到 base_link_fake 轴系
+    odom_topic: /Odometry_world_fixed      # 速度反馈来源，twist 已旋到 base_link_fake 轴系
     transform_tolerance: 0.3               # TF 允许的最大滞后，单位秒
     bt_loop_duration: 10                   # 行为树 tick 周期，单位毫秒
     default_server_timeout: 20             # 行为树节点等待 action 服务响应的超时，单位毫秒
@@ -54,7 +54,7 @@ bt_navigator_navigate_through_poses_rclcpp_node:
 controller_server:
   ros__parameters:
     use_sim_time: false
-    # 必须用 /Odometry_fake：Nav2 不变换 odom twist，直接当作 robot_base_frame(base_link_fake)
+    # 必须用 /Odometry_world_fixed：Nav2 不变换 odom twist，直接当作 robot_base_frame(base_link_fake)
     # 中的当前速度。而 /Odometry 的 twist 在随车体转动的 base_link 中，两者相差一个车体 yaw，
     # 用错会把 DWB 的可达速度窗口锚在错误方向上，表现为速度越高横向跑偏越大。
     odom_topic: /Odometry_world_fixed
@@ -100,11 +100,11 @@ controller_server:
       # 代价权重：Q 对应状态误差 [x, y, yaw]，R 对应控制量误差 [vx, vy, omega]
       Q: [3.0, 3.0, 2.0]
       R: [1.5, 1.5, 1.0]
-      # 速度上下限。上游 ±3.0，本仓库沿用 DWB 已验证的 ±1.0，先保守跑通再往上放。
-      vx_min: -1.0
-      vx_max: 1.0
-      vy_min: -1.0
-      vy_max: 1.0
+      # 速度上下限。与 MINCO max_velocity、velocity_smoother 一致。
+      vx_min: -4.0
+      vx_max: 4.0
+      vy_min: -4.0
+      vy_max: 4.0
       fixed_wz: 4.18                       # 仅 use_small_gyro_mode 为 true 时生效，单位 rad/s
       # base_link_fake 的 yaw 恒定、车体自旋由 /cmd_spin 单独下发，所以角速度自由度
       # 整体锁死为 0（等价于原 DWB 的 max_vel_theta / acc_lim_theta 置零）。
@@ -113,10 +113,10 @@ controller_server:
       omega_max: 0.0
       # 加速度约束。与 velocity_smoother 的 max_accel 保持一致，填大了会解出执行不出来的速度。
       use_acc_constraints: true
-      ax_min: -1.0
-      ax_max: 1.0
-      ay_min: -1.0
-      ay_max: 1.0
+      ax_min: -4.0
+      ax_max: 4.0
+      ay_min: -4.0
+      ay_max: 4.0
       alpha_min: 0.0                       # 角加速度随 omega 一起锁零
       alpha_max: 0.0
       # 雷达安装偏置。与 planner 侧 lidar_offset_* 及 rog_map 的 center_offset
@@ -380,11 +380,11 @@ planner_server:
         safe_dist: 0.40
         collision_dist: 0.30
 
-        # 必须与执行侧限幅一致。MincoMpcController 的 vx/vy 是 ±1.0、ax/ay 是 ±1.0，
-        # velocity_smoother 的 max_velocity / max_accel 也是 1.0。
-        # 代码默认 2.0 / 4.0（上游 3.0 / 2.0），优化出的轨迹执行不出来，MPC 只会一直落后。
-        max_velocity: 1.0
-        max_acceleration: 1.0
+        # 必须与执行侧限幅一致。MincoMpcController 的 vx/vy 以及
+        # velocity_smoother 的 max_velocity 同改成 3.0。
+        # 三层不一致时 MPC 会一直落后。
+        max_velocity: 4.0
+        max_acceleration: 4.0
 
         turn_angle_deadzone: 0.1            # 转向角死区，单位弧度（上游取值，代码默认 0.174）
         turn_angle_saturation: 1.0          # 转向角饱和值，单位弧度（上游取值，代码默认 1.57）
@@ -661,10 +661,10 @@ velocity_smoother:
     smoothing_frequency: 20.0              # 输出频率，单位 Hz，与 controller_frequency 一致
     scale_velocities: true                 # 超限时等比缩放各轴，逐轴裁剪会改变速度方向、导致跑偏
     feedback: OPEN_LOOP                    # 以上一次输出作为当前速度，不依赖里程计反馈
-    max_velocity: [1.0, 1.0, 0.0]          # [x, y, theta] 输出速度上限，与 DWB 单轴上限一致，避免裁剪改变方向
-    min_velocity: [-1.0, -1.0, 0.0]        # [x, y, theta] 输出速度下限
-    max_accel: [1.0, 1.0, 0.0]             # [x, y, theta] 加速度上限，单位 m/s²、rad/s²
-    max_decel: [-1.0, -1.0, 0.0]           # [x, y, theta] 减速度上限（负值）
+    max_velocity: [4.0, 4.0, 0.0]          # [x, y, theta] 输出速度上限，与 MINCO / MPC 一致
+    min_velocity: [-4.0, -4.0, 0.0]        # [x, y, theta] 输出速度下限
+    max_accel: [4.0, 4.0, 0.0]             # [x, y, theta] 加速度上限，单位 m/s²、rad/s²
+    max_decel: [-4.0, -4.0, 0.0]           # [x, y, theta] 减速度上限（负值）
     odom_topic: /Odometry_world_fixed      # 仅 CLOSED_LOOP 模式使用；与控制器同源，twist 在 base_link_fake 轴系
     odom_duration: 0.1                     # 里程计反馈缓存时长，单位秒，仅 CLOSED_LOOP 使用
     deadband_velocity: [0.0, 0.0, 0.0]     # 输出死区，低于该值直接归零，用于抑制底盘抖动

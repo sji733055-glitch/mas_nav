@@ -1,5 +1,7 @@
 # mas_nav_2027
 
+在线导航的学习文档（数据链路、TF、组件原理、读代码顺序、排查）见 [`docs/README.md`](docs/README.md)。
+
 # 开发环境配置
 1. docker 安装
 ```bash

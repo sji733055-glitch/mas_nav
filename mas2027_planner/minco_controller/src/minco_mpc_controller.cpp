@@ -160,8 +160,8 @@ void MincoMpcController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPt
 
   // 本仓库新增。上游把里程计话题硬编码为 /aft_mapped_to_init，本仓库是 /Odometry。
   // 必须用**未旋转**的 /Odometry：下面 compensateLeverArm() 自己按 yaw 把 twist 从
-  // 车体系旋到全局系，若喂 /Odometry_fake（twist 已经旋到 base_link_fake 轴系）
-  // 就会重复旋转一次。订阅不到时 curr.vx/vy/omega 全为 0，延迟补偿和加速度约束
+  // 车体系旋到全局系。不要喂 /Odometry_world_fixed（twist 已经旋到 base_link_fake 轴系），
+  // 否则会重复旋转一次。订阅不到时 curr.vx/vy/omega 全为 0，延迟补偿和加速度约束
   // 都会基于错误的零初速工作，表现为起步过冲、跟踪滞后。
   nav2_util::declare_parameter_if_not_declared(
     node, name + ".odom_topic", rclcpp::ParameterValue("/Odometry"));
