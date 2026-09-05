@@ -2,10 +2,7 @@ cmake_minimum_required(VERSION 3.10)
 project(interfaces)
 
 set(MSG_DEPENDENCIES
-  builtin_interfaces
   geometry_msgs
-  nav_msgs
-  sensor_msgs
   std_msgs
 )
 

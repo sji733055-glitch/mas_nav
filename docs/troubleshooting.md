@@ -23,7 +23,7 @@ lifecycle 卡在 configuring、到不了 active：通常是 costmap 等 `odom �
 | `/mid360_driver/lidar` 无数据 | 网卡、`host_ip`、雷达 IP | 本机没有 `192.168.1.x` 时驱动绑不上 |
 | 有雷达无 `/Odometry` | LIO 日志、URDF TF | `base_link → lidar_link` 还没 lookup 到；IMU 话题名不对 |
 | `/cloud_registered` hz=0 但 LIO 在跑 | QoS | 订阅端用了 reliable；或 keep_last 太大看起来像「有数据」其实全是旧帧 |
-| bag 里点云 0 条 | 录包 QoS | 必须用 `ERASOR2/config/qos_mapping.yaml` 覆盖 best_effort |
+| bag 里点云 0 条 | 录包 QoS | 必须用 `mas2027_nav_bringup/config/qos_mapping.yaml` 覆盖 best_effort |
 
 ROG-Map 打 `No odom received, skip cloud callback`：先有 `/Odometry` 再有点云。`Odom timeout`：odom 和点云时间差超过 `odom_timeout`（0.08 s）。
 
@@ -53,7 +53,7 @@ ROG-Map 打 `No odom received, skip cloud callback`：先有 `/Odometry` 再有�
 | 两个 costmap 全空 | `use_rog_map:=False`；`visualization.enable: false`（layer_value 在 viz timer 里发）；桥接节点没起；QoS |
 | costmap 有障碍但车照撞 | MINCO 不读 costmap 做优化；查 ESDF / `safe_dist` / 点云是否滞后 |
 | 远处没障碍，开近了才出现 | ROG `map_size` 只有 ±5 m，global_costmap 30 m 外圈无观测 |
-| 地面变成墙 | 雷达倾角、`scan_z_min_abs`、ProjectionLayer 阈值；旧 terrain_analysis 在倾斜雷达上更容易这样，这正是换成 ProjectionLayer 的原因 |
+| 地面变成墙 | 雷达倾角、`scan_z_min_abs`、ProjectionLayer 阈值；远处地面被当障碍就是换 ProjectionLayer 的原因 |
 | 障碍格子远多于真实墙 | `classifyCell` 末尾兜底是 OCCUPIED。`H≥0.45` 且 occupancy ratio < 0.80 会把「地面 + 一个飞点」标成墙。打开 `MincoPlanner.rog_map.performance.print_enable`，看 1 Hz 的 `classification: thin=/wall=/tunnel=/ambiguous=`，ambiguous 占优就是这个 |
 | `/rog_map/layer_value` 在两套栅格间跳 | 同时起了 `rog_map_node` 和 MincoPlanner 内的那份 |
 | `[ROG WARN] Unfinished frame cnt > 1` | 多半是 OpenMP 线程太多导致调度延迟，不是算法本身。`parallel_raycast_enable` 保持 false；小规模 ESDF 不要开宽 team。CSV 在容器 `/tmp/rog_map_perf_*.csv` |

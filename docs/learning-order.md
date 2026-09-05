@@ -15,7 +15,7 @@
 | `mas2027_nav_bringup/launch/robot_state_publisher_launch.py` | 从 URDF 发静态 TF（`base_link → lidar_link` 等） |
 | `mas2027_nav_bringup/config/nav2_params.yaml` | Nav2 / MINCO / ROG-Map 参数，文件头注释就是当前链路摘要 |
 | `mas2027_nav_bringup/config/small_point_lio_params.yaml` | 驱动、LIO、`fake_vel_transform` 参数 |
-| `mas2027_nav_bringup/behavior_trees/*.xml` | `planner_id` 必须是 `MincoPlanner`，`controller_id` 是 `FollowPath` |
+| `mas2027_nav_bringup/behavior_trees/*.xml` | `planner_id` 必须是 `MincoPlanner`，`controller_id` 是 `FollowPath`。浏览器编辑：`mas2027_utils/bt_editor/bt_editor.html` |
 
 启动开关（都在总 launch 里）：
 
@@ -26,7 +26,6 @@
 | `use_odom_localizer` | True | 动态 `map→odom`；False 则发单位静态 TF |
 | `use_fake_vel_transform` | True | `base_link_fake` 与速度旋转 |
 | `use_ros2_comm` | True | `/cmd_vel` UDP 下发 |
-| `use_terrain_analysis` / `use_terrain_analysis_near` | False | 旧地形节点，costmap 已不订阅 |
 
 读完应能回答：默认启动里有没有 `rog_map_node`？（没有。）
 
@@ -45,11 +44,11 @@
 
 | 路径 | 作用 |
 |---|---|
-| `mas2027_perception/Localization/odom_localizer/` | 在线点云对 ERASOR2 先验 PCD 做 GICP，发 `map→odom` |
+| `mas2027_perception/Localization/odom_localizer/` | 在线点云对 `mas2027_nav_bringup/pcd/` 先验 PCD 做 GICP，发 `map→odom` |
 | `mas2027_perception/Localization/odom_localizer/config/params.yaml` | 先验 PCD 路径、GICP 门限 |
-| `mas2027_nav_bringup/map/` | 二维 PGM/YAML（给 ROG-Map `prior_map` 和离线建图产物） |
-| `mas2027_utils/ERASOR2/` | 离线去动态；带 `COLCON_IGNORE`，不要 colcon 编 |
-| `mas2027_utils/pcd2pgm/`、`mas2027_utils/map_edit/` | 点云切片成栅格、RViz 修图 |
+| `mas2027_nav_bringup/map/` | 二维 PGM/YAML（给 map_server / ROG-Map `prior_map`） |
+| `mas2027_nav_bringup/pcd/` | 三维先验（给 odom_localizer；当前 `lab3.pcd`） |
+| `mas2027_utils/pcd2pgm/`、`map_edit/`、`pcd_trans/`、`pcd2ele/`、`pcd2esdf/` | 点云切片、修图、变换、高程、离线 ESDF |
 
 Nav2 的 `global_frame` 仍是 `odom`。`map` 帧主要给 ROG-Map 的二维先验投影用。
 
@@ -104,11 +103,10 @@ Nav2 的 `global_frame` 仍是 `odom`。`map` 帧主要给 ROG-Map 的二维先�
 
 | 路径 | 何时需要 |
 |---|---|
-| `mas2027_utils/terrain_analysis*` | 只有你要把 costmap 改回旧地形链路 |
-| `mas2027_utils/loam_interface`、`sensor_scan_generation` | 旧 PolarBear 接口，当前主 launch 不启 |
-| `mas2027_utils/pointcloud_to_laserscan`、`slam_toolbox_mapping.yaml` | 二维 SLAM Toolbox 建图（根 README）；主 launch 目录里目前没有 `mapping_launch.py` |
 | `mas2027_nav_bringup/scripts/waypoint_navigator.py` | 多点巡航 |
 | `mas2027_nav_bringup/scripts/measure_lidar_mount.py` | 重标雷达安装时 |
+| `mas2027_utils/bt_editor/bt_editor.html` | 改行为树 XML |
+| `mas2027_utils/data_analyzer/scripts/nav2_performance_analyzer.py` | 看规划 vs 实测速度 |
 
 ## 包级目录
 
@@ -118,6 +116,6 @@ mas_nav_2027/
 ├── mas2027_perception/       雷达驱动、LIO、ROG-Map、odom_localizer
 ├── mas2027_planner/          MincoPlanner + MincoMpcController
 ├── mas2027_robot_description/  URDF / mesh
-├── mas2027_utils/            fake_vel、ros2_comm、costmap 插件、离线建图工具
-└── third_party/interfaces/   自定义消息（含 MINCO 轨迹）
+├── mas2027_utils/            fake_vel、ros2_comm、costmap 插件、离线建图、bt_editor、data_analyzer
+└── third_party/interfaces/   MINCO /opt_path 消息
 ```

@@ -17,19 +17,14 @@
       registered_cloud: "/cloud_registered"
       initialpose: "/initialpose"
 
-    # Prior cloud from ERASOR2 mapgen/run_erasor2.
+    # Prior cloud used by GICP. Frame must match /cloud_registered (mapping-session
+    # odom, treated as map). The shipped lab3.pcd is that frame; ground z ~ 0,
+    # XY min matches lab3.yaml origin. Do NOT apply T_base_lidar to it.
     #
-    # Frame: mapping-session odom == map. export_lio_bag.py writes each scan in a
-    # yaw-only lidar-origin frame, then ERASOR2 transforms it back with T_map_lidar,
-    # which is an identity round-trip into /cloud_registered's odom. Ground z ~ 0,
-    # XY min x ~ -4.44 matches lab.yaml origin. Do NOT apply T_base_lidar to this
-    # file (that PolarBear step is for lidar-odom maps such as Point-LIO scan.pcd).
-    #
-    # The exporter metadata still records the old URDF lidar_joint
-    # xyz="0.09 0.03 0.11" rpy="0.8389 0 1.5708". That only affects per-frame VOI
-    # heights inside ERASOR2, not this accumulated cloud's frame.
+    # New maps from LIO /map_save (scan.pcd) live in LIO-internal world. If GICP
+    # will not lock, use pcd_trans then replace this file.
     map:
-      prior_pcd_file: "/home/ros2_ws/src/data/erasor2_out/lab_0_frame_0_to_1774_streaming_estimated.pcd"
+      prior_pcd_file: "/home/ros2_ws/src/mas2027_nav_bringup/pcd/lab3.pcd"
       downsample_resolution: 0.05
       covariance_neighbors: 20
       publish_prior_cloud: true

@@ -3,7 +3,7 @@
 <package format="3">
   <name>odom_localizer</name>
   <version>0.1.0</version>
-  <description>GICP map-to-odom localizer for Small Point-LIO against an ERASOR2 prior cloud</description>
+  <description>GICP map-to-odom localizer for Small Point-LIO against a prior PCD</description>
   <maintainer email="1709185482@qq.com">Yingjie Huang</maintainer>
   <license>MIT</license>
 

@@ -44,9 +44,7 @@ def generate_launch_description():
     use_fake_vel_transform = LaunchConfiguration("use_fake_vel_transform")
     use_ros2_comm = LaunchConfiguration("use_ros2_comm")
     use_nav2 = LaunchConfiguration("use_nav2")
-    use_terrain_analysis = LaunchConfiguration("use_terrain_analysis")
     use_rviz = LaunchConfiguration("use_rviz")
-    use_terrain_analysis_near = LaunchConfiguration("use_terrain_analysis_near")
     use_rog_map = LaunchConfiguration("use_rog_map")
     use_odom_localizer = LaunchConfiguration("use_odom_localizer")
 
@@ -103,16 +101,7 @@ def generate_launch_description():
     declare_use_nav2_cmd = DeclareLaunchArgument(
         "use_nav2",
         default_value="True",
-        description="Start terrain processing, fake velocity transform, and Nav2",
-    )
-
-    # 默认 False：两个 costmap 的观测源都已换成 rog_map 的 /rog_map/terrain_map，
-    # terrain_analysis / terrain_analysis_ext 没有消费者了。节点和参数保留，
-    # 置 True 可回到原链路（还要把 nav2_params.yaml 的 topic 改回去）。
-    declare_use_terrain_analysis_cmd = DeclareLaunchArgument(
-        "use_terrain_analysis",
-        default_value="False",
-        description="Start terrain_analysis nodes inside the Nav2 launch (unused since ROG-Map took over both costmaps)",
+        description="Start fake velocity transform, ros2_comm, and Nav2",
     )
 
     declare_rviz_config_file_cmd = DeclareLaunchArgument(
@@ -138,7 +127,7 @@ def generate_launch_description():
         "use_odom_localizer",
         default_value="True",
         description=(
-            "Publish dynamic map->odom via GICP against the ERASOR2 prior PCD. "
+            "Publish dynamic map->odom via GICP against mas2027_nav_bringup/pcd/*.pcd. "
             "Set False to keep the identity static transform (mapping / map-free)."
         ),
     )
@@ -155,12 +144,6 @@ def generate_launch_description():
     # 必须保证不与插件内那份同时存在，否则两份 rog_map 同发一个话题、滑动原点不同，
     # 桥接输出会在两套栅格之间跳变。要单独调建图，直接跑 rog_map 包自带的
     # rog_map_node 并自备参数文件（节点名 rog_map，参数前缀同为 rog_map）。
-
-    declare_use_terrain_analysis_near_cmd = DeclareLaunchArgument(
-        "use_terrain_analysis_near",
-        default_value="False",
-        description="Start the near-field terrain_analysis node that publishes /terrain_map",
-    )
 
     # Create our own temporary YAML files that include substitutions
 
@@ -225,9 +208,7 @@ def generate_launch_description():
     )
 
     # /rog_map/layer_value (OccupancyGrid) -> /rog_map/terrain_map (PointXYZI)
-    # 供 local_costmap 和 global_costmap 的 pb_nav2_costmap_2d::IntensityVoxelLayer
-    # 使用，取代 terrain_analysis 的 /terrain_map 和 terrain_analysis_ext 的
-    # /terrain_map_ext。
+    # 供 local_costmap 的 pb_nav2_costmap_2d::IntensityVoxelLayer 使用。
     # NOTE: layer_value 是在 rog_map 的可视化定时器里发布的，所以 nav2_params.yaml 的
     # MincoPlanner.rog_map.visualization.enable 必须为 True，
     # 且 visualization.rate 就是 local_costmap 实际拿到观测的频率。
@@ -261,8 +242,6 @@ def generate_launch_description():
             "nav2_params_file": nav2_params_file,
             "map": map_yaml_file,
             "perception_params_file": small_point_lio_params_file,
-            "use_terrain_analysis": use_terrain_analysis,
-            "use_terrain_analysis_near": use_terrain_analysis_near,
             "use_fake_vel_transform": use_fake_vel_transform,
             "use_ros2_comm": use_ros2_comm,
         }.items(),
@@ -290,8 +269,6 @@ def generate_launch_description():
     ld.add_action(declare_rviz_config_file_cmd)
     ld.add_action(declare_use_robot_state_pub_cmd)
     ld.add_action(declare_use_nav2_cmd)
-    ld.add_action(declare_use_terrain_analysis_cmd)
-    ld.add_action(declare_use_terrain_analysis_near_cmd)
     ld.add_action(declare_use_fake_vel_transform_cmd)
     ld.add_action(declare_use_ros2_comm_cmd)
     ld.add_action(declare_use_rviz_cmd)

@@ -31,7 +31,7 @@ namespace small_point_lio {
         // 深度 10 在高负载时会让旧帧在 rmw 队列里排队，下游拿到的是几十毫秒前的点云，
         // 膨胀/ESDF 也就跟着滞后；点云是可丢的传感数据，宁可丢帧也不要攒延迟。
         // /cloud_registered_full 是稠密去畸变点云（主输出），/cloud_registered 保留同样内容，
-        // 供 mapping_launch.py、loam_interface、terrain_analysis 等既有下游继续使用。
+        // 供 ROG-Map、odom_localizer 和离线 /map_save 继续使用。
         pointcloud_full_publisher = create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered_full", rclcpp::SensorDataQoS().keep_last(1));
         pointcloud_publisher = create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered", rclcpp::SensorDataQoS().keep_last(1));
         tf_broadcaster = std::make_unique<tf2_ros::TransformBroadcaster>(*this);

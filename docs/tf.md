@@ -34,7 +34,7 @@ Nav2 / costmap / BT 的 `global_frame` 是 **odom**，`robot_base_frame` 是 **b
 
 ### map
 
-离线建图会话的世界系。ERASOR2 的 `*_estimated.pcd` 和 `lab3.pgm` 都在这套坐标里（建图时 map == 那次的 odom）。在线 GICP 拿 live `/cloud_registered`（当前 odom）去对这张 PCD，得到 `map→odom`。
+离线建图会话的世界系。`mas2027_nav_bringup/pcd/lab3.pcd` 和 `lab3.pgm` 都在这套坐标里（建图时 map == 那次的 odom）。在线 GICP 拿 live `/cloud_registered`（当前 odom）去对这张 PCD，得到 `map→odom`。
 
 ### odom
 

@@ -29,7 +29,7 @@ LIO 是相对定位：开机点就是 odom 原点。开得越久漂得越多，�
 | 相对 | `small_point_lio` | `odom → base_link` | 高频、平滑，短时可用 |
 | 绝对 | `odom_localizer` | `map → odom` | 把当前 odom 钉到建图时的场地上 |
 
-`odom_localizer` 用 small_gicp 把最近几帧 `/cloud_registered` 对到 ERASOR2 先验 PCD。先验云的坐标系就是建图会话的 odom，本仓库把它当作 `map`。不要对这张 PCD 再乘 `T_base_lidar`（那是给 Point-LIO `scan.pcd` 那种雷达系地图用的）。
+`odom_localizer` 用 small_gicp 把最近几帧 `/cloud_registered` 对到 `mas2027_nav_bringup/pcd/` 里的先验 PCD（当前默认 `lab3.pcd`）。先验云的坐标系就是建图会话的 odom，本仓库把它当作 `map`。不要对这张 PCD 再乘 `T_base_lidar`。
 
 点云是 SensorDataQoS，localizer 必须用同样的 QoS，否则配准源为空。
 
@@ -38,14 +38,13 @@ Nav2 仍然在 **odom** 里跑。`map` 帧的消费者主要是 ROG-Map 的 PGM 
 ### 离线出先验（不是在线节点）
 
 ```text
-录 /cloud_registered + /Odometry
-  --> export_lio_bag.py     逐帧 bin + T_map_lidar
-  --> kitti_clustering.py   地面 + 实例
-  --> ERASOR2 mapgen/run    去动态，得到 *_estimated.pcd
+LIO 绕场 + /map_save（或拷一份已有 PCD）
+  --> 放到 mas2027_nav_bringup/pcd/<name>.pcd
+  --> 可选 pcd_trans 平移/旋转
   --> pcd2pgm + map_edit    高度切片、修墙，得到 pgm/yaml
 ```
 
-不要用 LIO `/map_save` 吐的 `scan.pcd`：没有逐帧位姿，ERASOR2 吃不了。细节在根 README 和 `mas2027_utils/ERASOR2/OFFLINE_LIO.md`。
+细节和命令见根 README **离线静态地图**。`pcd2ele` 出高程图，`pcd2esdf` 从 PGM 烘焙 2D 距离场，运行时 MINCO 不吃这两份，ESDF 仍由 ROG 在线算。
 
 ## 建图：ROG-Map 在规划器进程里
 

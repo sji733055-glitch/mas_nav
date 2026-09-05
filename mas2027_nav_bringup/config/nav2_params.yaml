@@ -199,14 +199,9 @@ local_costmap:
         observation_sources: terrain_map
         terrain_map:
           # ROG-Map 的 ProjectionLayer 分类结果，经 layer_value_to_cloud 桥接节点
-          # 从 /rog_map/layer_value 转成点云。取代原来 terrain_analysis 的
-          # /terrain_map：地面/缓坡由 ProjectionLayer 判为 PASSABLE 而不进这里，
-          # 避免雷达倾斜导致远方地面被当成障碍。
+          # 从 /rog_map/layer_value 转成点云。地面/缓坡由 ProjectionLayer 判为
+          # PASSABLE 而不进这里，避免雷达倾斜导致远方地面被当成障碍。
           # 依赖：use_rog_map:=True，且 rog_map 的 visualization.enable: True。
-          # 回退到 terrain_analysis：本层和 global_costmap 的 topic 改回
-          # /terrain_map 和 /terrain_map_ext，并且启动时加
-          # use_terrain_analysis:=True use_terrain_analysis_near:=True
-          # （两个开关现在默认 False，terrain 节点默认不启动）。
           topic: /rog_map/terrain_map
           data_type: PointCloud2
           sensor_frame: lidar_link         # 必填：点云 frame 是 odom，不填则距离过滤以 odom 原点为中心而非雷达

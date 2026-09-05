@@ -65,7 +65,7 @@ controller_server / FollowPath = MincoMpcController
 | `/cloud_registered` | SensorData, keep_last(1) | ROG-Map 建图、odom_localizer GICP、离线 bag |
 | `/cloud_registered_full` | 同上 | 注释里的「稠密主输出」；当前实现与 `/cloud_registered` 同内容 |
 
-点云必须 `keep_last(1)`：深度太大时下游吃到的是排队的旧帧，ESDF 会滞后。录 bag 时 `/cloud_registered` 是 best_effort，必须用 `ERASOR2/config/qos_mapping.yaml` 覆盖，否则 bag 里点云是 0 条。
+点云必须 `keep_last(1)`：深度太大时下游吃到的是排队的旧帧，ESDF 会滞后。录 bag 时 `/cloud_registered` 是 best_effort，必须用 `mas2027_nav_bringup/config/qos_mapping.yaml` 覆盖，否则 bag 里点云是 0 条。
 
 `/Odometry` 与 `fake_vel_transform` 的订阅也必须 best_effort。节点里已经写了：默认 reliable 会一条都收不到，`current_robot_base_angle_` 永远停在 0。
 
@@ -142,6 +142,6 @@ ros2_comm
 
 MPC 的 `omega` 锁在 `[0, 0]`。自旋只走 `/cmd_spin`。`/cmd_vel_mpc` 是控制器调试回显，下位机不看它。
 
-## 6. 旧链路（默认关掉）
+## 6. 旧 PolarBear 链路（已删）
 
-`terrain_analysis` --> `/terrain_map`、`terrain_analysis_ext` --> `/terrain_map_ext`。节点还在，launch 默认 False。要 A/B 对比：两个开关置 True，并把两个 costmap 的 `topic` 改回去。
+`terrain_analysis` / `terrain_analysis_ext` / `loam_interface` / `sensor_scan_generation` 以及 `pointcloud_to_laserscan` 已从仓库删掉。costmap 只订 `/rog_map/terrain_map`，没有回退开关。

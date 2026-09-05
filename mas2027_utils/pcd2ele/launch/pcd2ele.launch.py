@@ -7,12 +7,12 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     config = os.path.join(
-        get_package_share_directory('pcd2pgm'), 'config', 'pcd.yaml')
+        get_package_share_directory('pcd2ele'), 'config', 'pcd2ele.yaml')
     use_sim_time = LaunchConfiguration('use_sim_time', default='false')
 
-    pcd2pgm_node = Node(
-        package='pcd2pgm',
-        executable='pcd2pgm_node',
+    pcd2ele_node = Node(
+        package='pcd2ele',
+        executable='pcd2ele_node',
         output='screen',
         parameters=[
             config, 
@@ -20,4 +20,4 @@ def generate_launch_description():
         ]
     )
 
-    return LaunchDescription([pcd2pgm_node])
+    return LaunchDescription([pcd2ele_node])
