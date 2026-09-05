@@ -617,9 +617,9 @@ bool MincoMpcController::buildReferenceFromOptPath(
     } else {
       const auto & p_end = cmds.back();
       rp.pos = Eigen::Vector2d(p_end.position.x, p_end.position.y);
-      rp.vel = Eigen::Vector2d(0.0, 0.0);
+      rp.vel = Eigen::Vector2d(p_end.velocity.x, p_end.velocity.y);
       rp.yaw = p_end.yaw;
-      rp.yaw_rate = 0.0;
+      rp.yaw_rate = p_end.yaw_dot;
     }
     out_ref.push_back(rp);
   }

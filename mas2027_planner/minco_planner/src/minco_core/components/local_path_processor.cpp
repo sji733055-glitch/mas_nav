@@ -1,5 +1,7 @@
 #include "minco_core/components/local_path_processor.hpp"
 
+#include <algorithm>
+
 namespace minco_planner {
 
 namespace {
@@ -107,6 +109,12 @@ std::vector<Eigen::Vector3d> LocalPathProcessor::extractLocalPath(
     }
   }
 
+  // Overshoot / already at last vertex: nearest pose is the goal. Keep the
+  // last segment so the seed is never a single point (buildSeed needs >= 2).
+  if (start_idx + 1U >= global_path.size() && global_path.size() >= 2U) {
+    start_idx = global_path.size() - 2U;
+  }
+
   double accum_dist = 0.0;
   local_segment.push_back(
     Eigen::Vector3d(global_path[start_idx].pose.position.x, global_path[start_idx].pose.position.y, 0.0));
@@ -175,27 +183,114 @@ bool LocalPathProcessor::clipLocalPathByRogBoundary(
 
   std::vector<Eigen::Vector3d> clipped;
   clipped.reserve(path.size());
-  for (size_t i = 0; i < path.size(); ++i) {
+
+  // Robot often sits on the ROG margin at a cruise-window handoff. Drop
+  // leading vertices that are outside instead of rejecting the whole seed.
+  size_t i0 = 0;
+  while (i0 < path.size() && !inside_boundary(path[i0])) {
+    ++i0;
+  }
+  auto clamp_inside = [&query, margin_cells, max_x, max_y](const Eigen::Vector3d & p) {
+    const double res = std::max(1e-6, query->resolution());
+    const int ix_lo = margin_cells;
+    const int iy_lo = margin_cells;
+    const int ix_hi = std::max(ix_lo, max_x - margin_cells - 1);
+    const int iy_hi = std::max(iy_lo, max_y - margin_cells - 1);
+    unsigned int mx = 0;
+    unsigned int my = 0;
+    int ix = ix_lo;
+    int iy = iy_lo;
+    if (query->worldToMap(p.x(), p.y(), mx, my)) {
+      ix = std::clamp(static_cast<int>(mx), ix_lo, ix_hi);
+      iy = std::clamp(static_cast<int>(my), iy_lo, iy_hi);
+    } else {
+      const double min_wx = query->originX() + (static_cast<double>(ix_lo) + 0.5) * res;
+      const double min_wy = query->originY() + (static_cast<double>(iy_lo) + 0.5) * res;
+      const double max_wx = query->originX() + (static_cast<double>(ix_hi) + 0.5) * res;
+      const double max_wy = query->originY() + (static_cast<double>(iy_hi) + 0.5) * res;
+      const double cx = std::clamp(p.x(), min_wx, max_wx);
+      const double cy = std::clamp(p.y(), min_wy, max_wy);
+      if (query->worldToMap(cx, cy, mx, my)) {
+        ix = std::clamp(static_cast<int>(mx), ix_lo, ix_hi);
+        iy = std::clamp(static_cast<int>(my), iy_lo, iy_hi);
+      }
+    }
+    double wx = 0.0;
+    double wy = 0.0;
+    query->mapToWorld(static_cast<unsigned int>(ix), static_cast<unsigned int>(iy), wx, wy);
+    return Eigen::Vector3d(wx, wy, 0.0);
+  };
+
+  // Entire seed outside the inner ROG box (window-edge handoff). Clamp onto
+  // the inner AABB so ReplanLocal still has a 2-point seed instead of failing.
+  if (i0 >= path.size()) {
+    std::vector<Eigen::Vector3d> clamped;
+    clamped.push_back(clamp_inside(path.front()));
+    Eigen::Vector3d second =
+      path.size() >= 2U ? clamp_inside(path[1]) : clamp_inside(path.front());
+    if ((second - clamped.front()).head<2>().norm() < 0.05) {
+      Eigen::Vector3d dir = path.back() - path.front();
+      if (dir.head<2>().norm() >= 1e-6) {
+        dir.head<2>().normalize();
+        second = clamp_inside(
+          clamped.front() + Eigen::Vector3d(dir.x(), dir.y(), 0.0) * 0.3);
+      }
+    }
+    if ((second - clamped.front()).head<2>().norm() < 0.05) {
+      path.clear();
+      RCLCPP_WARN_THROTTLE(logger_,
+        *rclcpp::Clock::make_shared(),
+        2000,
+        "[MincoPlanner] Local seed path outside ROGMap; clamp degenerated, reject seed.");
+      return false;
+    }
+    clamped.push_back(second);
+    path.swap(clamped);
+    RCLCPP_WARN_THROTTLE(logger_,
+      *rclcpp::Clock::make_shared(),
+      2000,
+      "[MincoPlanner] Local seed path outside ROGMap; clamped onto inner boundary.");
+    return true;
+  }
+
+  for (size_t i = i0; i < path.size(); ++i) {
     if (!inside_boundary(path[i])) {
-      if (i == 0U) {
+      if (clipped.empty()) {
         path.clear();
-        RCLCPP_WARN_THROTTLE(logger_,
-          *rclcpp::Clock::make_shared(),
-          2000,
-          "[MincoPlanner] Local seed path starts outside ROGMap boundary; reject local replan seed.");
         return false;
+      }
+      const Eigen::Vector3d a = clipped.back();
+      const Eigen::Vector3d b = path[i];
+      const Eigen::Vector3d delta = b - a;
+      const int samples = std::max(1, static_cast<int>(std::ceil(delta.norm() / step)));
+      Eigen::Vector3d last_inside = a;
+      for (int s = 1; s <= samples; ++s) {
+        const double ratio = static_cast<double>(s) / static_cast<double>(samples);
+        const Eigen::Vector3d p = a + ratio * delta;
+        if (!inside_boundary(p)) {
+          break;
+        }
+        last_inside = p;
+      }
+      if ((last_inside - a).norm() > 1e-3) {
+        clipped.push_back(last_inside);
       }
       break;
     }
-    if (i > 0U) {
+    if (i > i0) {
       const Eigen::Vector3d delta = path[i] - path[i - 1U];
       const int samples = std::max(1, static_cast<int>(std::ceil(delta.norm() / step)));
+      bool left_boundary = false;
       for (int s = 1; s <= samples; ++s) {
         const double ratio = static_cast<double>(s) / static_cast<double>(samples);
         if (!inside_boundary(path[i - 1U] + ratio * delta)) {
-          path.swap(clipped);
-          return path.size() >= 2U;
+          left_boundary = true;
+          break;
         }
+      }
+      if (left_boundary) {
+        path.swap(clipped);
+        return path.size() >= 2U;
       }
     }
     clipped.push_back(path[i]);

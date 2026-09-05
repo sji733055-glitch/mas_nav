@@ -363,7 +363,7 @@ void MincoPlanner::configure(const nav2_util::LifecycleNode::WeakPtr & parent,
   node->get_parameter(prefix + "minco_optimizer.lookahead_dist", lookahead_dist_);
 
   nav2_util::declare_parameter_if_not_declared(
-    node, prefix + "minco_optimizer.traj_goal_tolerance", rclcpp::ParameterValue(0.3));
+    node, prefix + "minco_optimizer.traj_goal_tolerance", rclcpp::ParameterValue(0.15));
   node->get_parameter(prefix + "minco_optimizer.traj_goal_tolerance", traj_goal_tolerance_);
 
   // --- Optimizer config ------------------------------------------------------
@@ -834,7 +834,9 @@ bool MincoPlanner::normalizePoseToFrame(const geometry_msgs::msg::PoseStamped & 
   }
 
   try {
-    out = tf_->transform(out, target_frame);
+    geometry_msgs::msg::PoseStamped stamped = out;
+    stamped.header.stamp = builtin_interfaces::msg::Time();
+    out = tf_->transform(stamped, target_frame);
     out.header.frame_id = target_frame;
     return true;
   } catch (const tf2::TransformException & ex) {
@@ -878,10 +880,24 @@ nav_msgs::msg::Path MincoPlanner::createPlan(
   path.poses.push_back(normalized_start);
   path.poses.push_back(normalized_goal);
 
+  // BT used to re-arm pending_goal_ every ComputePath tick. Same mission
+  // goal: do not set pending, return the cached path so FollowPath sees no
+  // change if the tree ever recomputes.
   {
     std::lock_guard<std::mutex> lk(goal_mutex_);
+    if (!last_bt_path_.poses.empty()) {
+      const double dx =
+        normalized_goal.pose.position.x - last_accepted_goal_.pose.position.x;
+      const double dy =
+        normalized_goal.pose.position.y - last_accepted_goal_.pose.position.y;
+      if (std::hypot(dx, dy) <= 0.15) {
+        return last_bt_path_;
+      }
+    }
     pending_goal_ = normalized_goal;
     has_pending_goal_ = true;
+    last_accepted_goal_ = normalized_goal;
+    last_bt_path_ = path;
   }
 
   return path;
@@ -1062,9 +1078,16 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
   end_state.setZero();
   end_state.col(0) = sparse_path.back();
 
-  // End state logic.
+  // Zero terminal velocity only when this window actually ends on the
+  // mission goal. dist_to_goal here is (clipped window end → global goal).
+  // After ROG-boundary clip that gap is often 0.5–1.0 m even though the
+  // seed is not the goal; treating it as a stop made the robot brake at the
+  // ROG edge (in-window goals never clip, so they were fine).
   const double dist_to_goal = (end_state.col(0) - global_goal).head<2>().norm();
-  if (dist_to_goal > 1.0) {
+  const double v_curr = std::max(0.0, start_state.col(1).head<2>().norm());
+  const double amax = std::max(0.0, minco_config.max_acc);
+  const bool command_stop = local_end_is_goal;
+  if (!command_stop) {
     Eigen::Vector3d tangent(1.0, 0.0, 0.0);
     if (sparse_path.size() >= 2) {
       tangent = sparse_path.back() - sparse_path[sparse_path.size() - 2];
@@ -1076,9 +1099,8 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
         tangent = Eigen::Vector3d(1.0, 0.0, 0.0);
       }
     }
-    const double v_curr = std::max(0.0, start_state.col(1).head<2>().norm());
-    const double amax = std::max(0.0, minco_config.max_acc);
-    const double v_max_kinematic = std::sqrt(std::max(0.0, v_curr * v_curr + 2.0 * amax * dist_to_goal));
+    const double v_max_kinematic =
+      std::sqrt(std::max(0.0, v_curr * v_curr + 2.0 * amax * dist_to_goal));
     double local_end_vmax = minco_config.max_vel;
     if (sparse_path.size() >= 3) {
       local_end_vmax = utils::LimitLocalVel(sparse_path,
@@ -1089,7 +1111,8 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
         minco_config.min_turn_vel,
         minco_config.decay_power);
     }
-    const double v_cmd = std::min({minco_config.max_vel, v_max_kinematic, dist_to_goal, local_end_vmax});
+    const double v_cmd =
+      std::min({minco_config.max_vel, v_max_kinematic, dist_to_goal, local_end_vmax});
     end_state.col(1) = tangent * v_cmd;
     end_state.col(2).setZero();
   } else {
@@ -1774,10 +1797,27 @@ bool MincoPlanner::consumePendingGoal(geometry_msgs::msg::PoseStamped & goal_out
   return true;
 }
 
+bool MincoPlanner::hasGlobalPath() const
+{
+  std::lock_guard<std::mutex> lock(path_mutex_);
+  return latest_global_path_.size() >= 2U;
+}
+
+void MincoPlanner::invalidateGlobalPath()
+{
+  std::lock_guard<std::mutex> lock(path_mutex_);
+  latest_global_path_.clear();
+}
+
 void MincoPlanner::cancelGoal()
 {
-  std::lock_guard<std::mutex> lk(goal_mutex_);
-  has_pending_goal_ = false;
+  {
+    std::lock_guard<std::mutex> lk(goal_mutex_);
+    has_pending_goal_ = false;
+    last_bt_path_ = nav_msgs::msg::Path{};
+    last_accepted_goal_ = geometry_msgs::msg::PoseStamped{};
+  }
+  invalidateGlobalPath();
   if (fsm_) {
     fsm_->cancelGoal();
   }

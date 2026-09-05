@@ -32,6 +32,7 @@ find_package(interfaces REQUIRED)
 find_package(rog_map REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(OpenMP REQUIRED)
+find_package(behaviortree_cpp_v3 REQUIRED)
 
 nav2_package()
 
@@ -109,8 +110,38 @@ target_link_libraries(${library_name}
 
 pluginlib_export_plugin_description_file(nav2_core global_planner_plugin.xml)
 
+add_library(minco_zero_goal_stamp_bt_node SHARED
+  src/bt_plugins/zero_goal_stamp.cpp
+)
+target_compile_definitions(minco_zero_goal_stamp_bt_node PRIVATE BT_PLUGIN_EXPORT)
+ament_target_dependencies(minco_zero_goal_stamp_bt_node
+  behaviortree_cpp_v3
+  geometry_msgs
+)
+
+add_library(minco_goal_updated_controller_bt_node SHARED
+  src/bt_plugins/goal_updated_controller.cpp
+)
+target_compile_definitions(minco_goal_updated_controller_bt_node PRIVATE BT_PLUGIN_EXPORT)
+ament_target_dependencies(minco_goal_updated_controller_bt_node
+  behaviortree_cpp_v3
+  geometry_msgs
+)
+
 install(TARGETS ${library_name}
   EXPORT ${library_name}
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
+)
+
+install(TARGETS minco_zero_goal_stamp_bt_node
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
+)
+
+install(TARGETS minco_goal_updated_controller_bt_node
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <queue>
 #include <string>
@@ -690,8 +691,13 @@ bool GlobalPathSearcher::makePlanOnQuery(const geometry_msgs::msg::Pose & start,
     }
     astar_->setCostmap(query_costmap_copy.data(), true, allow_unknown_);
 
-    int max_total_cycles = static_cast<int>(nx * ny) * 9999;
-    int cycles_per_step = std::max(static_cast<int>(nx * ny / 20), static_cast<int>(nx + ny));
+    // lab3 is 770x347=267190 cells; the old `int(nx*ny)*9999` overflowed INT_MAX
+    // (~2.15e9) to a negative budget, so the while loop never ran and even a 1.2 m
+    // free-space goal failed with "Astar failed to find path" in ~1 ms.
+    const int64_t map_cells = static_cast<int64_t>(nx) * static_cast<int64_t>(ny);
+    int64_t max_total_cycles = map_cells;
+    const int cycles_per_step = static_cast<int>(
+      std::max(map_cells / 20, static_cast<int64_t>(nx) + static_cast<int64_t>(ny)));
     while (max_total_cycles > 0) {
       if (cancel_checker && cancel_checker()) {
         return false;

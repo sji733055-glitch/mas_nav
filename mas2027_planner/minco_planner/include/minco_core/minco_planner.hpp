@@ -67,6 +67,8 @@ public:
     const geometry_msgs::msg::PoseStamped & current_pose,
     const geometry_msgs::msg::PoseStamped & goal) const;
   bool consumePendingGoal(geometry_msgs::msg::PoseStamped & goal_out);
+  bool hasGlobalPath() const;
+  void invalidateGlobalPath();
   void cancelGoal();
   Eigen::Vector3d getCurrentSpeed() const;
   double getCurrentYawFromOdom() const;
@@ -176,7 +178,7 @@ private:
   double lidar_offset_y_{-0.2};
   double opt_freq_;
   double lookahead_dist_;
-  double traj_goal_tolerance_{0.5};
+  double traj_goal_tolerance_{0.15};
   MincoOptimizer::Config minco_config;
   RecoverServer::Config recovery_server_config_{};
   PlannerPerformanceMonitor planner_perf_monitor_;
@@ -204,6 +206,8 @@ private:
   std::vector<geometry_msgs::msg::PoseStamped> latest_global_path_;
   nav_msgs::msg::Odometry latest_odom_;
   geometry_msgs::msg::PoseStamped pending_goal_;
+  geometry_msgs::msg::PoseStamped last_accepted_goal_;
+  nav_msgs::msg::Path last_bt_path_;
 
   bool has_last_traj_ = false;
   bool has_last_yaw_traj_ = false;
@@ -211,7 +215,7 @@ private:
   bool has_latest_odom_{false};
   std::atomic_bool is_traj_safe_{true};
 
-  std::mutex path_mutex_;
+  mutable std::mutex path_mutex_;
   std::mutex goal_mutex_;
   std::mutex perf_mutex_;
   mutable std::mutex odom_mutex_;

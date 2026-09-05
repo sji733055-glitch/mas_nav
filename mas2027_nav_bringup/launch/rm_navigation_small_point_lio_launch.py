@@ -38,6 +38,7 @@ def generate_launch_description():
         "small_point_lio_params_file"
     )
     nav2_params_file = LaunchConfiguration("nav2_params_file")
+    map_yaml_file = LaunchConfiguration("map")
     rviz_config_file = LaunchConfiguration("rviz_config_file")
     use_robot_state_pub = LaunchConfiguration("use_robot_state_pub")
     use_fake_vel_transform = LaunchConfiguration("use_fake_vel_transform")
@@ -74,6 +75,12 @@ def generate_launch_description():
         "nav2_params_file",
         default_value=os.path.join(bringup_dir, "config", "nav2_params.yaml"),
         description="Full path to the Navigation2 parameter file",
+    )
+
+    declare_map_yaml_file_cmd = DeclareLaunchArgument(
+        "map",
+        default_value=os.path.join(bringup_dir, "map", "lab3.yaml"),
+        description="Full path to the prior occupancy map yaml for map_server / StaticLayer",
     )
 
     declare_use_robot_state_pub_cmd = DeclareLaunchArgument(
@@ -252,6 +259,7 @@ def generate_launch_description():
             "namespace": namespace,
             "use_sim_time": use_sim_time,
             "nav2_params_file": nav2_params_file,
+            "map": map_yaml_file,
             "perception_params_file": small_point_lio_params_file,
             "use_terrain_analysis": use_terrain_analysis,
             "use_terrain_analysis_near": use_terrain_analysis_near,
@@ -277,6 +285,7 @@ def generate_launch_description():
     ld.add_action(declare_namespace_cmd)
     ld.add_action(declare_use_sim_time_cmd)
     ld.add_action(declare_nav2_params_file_cmd)
+    ld.add_action(declare_map_yaml_file_cmd)
     ld.add_action(declare_small_point_lio_params_file_cmd)
     ld.add_action(declare_rviz_config_file_cmd)
     ld.add_action(declare_use_robot_state_pub_cmd)

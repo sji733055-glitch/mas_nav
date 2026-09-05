@@ -4,8 +4,9 @@
   <BehaviorTree ID="MainTree">
     <RecoveryNode name="NavigateRecovery"
                   number_of_retries="10">
-      <PipelineSequence name="NavigateWithReplanning">
-        <RateController hz="3.0">
+      <GoalUpdatedController goals="{goals}">
+        <Sequence name="ComputeAndFollow">
+          <ZeroGoalStamp goals="{goals}"/>
           <RecoveryNode name="ComputePathThroughPoses"
                         number_of_retries="1">
             <ReactiveSequence>
@@ -19,18 +20,17 @@
             <ClearEntireCostmap name="ClearGlobalCostmap-Context"
                                 service_name="global_costmap/clear_entirely_global_costmap"/>
           </RecoveryNode>
-        </RateController>
-        <RecoveryNode name="FollowPath"
-                      number_of_retries="10">
-          <FollowPath path="{path}"
-                      controller_id="FollowPath"/>
-          <ClearEntireCostmap name="ClearLocalCostmap-Context"
-                              service_name="local_costmap/clear_entirely_local_costmap"/>
-        </RecoveryNode>
-      </PipelineSequence>
+          <RecoveryNode name="FollowPath"
+                        number_of_retries="10">
+            <FollowPath path="{path}"
+                        controller_id="FollowPath"/>
+            <ClearEntireCostmap name="ClearLocalCostmap-Context"
+                                service_name="local_costmap/clear_entirely_local_costmap"/>
+          </RecoveryNode>
+        </Sequence>
+      </GoalUpdatedController>
       <ReactiveFallback name="RecoveryFallback">
         <GoalUpdated/>
-          <!-- 改为 ↓：每次都执行相同流程，更快更稳定 -->
           <Sequence name="RecoveryActions">
             <ClearEntireCostmap name="ClearLocalCostmap-Subtree"
                                 service_name="local_costmap/clear_entirely_local_costmap"/>

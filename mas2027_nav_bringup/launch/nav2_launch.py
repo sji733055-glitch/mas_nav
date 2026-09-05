@@ -28,6 +28,7 @@ def generate_launch_description():
     log_level = LaunchConfiguration("log_level")
     nav2_params_file = LaunchConfiguration("nav2_params_file")
     perception_params_file = LaunchConfiguration("perception_params_file")
+    map_yaml_file = LaunchConfiguration("map")
     use_terrain_analysis = LaunchConfiguration("use_terrain_analysis")
     use_terrain_analysis_near = LaunchConfiguration("use_terrain_analysis_near")
     use_fake_vel_transform = LaunchConfiguration("use_fake_vel_transform")
@@ -40,6 +41,7 @@ def generate_launch_description():
             param_rewrites={
                 "use_sim_time": use_sim_time,
                 "autostart": autostart,
+                "yaml_filename": map_yaml_file,
             },
             convert_types=True,
         ),
@@ -84,6 +86,11 @@ def generate_launch_description():
         "nav2_params_file",
         default_value=os.path.join(bringup_dir, "config", "nav2_params.yaml"),
         description="Navigation2 parameter file",
+    )
+    declare_map_yaml_file = DeclareLaunchArgument(
+        "map",
+        default_value=os.path.join(bringup_dir, "map", "lab3.yaml"),
+        description="Full path to the prior occupancy map yaml for map_server / StaticLayer",
     )
     declare_perception_params_file = DeclareLaunchArgument(
         "perception_params_file",
@@ -190,6 +197,18 @@ def generate_launch_description():
         arguments=nav_arguments,
         remappings=tf_remappings + [("cmd_vel", "/cmd_vel_nav")],
     )
+    map_server = Node(
+        package="nav2_map_server",
+        executable="map_server",
+        name="map_server",
+        namespace=namespace,
+        output="screen",
+        respawn=use_respawn,
+        respawn_delay=2.0,
+        parameters=[configured_nav2_params],
+        arguments=nav_arguments,
+        remappings=tf_remappings,
+    )
     smoother_server = Node(
         package="nav2_smoother",
         executable="smoother_server",
@@ -268,6 +287,7 @@ def generate_launch_description():
     )
 
     lifecycle_nodes = [
+        "map_server",
         "controller_server",
         "smoother_server",
         "planner_server",
@@ -298,6 +318,7 @@ def generate_launch_description():
             declare_use_respawn,
             declare_log_level,
             declare_nav2_params_file,
+            declare_map_yaml_file,
             declare_perception_params_file,
             declare_use_terrain_analysis,
             declare_use_terrain_analysis_near,
@@ -307,6 +328,7 @@ def generate_launch_description():
             terrain_analysis_ext,
             fake_vel_transform,
             ros2_comm,
+            map_server,
             controller_server,
             smoother_server,
             planner_server,

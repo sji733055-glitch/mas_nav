@@ -45,10 +45,22 @@ void MincoFsm::callMainFsmOnce()
   if (state_ != State::RECOVERING) {
     geometry_msgs::msg::PoseStamped new_goal;
     if (planner_->consumePendingGoal(new_goal)) {
+      const bool same_goal =
+        has_goal_ &&
+        (std::hypot(
+           new_goal.pose.position.x - goal_.pose.position.x,
+           new_goal.pose.position.y - goal_.pose.position.y) <= 0.15);
       goal_ = new_goal;
       has_goal_ = true;
       recovery_server_->setMissionGoal(new_goal);
-      changeState("NewGoal", State::GENERATE_TRAJ);
+      if (same_goal && state_ == State::FOLLOW_TRAJ) {
+        // keep FOLLOW_TRAJ so window handoff stays on ReplanLocal
+      } else {
+        if (!same_goal) {
+          planner_->invalidateGlobalPath();
+        }
+        changeState("NewGoal", State::GENERATE_TRAJ);
+      }
     }
   }
 
@@ -125,19 +137,22 @@ void MincoFsm::callMainFsmOnce()
       // }
     };
 
-    if (!planner_->PlanGlobalPath(current_pose, goal_)) {
-      handle_generate_replan_failure(
-        "GLOBAL_SEARCH_FAIL_TRIGGER_RECOVERING", "GLOBAL_SEARCH_FAIL_RECOVERY_FAIL");
-      return;
+    if (!planner_->hasGlobalPath()) {
+      if (!planner_->PlanGlobalPath(current_pose, goal_)) {
+        handle_generate_replan_failure(
+          "GLOBAL_SEARCH_FAIL_TRIGGER_RECOVERING", "GLOBAL_SEARCH_FAIL_RECOVERY_FAIL");
+        return;
+      }
     }
     if (!planner_->ReplanLocal(current_pose)) {
       Eigen::Vector3d cur_p(current_pose.pose.position.x, current_pose.pose.position.y, 0.0);
-      // double dist = planner_->getEsdfDistance(cur_p);
-      // if (dist < 0.25) {
+      const double dist = planner_->getEsdfDistance(cur_p);
+      // Seed/ROG clip can fail while the robot is still safe. Stay here and
+      // retry ReplanLocal only — do not SMAC the whole map at 20 Hz.
+      if (dist >= 0.25) {
+        return;
+      }
       handle_generate_replan_failure("GEN_STUCK_TRIGGER_RECOVERING", "GENERATE_RECOVERY_FAIL");
-      // return;
-      // }
-      // recovery_server_->onReplanSuccess();
       return;
     }
 
@@ -202,10 +217,10 @@ void MincoFsm::callMainFsmOnce()
       Eigen::Vector3d cur_p(current_pose.pose.position.x, current_pose.pose.position.y, 0.0);
       double dist = planner_->getEsdfDistance(cur_p);
 
-      // 2. 诊断为安全 (ESDF >= 0.25m)：纯粹前方路障，立即绕路
+      // ESDF 安全时不要立刻 GENERATE_TRAJ。远点目标在 ROG 窗边裁剪失败也会
+      // 走进这里：冷启动整场重搜把车刹停，BT 3Hz 再把 FollowPath 顶成 absorbed。
+      // 留在 FOLLOW_TRAJ，20Hz 继续 ReplanLocal，等 ROG 窗跟上。
       if (dist >= 0.25) {
-        // recovery_server_->onReplanSuccess();  // 清空失败计数
-        changeState("PATH_BLOCKED_DETOUR", State::GENERATE_TRAJ);
         return;
       }
 

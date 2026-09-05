@@ -4,8 +4,11 @@
   <BehaviorTree ID="MainTree">
     <RecoveryNode name="NavigateRecovery"
                   number_of_retries="20">
-      <PipelineSequence name="NavigateWithReplanning">
-        <RateController hz="3.0">
+      <!-- Minco replans locally at 20 Hz. Compute the Nav2 seed once, and
+           restart this child only when RViz supplies a different goal. -->
+      <GoalUpdatedController goal="{goal}">
+        <Sequence name="ComputeAndFollow">
+          <ZeroGoalStamp goal="{goal}"/>
           <RecoveryNode name="ComputePathToPose"
                         number_of_retries="1">
             <ComputePathToPose goal="{goal}"
@@ -14,15 +17,15 @@
             <ClearEntireCostmap name="ClearGlobalCostmap-Context"
                                 service_name="global_costmap/clear_entirely_global_costmap"/>
           </RecoveryNode>
-        </RateController>
-        <RecoveryNode name="FollowPath"
-                      number_of_retries="20">
-          <FollowPath path="{path}"
-                      controller_id="FollowPath"/>
-          <ClearEntireCostmap name="ClearLocalCostmap-Context"
-                              service_name="local_costmap/clear_entirely_local_costmap"/>
-        </RecoveryNode>
-      </PipelineSequence>
+          <RecoveryNode name="FollowPath"
+                        number_of_retries="20">
+            <FollowPath path="{path}"
+                        controller_id="FollowPath"/>
+            <ClearEntireCostmap name="ClearLocalCostmap-Context"
+                                service_name="local_costmap/clear_entirely_local_costmap"/>
+          </RecoveryNode>
+        </Sequence>
+      </GoalUpdatedController>
       <ReactiveFallback name="RecoveryFallback">
         <GoalUpdated/>
           <Sequence name="RecoveryActions">

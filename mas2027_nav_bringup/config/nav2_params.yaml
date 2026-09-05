@@ -1,26 +1,24 @@
-# Nav2 局部导航参数（不加载全局地图，全部在里程计坐标系下运行）
+# Nav2 参数：有先验 PGM 时全局路径在 map 系搜，局部跟踪仍在 odom / base_link_fake。
 # 数据输入：
-#   TF：odom -> base_link -> base_link_fake
+#   TF：map -> odom -> base_link -> base_link_fake（map→odom 由 odom_localizer）
 #   里程计：/Odometry_world_fixed（fake_vel_transform 转发 /Odometry，twist 旋到 base_link_fake 轴系）
-#   障碍物：局部图和全局图都用 /rog_map/terrain_map（rog_map ProjectionLayer 经
-#           layer_value_to_cloud 桥接发布）。terrain_analysis / terrain_analysis_ext
-#           已不再使用，两个节点默认不启动（use_terrain_analysis 默认 False）。
+#   先验图：map_server 发 /map，global_costmap StaticLayer 铺进 SMAC
+#   近处障碍：local_costmap 仍用 /rog_map/terrain_map（ProjectionLayer 经 layer_value_to_cloud）
 # 速度链路：
 #   controller_server -> /cmd_vel_nav -> velocity_smoother -> /cmd_vel_nav_smoothed
 #   -> fake_vel_transform -> /cmd_vel -> ros2_comm -> 底盘
-# 说明：Nav2 全程在 base_link_fake（yaw 固定在启动方向）中规划，
-#       所以角速度、角加速度相关参数一律置零，车体自旋由 /cmd_spin 单独下发。
+# 说明：角速度、角加速度相关参数置零，车体自旋由 /cmd_spin 单独下发。
 
 # 行为树导航器：加载行为树，调度规划、控制与恢复动作
 bt_navigator:
   ros__parameters:
     use_sim_time: false
-    global_frame: odom                     # 无全局地图，导航参考系直接用里程计坐标系
+    global_frame: map                      # 目标与全局路径在 map 系；跟踪仍用 odom 系的 local_costmap
     robot_base_frame: base_link_fake       # yaw 固定的机器人坐标系，让规划与车体朝向解耦
     odom_topic: /Odometry_world_fixed      # 速度反馈来源，twist 已旋到 base_link_fake 轴系
     transform_tolerance: 0.3               # TF 允许的最大滞后，单位秒
     bt_loop_duration: 10                   # 行为树 tick 周期，单位毫秒
-    default_server_timeout: 20             # 行为树节点等待 action 服务响应的超时，单位毫秒
+    default_server_timeout: 2000           # ComputePath / FollowPath 等 action 超时；20ms 不够 SMAC 占着 planner_server 时等结果
     wait_for_service_timeout: 1000         # 启动时等待各 server 服务上线的超时，单位毫秒
     # 单目标点导航行为树：失败时重规划并触发恢复行为
     default_nav_to_pose_bt_xml: $(find-pkg-share mas2027_nav_bringup)/behavior_trees/navigate_to_pose_w_replanning_and_recovery.xml
@@ -40,6 +38,8 @@ bt_navigator:
       - nav2_remove_passed_goals_action_bt_node         # 剔除已通过的目标点
       - nav2_navigate_to_pose_action_bt_node            # 单点导航入口
       - nav2_navigate_through_poses_action_bt_node      # 多点导航入口
+      - minco_zero_goal_stamp_bt_node                   # 把目标 stamp 置 0，避免 10s TF 缓存过期
+      - minco_goal_updated_controller_bt_node            # 新目标抢占 FollowPath 并重新计算一次
 
 # 行为树内部使用的 rclcpp 节点（承载 action 客户端）
 bt_navigator_navigate_to_pose_rclcpp_node:
@@ -124,9 +124,10 @@ controller_server:
       lidar_offset_x: 0.0
       lidar_offset_y: 0.0
       lidar_roll_offset: 0.0
-      # 本仓库没有 map 帧，两项都填 odom（上游为 camera_init / map）
+      # 本仓库有 map 帧（odom_localizer 发 map→odom）。opt_path 在 PRIORMAP 下是 map 系，
+      # MincoMpcController::transformPathToOdom() 会旋到 local_costmap 的 odom。
       odom_frame: odom
-      map_frame: odom
+      map_frame: map
       # MPC 状态反馈的里程计。上游把话题名硬编码成 /aft_mapped_to_init，本仓库改成了参数。
       # 必须是**未旋转**的 /Odometry（twist 在随车体转动的 base_link 里）：
       # 控制器内部 compensateLeverArm() 自己按 yaw 旋到全局系
@@ -171,7 +172,7 @@ local_costmap:
       global_frame: odom
       robot_base_frame: base_link_fake
       transform_tolerance: 0.3             # TF 允许的最大滞后，单位秒
-      rolling_window: true                 # 地图随机器人滚动，无全局地图时必须为 true
+      rolling_window: true                 # 局部层随车滚动；全局先验在 global_costmap StaticLayer
       width: 10                            # 地图宽度，单位米
       height: 10                           # 地图高度，单位米
       resolution: 0.10                     # 栅格分辨率，单位米
@@ -224,69 +225,52 @@ local_costmap:
         cost_scaling_factor: 4.0           # 代价指数衰减系数，越大代价降得越快、越敢贴近障碍
       always_send_full_costmap: true       # 每次发布完整地图而非增量，方便 RViz 显示
 
-# 全局代价地图：供 planner 规划整条路径，同样滚动、范围更大、更新更慢
+# 先验占据栅格。StaticLayer 订 /map（transient_local）。yaml_filename 由 launch 的 map 参数覆盖。
+map_server:
+  ros__parameters:
+    use_sim_time: false
+    yaml_filename: /home/ros2_ws/src/mas2027_nav_bringup/map/lab3.yaml
+    topic_name: map
+    frame_id: map
+
+# 全局代价地图：固定在 map 系，用 StaticLayer 铺先验 PGM，供 PRIORMAP 的 SMAC 搜整场。
+# 不再用投影点云当全局拓扑：ROG 只有 ±5 m 窗口，窗外在 track_unknown_space:false 下按空闲，
+# 路径会钻进没有实时点云、先验里其实有墙的区域。投影只留在 local_costmap + MINCO ESDF 上做近处避障。
 global_costmap:
   global_costmap:
     ros__parameters:
       use_sim_time: false
-      update_frequency: 10.0                # 地图更新频率，单位 Hz，与 planner 频率对齐
+      update_frequency: 5.0                # 静态图不需要跟投影 10 Hz；5 Hz 够 SMAC 刷新膨胀
       publish_frequency: 1.0               # 可视化发布频率，单位 Hz
-      global_frame: odom
+      global_frame: map
       robot_base_frame: base_link_fake
       transform_tolerance: 0.3             # TF 允许的最大滞后，单位秒
-      rolling_window: true                 # 无先验地图，全局层也随车滚动
-      width: 30                            # 地图宽度，单位米，决定可规划的最远目标距离
-      height: 30                           # 地图高度，单位米
-      resolution: 0.10                     # 栅格分辨率，单位米
-      footprint: "[[-0.30, -0.30], [-0.30, 0.30], [0.30, 0.30], [0.30, -0.30]]"  # 0.6×0.6 m 方形轮廓
-      footprint_padding: 0.02              # 轮廓外扩量，单位米
-      track_unknown_space: false           # 未知区域按空闲处理，配合 allow_unknown 允许向未探索区规划
-      plugins: [intensity_voxel_layer, inflation_layer]
-      # 参数含义同局部层，仅作用范围和衰减时间不同
-      intensity_voxel_layer:
-        plugin: pb_nav2_costmap_2d::IntensityVoxelLayer
-        enabled: true
-        footprint_clearing_enabled: true   # 清除车体轮廓内的障碍，避免自锁
-        publish_voxel_map: false           # 是否发布体素地图，调试用
-        combination_method: 1              # 与其他层合并方式：0 覆盖，1 取最大，2 取最大但不覆盖未知
-        mark_threshold: 0                  # 一列中标记为障碍所需的最少体素数
-        origin_z: 0.0                      # 体素网格底面高度，单位米，相对 odom 原点
-        z_resolution: 0.05                 # 体素高度分辨率，单位米
-        z_voxels: 16                       # 体素层数，覆盖 0.0 ~ 0.8 m
-        unknown_threshold: 15              # 一列中未知体素超过该数则整列视为未知
-        min_obstacle_height: 0.0           # 参与标记的点云最低高度，单位米，低于 odom 原点的点（含地面）直接丢弃
-        max_obstacle_height: 2.0           # 参与标记的点云最高高度，单位米
-        min_obstacle_intensity: 0.1        # 地形点强度下限
-        max_obstacle_intensity: 2.0        # 地形点强度上限
-        observation_sources: terrain_map
-        terrain_map:
-          # 与 local_costmap 用同一个 rog_map 源，terrain_analysis_ext 已不再使用。
-          # NOTE: 观测范围由 rog_map 的 map_size [10, 10] 决定，即车体 ±5 m
-          # （对角约 7.1 m），远小于本层 30x30 m 的地图范围。地图外圈拿不到观测，
-          # 在 track_unknown_space: false 下按空闲处理，靠 allow_unknown 规划，
-          # 车开近了才会看到障碍。要扩大全局感知范围只能调大 rog_map 的
-          # map_size（代价：projection 栅格数按面积平方增长）。
-          topic: /rog_map/terrain_map
-          data_type: PointCloud2
-          sensor_frame: lidar_link         # 必填：点云 frame 是 odom，不填则距离过滤以 odom 原点为中心而非雷达
-          marking: true                    # 用该点云标记障碍
-          clearing: false                  # 不做射线清除
-          observation_persistence: 0.5     # 观测保留时长，单位秒，比局部层更长以稳定全局路径
-          expected_update_rate: 0.0        # 0 表示不检查话题超时
-          obstacle_min_range: 0.1          # 参与标记的最小距离，单位米
-          obstacle_max_range: 25.0         # 参与标记的最大距离，单位米，大于 rog_map 实际可达范围，不构成额外裁剪
-          min_obstacle_height: -0.2         # 该观测源的高度下限，单位米
-          max_obstacle_height: 2.0         # 该观测源的高度上限，单位米
+      rolling_window: false                # 尺寸跟随先验 PGM，不再随车滚动
+      resolution: 0.05                     # 与 lab3.yaml 一致；StaticLayer 会按先验图 resize
+      # 全局搜索是点机器人走膨胀图，不要把实车 0.6×0.6 footprint 铺进 253。
+      # inscribed=0.32 m 时 253 环会把实验室约 0.6–0.7 m 的通道封死：起点
+      # 终点 5x5 都是 free，A*/SMAC 仍报 failed to find path。真车碰撞由 MINCO
+      # collision_dist=0.30 在 ROG ESDF 上把关。
+      # robot_radius 0.20 与旧的 inflation 0.20 同等连通性（不穿墙）；inflation 0.55
+      # 起代价梯度，折线走通道中间，MINCO 才过得了 collision_dist。
+      footprint: "[]"
+      robot_radius: 0.20
+      footprint_padding: 0.0
+      track_unknown_space: true            # 先验未知格保持未知；SMAC allow_unknown:false 不会穿未建图区
+      plugins: [static_layer, inflation_layer]
+      static_layer:
+        plugin: nav2_costmap_2d::StaticLayer
+        map_subscribe_transient_local: true
+        subscribe_to_updates: false
+        map_topic: /map
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
-        inflation_radius: 0.20             # 膨胀半径，单位米，小于车体内切半径 0.30，全局路径会贴近障碍，靠局部层兜底
-        cost_scaling_factor: 4.0           # 代价指数衰减系数
+        inflation_radius: 0.55
+        cost_scaling_factor: 2.5           # 衰减慢一点，更倾向走走廊中线
       always_send_full_costmap: true       # 每次发布完整地图而非增量
 
 # 全局规划器：MINCO。搬自 navi_minco_bit 的 sentry1.yaml planner_server 段。
-# 与 NavFn 的本质区别：MincoPlanner 自己持有一份 ROG-Map（下面的 rog_map 段），
-# 在 Signed ESDF 上做搜索和轨迹优化，不读 global_costmap。所以 global_costmap
-# 只剩恢复行为和碰撞检查在用。
+# PRIORMAP：SMAC 在 global_costmap（StaticLayer 先验图）上搜全局折线；MINCO 优化和碰撞检查仍查 ROG ESDF。
 # rog_map 实例归 planner_server 进程所有，通过 rog_map::MapRegistry 供插件内部取用；
 # 它发布的 /rog_map/layer_value 是绝对话题名，layer_value_to_cloud 桥接节点照旧能订阅，
 # 所以整条链路只跑一份 rog_map，配置就是下面的 MincoPlanner.rog_map 段，别处没有第二份
@@ -298,15 +282,14 @@ planner_server:
     planner_plugins: [MincoPlanner]
     MincoPlanner:
       plugin: minco_planner/MincoPlanner
-      # 上游用 PRIORMAP（需要 map 坐标系 + 先验 PGM，由 icp_relocalization 提供）。
-      # 本仓库没有 map 帧也没有先验图，只能用 EXPLORATION：完全依赖在线 ROG-Map。
+      # 上游用 PRIORMAP（需要 map 坐标系 + 先验 PGM，由 odom_localizer 提供 map→odom）。
       planner_mode: PRIORMAP
       frames:
-        # 本仓库全程在 odom 下运行，没有 map 帧，两项都填 odom。
-        map_frame: odom
+        # 全局折线在 map 系搜先验图；ROG-Map / ESDF 仍在 odom。
+        map_frame: map
         rog_frame: odom
       priormap:
-        # planner_mode: EXPLORATION 下不生效，保留上游取值便于以后切 PRIORMAP。
+        # SMAC 读 Nav2 global_costmap（StaticLayer），不是 ROG 投影窗。
         use_nav2_global_search: true
         clip_seed_by_rog_boundary: true
         rog_boundary_margin: 0.2
@@ -363,8 +346,8 @@ planner_server:
 
       minco_optimizer:
         opt_freq: 20.0                      # 重优化频率，单位 Hz，与 FSM 定时器一致
-        lookahead_dist: 6.0                 # 沿全局路径截取多长一段交给 MINCO 优化，单位米（上游取值）
-        traj_goal_tolerance: 0.3            # 轨迹终点与目标的允许偏差，单位米
+        lookahead_dist: 10.0                 # 沿全局路径截取多长一段交给 MINCO 优化，单位米（上游取值）
+        traj_goal_tolerance: 0.15           # 与 Nav2 xy_goal_tolerance 对齐，单位米
         # 偏航优化。本车 base_link_fake 的 yaw 恒为 0、车体自旋走 /cmd_spin，
         # MPC 的 omega 又锁死在 [0, 0]，所以这里解出的 yaw 只会作为参考 yaw
         # 进入 MPC 的 Q[2]=2.0 代价项，却没有可用的控制量去跟踪它。
@@ -455,7 +438,7 @@ planner_server:
           # [raycasting][帧] 每批处理点云帧数；调大可攒批减少调度开销，但会增加地图更新延迟。
           batch_update_size: 1
           # [raycasting][m,m] 射线有效距离 [min,max]；min 过大会忽略近处点，max 过大会增加计算量并可能引入远处噪声。
-          ray_range: [0.01, 8.0]
+          ray_range: [0.01, 10.0]
           # [raycasting][m,m,m] 每次局部更新盒尺寸；调大覆盖更多点但 raycasting 和 dirty column 数量上升。
           local_update_box: [10.0, 10.0, 2.5]
           # [raycasting][概率] unknown 判断阈值相关参数；影响 UNKNOWN/FREE/OCCUPIED 判定，进而影响 projection layer。
@@ -489,7 +472,8 @@ planner_server:
             # 那是临时实验配置，跑真车必须关回来。原因：rmuc.pgm 的 origin 是
             # (-7.76, -5.97)，坐标定义在 map 系里；写成 odom 就等于把整张赛场按 odom 原点
             # （车开机的地方）贴上去，实测 odom 原点周围 1 m 内有 296/1681 个格子是墙。
-            # 真要用先验图，得先起 map_server 并有 map->odom 的 TF，frame_id 保持 map。
+            # 全局路径已经改由 map_server + StaticLayer 提供。这里的 prior_map 只给 ROG ESDF
+            # 在滑动窗口里加二维硬障碍，不负责 SMAC。frame_id 必须是 map，依赖 odom_localizer 的 map→odom。
             enable: true
             yaml_path: "/home/ros2_ws/src/mas2027_nav_bringup/map/lab3.yaml"
             # 留空时使用 YAML 的 image 字段，并相对 YAML 所在目录解析。
