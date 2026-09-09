@@ -22,6 +22,8 @@ Panels:
     Splitter Ratio: 0.5
   - Class: nav2_rviz_plugins/Navigation 2
     Name: Navigation 2
+  - Class: waypoint_editor/WaypointEditorPanel
+    Name: WaypointEditorPanel
 Visualization Manager:
   Class: ""
   Displays:
@@ -846,6 +848,28 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: waypoints
       Value: true
+    - Class: rviz_default_plugins/InteractiveMarkers
+      Enable Transparency: true
+      Enabled: true
+      Interactive Markers Namespace: /interactive_marker_server
+      Name: Waypoint Editor Markers
+      Show Axes: false
+      Show Descriptions: false
+      Show Visual Aids: false
+      Value: true
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Name: Waypoint Editor Lines
+      Namespaces:
+        waypoint_lines: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /waypoint_line
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
@@ -853,6 +877,8 @@ Visualization Manager:
     Frame Rate: 30
   Name: root
   Tools:
+    - Class: rviz_default_plugins/Interact
+      Hide Inactive Objects: true
     - Class: rviz_default_plugins/MoveCamera
     - Class: rviz_default_plugins/SetInitialPose
       Covariance x: 0.25
@@ -873,6 +899,7 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /clicked_point
     - Class: nav2_rviz_plugins/GoalTool
+    - Class: waypoint_editor/WaypointEditorTool
   Transformation:
     Current:
       Class: rviz_default_plugins/TF

@@ -10,7 +10,9 @@
 #include "lidar_adapter/livox_custom_msg.h"
 #include "lidar_adapter/livox_pointcloud2.h"
 #include "lidar_adapter/unitree_lidar.h"
+#include <fstream>
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <iomanip>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 namespace small_point_lio {
@@ -49,7 +51,34 @@ namespace small_point_lio {
                         RCLCPP_ERROR(rclcpp::get_logger("small_point_lio"), "pcd save is disabled");
                         return;
                     }
+                    if (!odom_frame_initialized) {
+                        res->success = false;
+                        res->message = "odom frame is not initialized yet";
+                        RCLCPP_ERROR(rclcpp::get_logger("small_point_lio"), "odom frame is not initialized yet");
+                        return;
+                    }
+                    const std::string transform_path = ROOT_DIR + "/pcd/scan_T_odom_from_internal.txt";
+                    {
+                        std::ofstream out(transform_path);
+                        if (!out) {
+                            res->success = false;
+                            res->message = "failed to write " + transform_path;
+                            RCLCPP_ERROR(rclcpp::get_logger("small_point_lio"), "failed to write %s", transform_path.c_str());
+                            return;
+                        }
+                        const tf2::Matrix3x3 rotation = transform_odom_from_internal_world.getBasis();
+                        const tf2::Vector3 translation = transform_odom_from_internal_world.getOrigin();
+                        out << std::setprecision(17);
+                        out << "# T_odom_from_internal_world 4x4 row-major\n";
+                        out << "# p_odom = R * p_internal + t ; same frame as /cloud_registered\n";
+                        for (int row = 0; row < 3; ++row) {
+                            out << rotation[row][0] << ' ' << rotation[row][1] << ' '
+                                << rotation[row][2] << ' ' << translation[row] << '\n';
+                        }
+                        out << "0 0 0 1\n";
+                    }
                     res->success = true;
+                    res->message = "saving scan.pcd (LIO-internal world) and " + transform_path;
                     RCLCPP_INFO(rclcpp::get_logger("small_point_lio"), "waiting for pcd saving ...");
                     auto pointcloud_to_save = std::make_shared<std::vector<Eigen::Vector3f>>();
                     *pointcloud_to_save = pointcloud_mapping->get_points();

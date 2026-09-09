@@ -56,6 +56,8 @@ LIO 开机清零的局部世界。点云 `/cloud_registered`、ROG-Map `frame_id
 
 雷达光学中心。costmap 观测源的 `sensor_frame: lidar_link` 必须填：点云 header 是 `odom`，不填的话距离过滤会以 odom 原点（开机位置）为中心，而不是雷达。
 
+双雷达时 `lidar_link` 仍是前雷达；后雷达点在驱动里变过来，LIO 不 lookup 后雷达 link。URDF 可加 `lidar_back_link` 只做可视化。详见 [dual-lidar.md](dual-lidar.md)。
+
 ## 速度轴系（和 TF 配套）
 
 | 量 | 轴系 |

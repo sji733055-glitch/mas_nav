@@ -23,6 +23,20 @@ except ImportError:
     HAS_OPEN3D = False
 
 
+def load_matrix4(path):
+    """Load a 4x4 row-major matrix. Lines starting with # are ignored."""
+    rows = []
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            rows.append([float(token) for token in line.split()])
+    if len(rows) != 4 or any(len(row) != 4 for row in rows):
+        raise ValueError(f"{path}: expected 4x4, got {len(rows)} rows")
+    return np.asarray(rows, dtype=float)
+
+
 def euler_to_rotation_matrix(roll, pitch, yaw):
     """R = Rz(yaw) * Ry(pitch) * Rx(roll)."""
     Rx = np.array(
@@ -128,10 +142,19 @@ class PointCloudProcessor:
             f"  Rotation (deg): [{np.rad2deg(roll)}, {np.rad2deg(pitch)}, {np.rad2deg(yaw)}]"
         )
         R = euler_to_rotation_matrix(roll, pitch, yaw)
-        self.points = (R @ self.points.T).T
-        self.points += np.array([tx, ty, tz])
+        self.transform_rt(R, np.array([tx, ty, tz], dtype=float))
+
+    def transform_rt(self, rotation, translation):
+        if self.points is None:
+            return
+        self.points = (rotation @ self.points.T).T + translation
         if self.has_open3d and self.pcd_o3d is not None:
             self.pcd_o3d.points = o3d.utility.Vector3dVector(self.points)
+
+    def transform_matrix(self, matrix_4x4):
+        print("[INFO] Applying 4x4 matrix (p' = R p + t):")
+        print(matrix_4x4)
+        self.transform_rt(matrix_4x4[:3, :3], matrix_4x4[:3, 3])
 
     def save(self, filepath, ascii_format=False):
         print(f"[INFO] Saving to: {filepath}")
@@ -141,10 +164,10 @@ class PointCloudProcessor:
             if success:
                 fmt = "ASCII" if ascii_format else "Binary/Compressed"
                 print(f"[SUCCESS] Saved using Open3D ({fmt}).")
-            else:
-                print("[ERROR] Open3D failed to save file.")
-        else:
-            self._save_ascii_fallback(filepath)
+                return True
+            print("[ERROR] Open3D failed to save file.")
+            return False
+        return self._save_ascii_fallback(filepath)
 
     def _save_ascii_fallback(self, filepath):
         try:
@@ -163,8 +186,10 @@ class PointCloudProcessor:
                 for p in self.points:
                     f.write(f"{p[0]:.6f} {p[1]:.6f} {p[2]:.6f}\n")
             print("[SUCCESS] Saved as ASCII PCD (Fallback).")
+            return True
         except Exception as e:
             print(f"[ERROR] Failed to save file: {e}")
+            return False
 
 
 def parse_args():
@@ -185,6 +210,11 @@ def parse_args():
     parser.add_argument("--yaw", type=float, default=0.0, help="degrees")
     parser.add_argument("--ascii", action="store_true", help="write ASCII PCD")
     parser.add_argument("--info", action="store_true", help="print bounds and exit")
+    parser.add_argument(
+        "--matrix",
+        default="",
+        help="4x4 row-major text file (p' = R p + t). Used by save_pcd_and_make_map.sh",
+    )
     return parser.parse_args()
 
 
@@ -203,16 +233,28 @@ def main():
     if args.info:
         return
 
-    r_rad = np.deg2rad(args.roll)
-    p_rad = np.deg2rad(args.pitch)
-    y_rad = np.deg2rad(args.yaw)
-    if any([args.tx, args.ty, args.tz, args.roll, args.pitch, args.yaw]):
-        processor.transform(args.tx, args.ty, args.tz, r_rad, p_rad, y_rad)
+    if args.matrix:
+        try:
+            matrix = load_matrix4(args.matrix)
+        except Exception as exc:
+            print(f"[ERROR] Failed to read --matrix {args.matrix}: {exc}")
+            sys.exit(1)
+        processor.transform_matrix(matrix)
+    elif any([args.tx, args.ty, args.tz, args.roll, args.pitch, args.yaw]):
+        processor.transform(
+            args.tx,
+            args.ty,
+            args.tz,
+            np.deg2rad(args.roll),
+            np.deg2rad(args.pitch),
+            np.deg2rad(args.yaw),
+        )
     else:
         print("[INFO] No transform; copying / converting format only.")
 
     save_ascii = args.ascii or (not HAS_OPEN3D)
-    processor.save(args.output_pcd, ascii_format=save_ascii)
+    if not processor.save(args.output_pcd, ascii_format=save_ascii):
+        sys.exit(1)
 
 
 if __name__ == "__main__":

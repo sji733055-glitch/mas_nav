@@ -19,6 +19,8 @@ ros2 launch mas2027_nav_bringup rm_navigation_small_point_lio_launch.py
 | [TF 链路](tf.md) | 坐标系树、谁发布、和速度轴系的关系 |
 | [组件原理](components.md) | 感知、定位、建图、规划、控制各自解决什么问题 |
 | [排查定位](troubleshooting.md) | 常见症状 → 该看哪一段、哪种误判 |
+| [双 MID360 融合](dual-lidar.md) | 硬件接线、PTP、驱动内融合、外参与落地顺序；当前仓库仍是单雷达，文中「拟改」尚未合入 |
+| [双 MID360 融合](dual-lidar.md) | 硬件接线、PTP、驱动内融合、外参与落地顺序；当前仓库仍是单雷达，文中「拟改」尚未合入 |
 
 ## 读代码前先记住的三件事
 

@@ -18,6 +18,8 @@
 
 包在 `mas2027_utils/pcd2pgm/`，随仓库 colcon 一起编。改 `config/pcd.yaml`：`file_directory` 必须以 `/` 结尾，`file_name` 不含 `.pcd`。当前默认读 `lab3.pcd`。
 
+保存点云并切片一键脚本（推荐）：`mas2027_nav_bringup/scripts/save_pcd_and_make_map.sh`。它用 `/map_save` 写出的 `T_odom_from_internal` 把点云转到 `/cloud_registered` 再切图，并把 `pcd2pgm` 挂在 `/pcd2pgm_map` 上再 `map_saver_cli`，不抢 Nav2 的 `/map`。下面是手动分步。
+
 ```bash
 source /opt/ros/humble/setup.bash
 source /home/ros2_ws/install/setup.bash

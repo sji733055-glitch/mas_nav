@@ -14,9 +14,26 @@ bash <(wget -qO- https://xuanyuan.cloud/docker.sh)
 sudo usermod -aG docker mas
 ```
 2. 构建容器
+
+镜像只装系统依赖，源码 bind-mount 到 `/home/ros2_ws/src`。新机器第一次：
+
 ```bash
-sudo docker compose up -d --build
+xhost +si:localuser:root
+docker compose up -d --build
+docker exec -it mas_nav bash
 ```
+
+之后日常 `docker compose up -d`，**不要** `--build`。改 C++ / 参数在容器里 colcon。只有改了 `Dockerfile` 才再 `docker compose build`。
+
+另一台机器不想从零装环境时，可把本机 `mas_nav_image:latest` 打成 tar 拷过去：
+
+```bash
+bash scripts/save_nav_image.sh /tmp/mas_nav_image.tar.gz
+# 新机器 clone 仓库后：
+bash scripts/load_nav_image.sh /tmp/mas_nav_image.tar.gz
+docker compose up -d
+```
+
 3. 编译
 ```bash
 rosdep install -r --from-paths src --ignore-src --rosdistro $ROS_DISTRO -y
@@ -41,8 +58,9 @@ xhost +si:localuser:root
 
 ```text
 LIO 绕场 + /map_save
-  → 拷到 mas2027_nav_bringup/pcd/<name>.pcd
-  → 可选 pcd_trans（平移/旋转原点）
+  → T_odom_from_internal 转到 odom（一键脚本默认做）
+  → 写出 mas2027_nav_bringup/pcd/<name>.pcd
+  → 可选 pcd_trans（只平移/旋转场地原点）
   → pcd2pgm（Z 带切片 → OccupancyGrid）
   → map_edit（RViz 擦墙、补洞）
   → 保存 pgm/yaml；把同一份 PCD 指给 odom_localizer
@@ -56,6 +74,33 @@ LIO 绕场 + /map_save
 source /opt/ros/humble/setup.bash
 source /home/ros2_ws/install/setup.bash
 ```
+
+### 一键：保存点云并切二维图
+
+绕场之前把 `mas2027_nav_bringup/config/small_point_lio_params.yaml` 的 `save_pcd` 设成 `true`，只开定位：
+
+```bash
+ros2 launch mas2027_nav_bringup rm_navigation_small_point_lio_launch.py \
+  use_nav2:=False use_rviz:=True use_odom_localizer:=False
+```
+
+绕完两圈，**另开终端**（LIO 继续跑）：
+
+```bash
+bash /home/ros2_ws/src/mas2027_nav_bringup/scripts/save_pcd_and_make_map.sh lab3
+```
+
+会调用 `/map_save`、用它写出的 `scan_T_odom_from_internal.txt` 把内部世界系转到 `/cloud_registered`（odom）再写入 `pcd/lab3.pcd`，然后 `pcd2pgm` + `map_saver_cli` 写出 `map/lab3.{pgm,yaml}`。已有文件会先备份成 `.bak.时间戳`。切片走独立话题 `/pcd2pgm_map`，不和 Nav2 的 `/map` 抢。只要内部世界、不要扶正：加 `--no-align`。
+
+已经有 PCD、只想重切：
+
+```bash
+bash /home/ros2_ws/src/mas2027_nav_bringup/scripts/save_pcd_and_make_map.sh lab3 --from-pcd
+# 挡墙留不住 / 地面太厚：
+#   --z-min 0.05 --z-max 1.5 --resolution 0.05
+```
+
+这一步**会**做扶正（与直播 `/cloud_registered` 同系），**不**开 `map_edit`、也不改 `odom_localizer` / ROG `prior_map` 路径。墙要擦、场地原点要平移、换场地改三处路径，仍用下面分步。用完把 `save_pcd` 改回 `false`。
 
 ### 1. 录 LIO 点云并保存 PCD
 
@@ -79,7 +124,7 @@ cp /home/ros2_ws/src/mas2027_perception/Odometry/small_point_lio/pcd/scan.pcd \
   /home/ros2_ws/src/mas2027_nav_bringup/pcd/lab3.pcd
 ```
 
-现成的 `lab3.pcd` 已经和 `/cloud_registered` 同系。新的 `/map_save` 云在 LIO 内部世界系；若 GICP 锁不上，用下一步 `pcd_trans`。
+现成的 `lab3.pcd` 已经和 `/cloud_registered` 同系。一键脚本写出的 `pcd/<name>.pcd` 也会乘上 `/map_save` 的 `T_odom_from_internal`，不要再乘 `T_base_lidar`。只拷内部世界、不扶正时才加 `--no-align`。
 
 可选录 bag（QoS 必须覆盖，否则点云 0 条）：
 
@@ -91,7 +136,7 @@ ros2 bag info /tmp/lio_lab
 
 ### 2. 点云变换（pcd_trans，可选）
 
-只在原点要对齐场地角、或 `/map_save` 云和 live 点云对不齐时用：
+一键脚本已经用 LIO 的扶正矩阵把先验转到 odom。这里只在**场地原点**要对齐（平移/绕 z 转）时用：
 
 ```bash
 python3 /home/ros2_ws/src/mas2027_utils/pcd_trans/pcd_tool.py --info \
@@ -103,7 +148,7 @@ python3 /home/ros2_ws/src/mas2027_utils/pcd_trans/pcd_tool.py \
   --tx 0 --ty 0 --tz 0 --yaw 0
 ```
 
-浏览器里对齐点云和 PGM：打开 `mas2027_utils/pcd_trans/visual_point_cloud_lab.html`。雷达外参矩阵：`python3 mas2027_utils/rotmat_cal/cal_rotmat.py`。
+浏览器里对齐点云和 PGM：打开 `mas2027_utils/pcd_trans/visual_point_cloud_lab.html`。先选 `map/lab3.yaml` 再选 `lab3.pgm`，点云选 `pcd/lab3.pcd`（压缩 PCD 现在能读）。雷达外参矩阵：`python3 mas2027_utils/rotmat_cal/cal_rotmat.py`。
 
 ### 3. 点云转二维栅格（pcd2pgm）
 
@@ -187,6 +232,23 @@ ros2 launch map_edit map_edit.launch.py
 Nav2 用地图时确认 yaml 里 `image:`、`resolution:`（0.05）、`origin:` 和实际 pgm 一致。
 
 建图时场上有行人，切片会把拖影写成永久墙。空场可直接切；走过通道就在 `map_edit` 里擦掉，不要靠提高 `thre_z_min` 躲人（矮挡墙会一起没）。
+
+### 4b. 在先验图上点航点
+
+`map_edit` 只修墙。航点用 `mas2027_utils/waypoint_editor`（RViz 插件）。导航不要同时开它自带的 `map_server`：
+
+```bash
+ros2 launch waypoint_editor waypoint_editor.launch.py
+```
+
+工具栏 **Add Waypoint**，Save WPs 存 CSV（建议 `mas2027_nav_bringup/config/lab3_patrol.csv`）。跑线：
+
+```bash
+ros2 launch mas2027_nav_bringup waypoint_navigator.launch.py \
+  waypoint_file:=/home/ros2_ws/src/mas2027_nav_bringup/config/lab3_patrol.csv
+```
+
+逐点 `navigate_to_pose`，**不要** `waypoint_to_nav2` / `FollowWaypoints`。导航已经在跑时用默认 RViz 里的 Add Waypoint，先把 Fixed Frame 改成 `map`。详情见 `mas2027_utils/waypoint_editor/README.md`。
 
 ### 5. 接到导航（三处一起改）
 

@@ -3,8 +3,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: dev
       network: host
-    image: mas_nav_image:latest  # 构建后的镜像名称
+      # 环境镜像：不 COPY 源码。不要把 pull 设成 true，会把 desktop-full 拉一遍并打掉缓存。
+      pull: false
+      args:
+        BASE_IMAGE: 5d63i5idjq9rby.xuanyuan.run/osrf/ros:humble-desktop-full
+    image: mas_nav_image:latest  # 开发环境镜像（不含 colcon 产物）
+    pull_policy: never
     container_name: mas_nav      # 固定容器名称，方便 VS Code 查找
     #restart: always              # 开机自启策略
     

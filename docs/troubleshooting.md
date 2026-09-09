@@ -24,6 +24,7 @@ lifecycle 卡在 configuring、到不了 active：通常是 costmap 等 `odom �
 | 有雷达无 `/Odometry` | LIO 日志、URDF TF | `base_link → lidar_link` 还没 lookup 到；IMU 话题名不对 |
 | `/cloud_registered` hz=0 但 LIO 在跑 | QoS | 订阅端用了 reliable；或 keep_last 太大看起来像「有数据」其实全是旧帧 |
 | bag 里点云 0 条 | 录包 QoS | 必须用 `mas2027_nav_bringup/config/qos_mapping.yaml` 覆盖 best_effort |
+| 插了第二台雷达后 LIO 漂 / 整帧被丢 | `is_topic_name_with_lidar_ip`、时间跨度 | 默认 `false` 会把两路点**无外参**拼进同一话题。先 `true` 分话题确认两路 UDP，再按 [dual-lidar.md](dual-lidar.md) 做融合；不要直接喂现有驱动 |
 
 ROG-Map 打 `No odom received, skip cloud callback`：先有 `/Odometry` 再有点云。`Odom timeout`：odom 和点云时间差超过 `odom_timeout`（0.08 s）。
 

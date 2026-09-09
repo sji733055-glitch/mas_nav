@@ -57,6 +57,8 @@ controller_server / FollowPath = MincoMpcController
 
 驱动参数在 `small_point_lio_params.yaml` 的 `mid360_driver` 段。没有 `192.168.1.x` 网卡时驱动绑不上，整条链从这里断。
 
+双雷达目标态仍是这两条话题：两台 MID360 在 `mid360_driver` 里按源 IP 配对、后雷达变到 `lidar_link` 后发出。硬件、PTP、外参与拟改参数见 [dual-lidar.md](dual-lidar.md)。当前代码还没融合；`is_topic_name_with_lidar_ip: false` 时插第二台会把两路点无外参拼进同一发布器。
+
 ## 2. LIO 输出
 
 | 话题 | QoS | 用途 |

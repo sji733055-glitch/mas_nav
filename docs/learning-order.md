@@ -37,8 +37,9 @@
 | `mas2027_perception/Odometry/small_point_lio/src/small_point_lio_node.cpp` | 节点壳：订阅雷达/IMU，发布 `/Odometry`、`/cloud_registered*`、TF `odom→base_link` |
 | `.../small_point_lio/src/small_point_lio/` | 紧耦合 LIO 核心 |
 | `mas2027_robot_description/urdf/mas2027_sentry.urdf` | 车体与雷达安装外参（`lidar_joint`） |
+| [`docs/dual-lidar.md`](dual-lidar.md) | 双雷达目标态：一网口+交换机、PTP、`mid360_driver` 内融合。当前代码仍是单雷达 |
 
-读完应能回答：`/cloud_registered` 在哪个坐标系？（`odom`。）`/Odometry` 的 twist 在哪个轴系？（`base_link`。）
+读完应能回答：`/cloud_registered` 在哪个坐标系？（`odom`。）`/Odometry` 的 twist 在哪个轴系？（`base_link`。）双雷达时 LIO 订的仍是哪两条话题？（`/mid360_driver/lidar` + 前雷达 IMU。）
 
 ### 3. 定位与先验图
 
@@ -103,7 +104,9 @@ Nav2 的 `global_frame` 仍是 `odom`。`map` 帧主要给 ROG-Map 的二维先�
 
 | 路径 | 何时需要 |
 |---|---|
-| `mas2027_nav_bringup/scripts/waypoint_navigator.py` | 多点巡航 |
+| `mas2027_nav_bringup/scripts/save_pcd_and_make_map.sh` | `/map_save` + pcd2pgm 一切出 PGM |
+| `mas2027_nav_bringup/scripts/waypoint_navigator.py` | 多点巡航（可读 waypoint_editor 的 CSV） |
+| `mas2027_utils/waypoint_editor/` | 在先验 PGM 上点航点，存 CSV |
 | `mas2027_nav_bringup/scripts/measure_lidar_mount.py` | 重标雷达安装时 |
 | `mas2027_utils/bt_editor/bt_editor.html` | 改行为树 XML |
 | `mas2027_utils/data_analyzer/scripts/nav2_performance_analyzer.py` | 看规划 vs 实测速度 |
@@ -116,6 +119,6 @@ mas_nav_2027/
 ├── mas2027_perception/       雷达驱动、LIO、ROG-Map、odom_localizer
 ├── mas2027_planner/          MincoPlanner + MincoMpcController
 ├── mas2027_robot_description/  URDF / mesh
-├── mas2027_utils/            fake_vel、ros2_comm、costmap 插件、离线建图、bt_editor、data_analyzer
+├── mas2027_utils/            fake_vel、ros2_comm、costmap 插件、离线建图、waypoint_editor、bt_editor、data_analyzer
 └── third_party/interfaces/   MINCO /opt_path 消息
 ```

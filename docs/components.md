@@ -6,7 +6,7 @@
 
 ### mid360_driver
 
-Livox MID360 的轻量 UDP 驱动。把设备点云和 IMU 变成 ROS 话题 `/mid360_driver/lidar`、`/mid360_driver/imu`。它不做去畸变、不发 TF。雷达 IP / 本机 `host_ip` 配错时，后面全部静音。
+Livox MID360 的轻量 UDP 驱动。把设备点云和 IMU 变成 ROS 话题 `/mid360_driver/lidar`、`/mid360_driver/imu`。它不做去畸变、不发 TF。雷达 IP / 本机 `host_ip` 配错时，后面全部静音。双雷达时融合也放这里（按源 IP 配对 + 后→前外参），不换官方驱动、不搬 HERO 的 merge 节点；详见 [dual-lidar.md](dual-lidar.md)。
 
 ### Small Point-LIO
 

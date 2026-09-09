@@ -14,6 +14,12 @@ find_package(ament_lint_auto REQUIRED)
 
 endif()
 
+install(PROGRAMS
+  scripts/waypoint_navigator.py
+  scripts/save_pcd_and_make_map.sh
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 ament_auto_package(
   INSTALL_TO_SHARE
   launch
