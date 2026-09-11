@@ -11,7 +11,7 @@ public:
   Visualizer() = default;
   ~Visualizer() = default;
 
-  void configure(const nav2_util::LifecycleNode::WeakPtr & parent, const std::string & global_frame);
+  void configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & parent, const std::string & global_frame);
 
   void cleanup();
 
@@ -45,7 +45,7 @@ private:
     int steps,
     double t_step) const;
 
-  nav2_util::LifecycleNode::WeakPtr node_;
+  rclcpp_lifecycle::LifecycleNode::WeakPtr node_;
   std::string global_frame_;
 
   // Visualization publishers

@@ -40,6 +40,7 @@ def generate_launch_description():
                 "use_sim_time": use_sim_time,
                 "autostart": autostart,
                 "yaml_filename": map_yaml_file,
+                "yaml_path": map_yaml_file,
             },
             convert_types=True,
         ),

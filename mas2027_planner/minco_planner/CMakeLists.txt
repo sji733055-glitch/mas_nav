@@ -13,8 +13,8 @@ endif()
 find_package(ament_cmake REQUIRED)
 # backward_ros 只提供崩溃栈回溯的自动注入，没有任何源码用到它的头文件
 # （type_utils.hpp include 的是本包自带的 include/utils/header/backward.hpp）。
-# 上游是 REQUIRED，本仓库改为可选：镜像里没有 ros-humble-backward-ros，
-# 为它加 apt 依赖属于新增 Docker 层，而收益仅是调试期栈回溯。
+# 上游是 REQUIRED，本仓库改为可选：本机默认不装 ros-jazzy-backward-ros，
+# 收益仅是调试期栈回溯，不作为硬依赖。
 find_package(backward_ros QUIET)
 find_package(builtin_interfaces REQUIRED)
 find_package(geometry_msgs REQUIRED)
@@ -32,7 +32,7 @@ find_package(interfaces REQUIRED)
 find_package(rog_map REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(OpenMP REQUIRED)
-find_package(behaviortree_cpp_v3 REQUIRED)
+find_package(behaviortree_cpp REQUIRED)
 
 nav2_package()
 
@@ -115,7 +115,7 @@ add_library(minco_zero_goal_stamp_bt_node SHARED
 )
 target_compile_definitions(minco_zero_goal_stamp_bt_node PRIVATE BT_PLUGIN_EXPORT)
 ament_target_dependencies(minco_zero_goal_stamp_bt_node
-  behaviortree_cpp_v3
+  behaviortree_cpp
   geometry_msgs
 )
 
@@ -124,7 +124,7 @@ add_library(minco_goal_updated_controller_bt_node SHARED
 )
 target_compile_definitions(minco_goal_updated_controller_bt_node PRIVATE BT_PLUGIN_EXPORT)
 ament_target_dependencies(minco_goal_updated_controller_bt_node
-  behaviortree_cpp_v3
+  behaviortree_cpp
   geometry_msgs
 )
 

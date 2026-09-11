@@ -144,12 +144,12 @@ def first_visible(rotation, azimuth_deg, dz, limit=10.0):
 
 
 def find_urdf():
-    """源码树、容器挂载、以及从 install/lib 回退到 /home/ros2_ws/src。"""
+    """源码树，以及从 install/lib 回退到仓库根。"""
     here = os.path.dirname(os.path.abspath(__file__))
     candidates = (
         os.path.join(here, "..", "..", URDF_REL_PATH),
-        os.path.join("/home/ros2_ws/src", URDF_REL_PATH),
-        os.path.join(here, "..", "..", "..", "src", URDF_REL_PATH),
+        os.path.join("/home/mas/mas_nav_2027_native", URDF_REL_PATH),
+        os.path.join(here, "..", "..", "..", URDF_REL_PATH),
     )
     for path in candidates:
         path = os.path.normpath(path)

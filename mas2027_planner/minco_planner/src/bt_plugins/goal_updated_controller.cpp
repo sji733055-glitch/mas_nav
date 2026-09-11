@@ -1,5 +1,5 @@
-#include "behaviortree_cpp_v3/bt_factory.h"
-#include "behaviortree_cpp_v3/decorator_node.h"
+#include "behaviortree_cpp/bt_factory.h"
+#include "behaviortree_cpp/decorator_node.h"
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
 
@@ -16,7 +16,7 @@ namespace minco_planner
 class GoalUpdatedController : public BT::DecoratorNode
 {
 public:
-  GoalUpdatedController(const std::string & name, const BT::NodeConfiguration & config)
+  GoalUpdatedController(const std::string & name, const BT::NodeConfig & config)
   : BT::DecoratorNode(name, config),
     has_goal_port_(config.input_ports.count("goal") != 0),
     has_goals_port_(config.input_ports.count("goals") != 0)

@@ -26,7 +26,7 @@ MincoPlanner::~MincoPlanner()
 }
 
 void MincoPlanner::configureMincoPerfLogging(
-  const nav2_util::LifecycleNode::SharedPtr & node, const std::string & prefix)
+  const rclcpp_lifecycle::LifecycleNode::SharedPtr & node, const std::string & prefix)
 {
   const std::string default_minco_csv_path = "/tmp/minco_perf_detailed.csv";
 
@@ -118,7 +118,7 @@ void MincoPlanner::configureMincoPerfLogging(
 }
 
 bool MincoPlanner::configureRogMap(
-  const nav2_util::LifecycleNode::SharedPtr & node, const std::string & plugin_prefix)
+  const rclcpp_lifecycle::LifecycleNode::SharedPtr & node, const std::string & plugin_prefix)
 {
   if (!node) {
     RCLCPP_ERROR(logger_, "[MincoPlanner] Cannot configure ROGMap without planner_server LifecycleNode.");
@@ -255,7 +255,7 @@ void MincoPlanner::initPlannerMode(
 // 2) Lifecycle management
 // -----------------------------------------------------------------------------
 
-void MincoPlanner::configure(const nav2_util::LifecycleNode::WeakPtr & parent,
+void MincoPlanner::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & parent,
   std::string name,
   std::shared_ptr<tf2_ros::Buffer> tf,
   std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros)
@@ -880,8 +880,11 @@ bool MincoPlanner::normalizePoseToFrame(const geometry_msgs::msg::PoseStamped & 
 }
 
 nav_msgs::msg::Path MincoPlanner::createPlan(
-  const geometry_msgs::msg::PoseStamped & start, const geometry_msgs::msg::PoseStamped & goal)
+  const geometry_msgs::msg::PoseStamped & start,
+  const geometry_msgs::msg::PoseStamped & goal,
+  std::function<bool()> cancel_checker)
 {
+  (void)cancel_checker;
   // Nav2 interface: createPlan() only sets the goal flag for MincoFSM.
   // It must NOT run A* or optimization here.
   nav_msgs::msg::Path path;

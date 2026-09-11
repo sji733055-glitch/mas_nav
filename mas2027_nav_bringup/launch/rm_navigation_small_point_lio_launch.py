@@ -184,8 +184,21 @@ def generate_launch_description():
         emulate_tty=True,
         condition=IfCondition(use_odom_localizer),
         parameters=[
-            os.path.join(
-                get_package_share_directory("odom_localizer"), "config", "params.yaml"
+            ParameterFile(
+                RewrittenYaml(
+                    source_file=os.path.join(
+                        get_package_share_directory("odom_localizer"),
+                        "config",
+                        "params.yaml",
+                    ),
+                    param_rewrites={
+                        "prior_pcd_file": os.path.join(
+                            bringup_dir, "pcd", "lab3.pcd"
+                        ),
+                    },
+                    convert_types=True,
+                ),
+                allow_substs=True,
             )
         ],
     )

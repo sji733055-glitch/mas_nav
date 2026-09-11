@@ -172,7 +172,7 @@ base_link → lidar_link
 bash mas2027_nav_bringup/scripts/measure_lidar_mount.sh
 ```
 
-宿主机或 `mas_nav` 容器里都能跑（宿主机上会 `docker exec` 进容器）。车停水平地面；脚本提示转云台后再动手，底盘刹住、只转云台匀速 1–2 圈。它会分话题起驱动、各雷达各开一个 LIO，先静止测倾角/`gravity`，再自旋测水平偏移，打印 URDF 两个关节、`merge_extrinsic_back_to_front`、`blind_center`。导航栈必须先停（独占雷达 UDP）。只算不改文件。
+在本机 ROS 2 Jazzy 环境下跑。车停水平地面；脚本提示转云台后再动手，底盘刹住、只转云台匀速 1–2 圈。它会分话题起驱动、各雷达各开一个 LIO，先静止测倾角/`gravity`，再自旋测水平偏移，打印 URDF 两个关节、`merge_extrinsic_back_to_front`、`blind_center`。导航栈必须先停（独占雷达 UDP）。只算不改文件。
 
 ### 4.2 后 → 前：只有一份外参
 

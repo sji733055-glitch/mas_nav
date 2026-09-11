@@ -224,7 +224,7 @@ local_costmap:
 map_server:
   ros__parameters:
     use_sim_time: false
-    yaml_filename: /home/ros2_ws/src/mas2027_nav_bringup/map/lab3.yaml
+    yaml_filename: "$(find-pkg-share mas2027_nav_bringup)/map/lab3.yaml"
     topic_name: map
     frame_id: map
 
@@ -483,9 +483,9 @@ planner_server:
             # 全局路径已经改由 map_server + StaticLayer 提供。这里的 prior_map 只给 ROG ESDF
             # 在滑动窗口里加二维硬障碍，不负责 SMAC。frame_id 必须是 map，依赖 odom_localizer 的 map→odom。
             enable: true
-            yaml_path: "/home/ros2_ws/src/mas2027_nav_bringup/map/lab3.yaml"
+            yaml_path: "$(find-pkg-share mas2027_nav_bringup)/map/lab3.yaml"
             # 留空时使用 YAML 的 image 字段，并相对 YAML 所在目录解析。
-            pgm_path: "/home/ros2_ws/src/mas2027_nav_bringup/map/lab3.pgm"
+            pgm_path: ""
             frame_id: map
 
           # 相对 /Odometry z 的偏移（scan_z_relative_to_robot: true）。

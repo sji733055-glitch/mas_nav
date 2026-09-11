@@ -12,7 +12,7 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-保存 LIO 点云并切成 Nav2 二维占用图。在 mas_nav 容器里跑，工作目录不限。
+保存 LIO 点云并切成 Nav2 二维占用图。在本机 ROS 2 Jazzy 环境下跑，工作目录不限。
 
 用法:
   bash save_pcd_and_make_map.sh [NAME] [选项]
@@ -105,12 +105,8 @@ resolve_bringup() {
     cd "${script_dir}/.." && pwd
     return
   fi
-  if [[ -d /home/ros2_ws/src/mas2027_nav_bringup ]]; then
-    echo /home/ros2_ws/src/mas2027_nav_bringup
-    return
-  fi
-  if [[ -d /home/mas/mas_nav_2027/mas2027_nav_bringup ]]; then
-    echo /home/mas/mas_nav_2027/mas2027_nav_bringup
+  if [[ -d /home/mas/mas_nav_2027_native/mas2027_nav_bringup ]]; then
+    echo /home/mas/mas_nav_2027_native/mas2027_nav_bringup
     return
   fi
   echo "找不到 mas2027_nav_bringup（pcd/ 与 map/）" >&2
@@ -131,8 +127,8 @@ resolve_pcd_tool() {
     echo "${REPO}/mas2027_utils/pcd_trans/pcd_tool.py"
     return
   fi
-  if [[ -f /home/ros2_ws/src/mas2027_utils/pcd_trans/pcd_tool.py ]]; then
-    echo /home/ros2_ws/src/mas2027_utils/pcd_trans/pcd_tool.py
+  if [[ -f /home/mas/mas_nav_2027_native/mas2027_utils/pcd_trans/pcd_tool.py ]]; then
+    echo /home/mas/mas_nav_2027_native/mas2027_utils/pcd_trans/pcd_tool.py
     return
   fi
   echo "找不到 pcd_trans/pcd_tool.py" >&2
@@ -156,17 +152,14 @@ source_ros() {
   fi
   set +u
   # shellcheck disable=SC1091
-  source /opt/ros/humble/setup.bash
-  if [[ -f /home/ros2_ws/install/setup.bash ]]; then
-    # shellcheck disable=SC1091
-    source /home/ros2_ws/install/setup.bash
-  elif [[ -f "${REPO}/install/setup.bash" ]]; then
+  source /opt/ros/jazzy/setup.bash
+  if [[ -f "${REPO}/install/setup.bash" ]]; then
     # shellcheck disable=SC1091
     source "${REPO}/install/setup.bash"
   fi
   set -u
   if ! command -v ros2 >/dev/null 2>&1; then
-    echo "ros2 不在 PATH 里。先 source /opt/ros/humble 和 overlay。" >&2
+    echo "ros2 不在 PATH 里。先 source /opt/ros/jazzy 和 overlay。" >&2
     exit 2
   fi
 }

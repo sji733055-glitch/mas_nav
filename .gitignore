@@ -2,8 +2,7 @@
 __pycache__/
 *.pyc
 
-# colcon 构建产物。本仓库正常在容器的 /home/ros2_ws 下构建，产物不在仓库内，
-# 这几条是防止有人直接在仓库目录里 colcon build 时把产物提交上来。
+# colcon 构建产物。本仓库在宿主机 ROS 2 Jazzy 下直接 colcon，产物不要提交。
 build/
 install/
 log/

@@ -3,48 +3,75 @@
 在线导航的学习文档（数据链路、TF、组件原理、读代码顺序、排查）见 [`docs/README.md`](docs/README.md)。
 
 # 开发环境配置
-1. docker 安装
-```bash
-// docker 安装脚本
-export DOWNLOAD_URL="https://mirrors.tuna.tsinghua.edu.cn/docker-ce"
-wget -O- https://raw.githubusercontent.com/docker/docker-install/master/install.sh | sh
-// 更换为国内docker镜像源
-bash <(wget -qO- https://xuanyuan.cloud/docker.sh)
-// 权限处理
-sudo usermod -aG docker mas
-```
-2. 构建容器
 
-镜像只装系统依赖，源码 bind-mount 到 `/home/ros2_ws/src`。新机器第一次：
+本仓库在 **Ubuntu 24.04 + ROS 2 Jazzy** 上原生编译运行，不再走 Docker。
+
+## 环境配置
+
+### 1. 安装 ROS 2 Jazzy 基础环境
+
+如果系统还没有 ROS 2 Jazzy，先按照官方文档安装 `ros-jazzy-desktop`，然后确认以下文件存在：
 
 ```bash
-xhost +si:localuser:root
-docker compose up -d --build
-docker exec -it mas_nav bash
+test -f /opt/ros/jazzy/setup.bash
 ```
 
-之后日常 `docker compose up -d`，**不要** `--build`。改 C++ / 参数在容器里 colcon。只有改了 `Dockerfile` 才再 `docker compose build`。
-
-另一台机器不想从零装环境时，可把本机 `mas_nav_image:latest` 打成 tar 拷过去：
+每个新终端先加载 ROS 环境：
 
 ```bash
-bash scripts/save_nav_image.sh /tmp/mas_nav_image.tar.gz
-# 新机器 clone 仓库后：
-bash scripts/load_nav_image.sh /tmp/mas_nav_image.tar.gz
-docker compose up -d
+source /opt/ros/jazzy/setup.bash
+export ROS_DOMAIN_ID=0
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 ```
 
-3. 编译
+### 2. 安装工程依赖
+
+需要本机 sudo 密码：
+
 ```bash
-rosdep install -r --from-paths src --ignore-src --rosdistro $ROS_DISTRO -y
+sudo apt-get update
+sudo apt-get install -y --no-install-recommends \
+  ros-jazzy-navigation2 \
+  ros-jazzy-nav2-bringup \
+  ros-jazzy-behaviortree-cpp \
+  ros-jazzy-rmw-cyclonedds-cpp \
+  libdw-dev \
+  libomp-dev \
+  python3-pip
+```
+
+本机已有 `ros-jazzy-desktop` 时，上面只补 Nav2 / BT.CPP / CycloneDDS / 编译库。
+
+### 3. 初始化 rosdep
+
+新机器只需要执行一次。若 `rosdep init` 提示已经初始化，直接执行 `rosdep update` 即可：
+
+```bash
+sudo rosdep init
+rosdep update
+```
+
+### 4. 编译工作区
+
+仓库根目录就是 colcon 工作区，源码位于 `src/`，构建产物位于根目录的 `build/`、`install/` 和 `log/`：
+
+```bash
+cd /home/mas/mas_nav_2027_native
+source /opt/ros/jazzy/setup.bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+rosdep install -r --from-paths src --ignore-src --rosdistro jazzy -y
 colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON --parallel-workers 4
+source install/setup.bash
 ```
 
 离线建图工具在 `mas2027_utils/`（`pcd2pgm`、`pcd2ele`、`pcd2esdf`、`pcd_trans`），随 colcon 一起编。行为树编辑器是 `mas2027_utils/bt_editor/bt_editor.html`（浏览器打开，导入 `mas2027_nav_bringup/behavior_trees/*.xml`）。跟踪对照是 `mas2027_utils/data_analyzer/`，不进主 launch。
 
-4. 在宿主机内使用解决X11授权
+### 5. 运行
+
 ```bash
-xhost +si:localuser:root
+source /opt/ros/jazzy/setup.bash
+source /home/mas/mas_nav_2027_native/install/setup.bash
+ros2 launch mas2027_nav_bringup rm_navigation_small_point_lio_launch.py
 ```
 
 ## 离线静态地图：点云 → 2D 栅格 + 3D 先验
@@ -68,11 +95,11 @@ LIO 绕场 + /map_save
 
 可选：`pcd2ele` 出高程灰度（**不能**当 Nav2 占用图）；`pcd2esdf` 从 PGM 烘焙 2D 距离场（运行时 MINCO 仍用 ROG 在线 ESDF）。
 
-下面命令都在 **mas_nav 容器**里、工作目录 `/home/ros2_ws`。
+下面命令都在 **仓库根目录**，先 source overlay。
 
 ```bash
-source /opt/ros/humble/setup.bash
-source /home/ros2_ws/install/setup.bash
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
 ```
 
 ### 一键：保存点云并切二维图
@@ -87,7 +114,7 @@ ros2 launch mas2027_nav_bringup rm_navigation_small_point_lio_launch.py \
 绕完两圈，**另开终端**（LIO 继续跑）：
 
 ```bash
-bash /home/ros2_ws/src/mas2027_nav_bringup/scripts/save_pcd_and_make_map.sh lab3
+bash mas2027_nav_bringup/scripts/save_pcd_and_make_map.sh lab3
 ```
 
 会调用 `/map_save`、用它写出的 `scan_T_odom_from_internal.txt` 把内部世界系转到 `/cloud_registered`（odom）再写入 `pcd/lab3.pcd`，然后 `pcd2pgm` + `map_saver_cli` 写出 `map/lab3.{pgm,yaml}`。已有文件会先备份成 `.bak.时间戳`。切片走独立话题 `/pcd2pgm_map`，不和 Nav2 的 `/map` 抢。只要内部世界、不要扶正：加 `--no-align`。
@@ -95,7 +122,7 @@ bash /home/ros2_ws/src/mas2027_nav_bringup/scripts/save_pcd_and_make_map.sh lab3
 已经有 PCD、只想重切：
 
 ```bash
-bash /home/ros2_ws/src/mas2027_nav_bringup/scripts/save_pcd_and_make_map.sh lab3 --from-pcd
+bash mas2027_nav_bringup/scripts/save_pcd_and_make_map.sh lab3 --from-pcd
 # 挡墙留不住 / 地面太厚：
 #   --z-min 0.05 --z-max 1.5 --resolution 0.05
 ```
@@ -120,8 +147,8 @@ ros2 service call /map_save std_srvs/srv/Trigger
 写出 `mas2027_perception/Odometry/small_point_lio/pcd/scan.pcd`。拷到 bringup 并改名（换场地就把 `lab3` 换成场地名）：
 
 ```bash
-cp /home/ros2_ws/src/mas2027_perception/Odometry/small_point_lio/pcd/scan.pcd \
-  /home/ros2_ws/src/mas2027_nav_bringup/pcd/lab3.pcd
+cp mas2027_perception/Odometry/small_point_lio/pcd/scan.pcd \
+  mas2027_nav_bringup/pcd/lab3.pcd
 ```
 
 现成的 `lab3.pcd` 已经和 `/cloud_registered` 同系。一键脚本写出的 `pcd/<name>.pcd` 也会乘上 `/map_save` 的 `T_odom_from_internal`，不要再乘 `T_base_lidar`。只拷内部世界、不扶正时才加 `--no-align`。
@@ -129,7 +156,7 @@ cp /home/ros2_ws/src/mas2027_perception/Odometry/small_point_lio/pcd/scan.pcd \
 可选录 bag（QoS 必须覆盖，否则点云 0 条）：
 
 ```bash
-bash /home/ros2_ws/src/mas2027_nav_bringup/scripts/record_lio_bag.sh \
+bash mas2027_nav_bringup/scripts/record_lio_bag.sh \
   /tmp/lio_lab
 ros2 bag info /tmp/lio_lab
 ```
@@ -139,12 +166,12 @@ ros2 bag info /tmp/lio_lab
 一键脚本已经用 LIO 的扶正矩阵把先验转到 odom。这里只在**场地原点**要对齐（平移/绕 z 转）时用：
 
 ```bash
-python3 /home/ros2_ws/src/mas2027_utils/pcd_trans/pcd_tool.py --info \
-  --in /home/ros2_ws/src/mas2027_nav_bringup/pcd/lab3.pcd
+python3 mas2027_utils/pcd_trans/pcd_tool.py --info \
+  --in mas2027_nav_bringup/pcd/lab3.pcd
 
-python3 /home/ros2_ws/src/mas2027_utils/pcd_trans/pcd_tool.py \
-  --in /home/ros2_ws/src/mas2027_nav_bringup/pcd/lab3.pcd \
-  --out /home/ros2_ws/src/mas2027_nav_bringup/pcd/lab3.pcd \
+python3 mas2027_utils/pcd_trans/pcd_tool.py \
+  --in mas2027_nav_bringup/pcd/lab3.pcd \
+  --out mas2027_nav_bringup/pcd/lab3.pcd \
   --tx 0 --ty 0 --tz 0 --yaw 0
 ```
 
@@ -157,7 +184,7 @@ python3 /home/ros2_ws/src/mas2027_utils/pcd_trans/pcd_tool.py \
 ```yaml
 /pcd2pgm:
   ros__parameters:
-    file_directory: /home/ros2_ws/src/mas2027_nav_bringup/pcd/
+    file_directory: mas2027_nav_bringup/pcd/
     file_name: lab3
     flag_pass_through: false   # false = 保留 [thre_z_min, thre_z_max] 之间的点
     map_resolution: 0.05       # 与现有 Nav2 地图一致
@@ -180,7 +207,7 @@ ros2 launch pcd2pgm pcd2pgm.launch.py
 ```bash
 ros2 run pcd2pgm pcd2pgm_node --ros-args \
   -p use_sim_time:=false \
-  -p file_directory:=/home/ros2_ws/src/mas2027_nav_bringup/pcd/ \
+  -p file_directory:=mas2027_nav_bringup/pcd/ \
   -p file_name:=lab3 \
   -p map_topic_name:=map \
   -p map_resolution:=0.05 \
@@ -193,7 +220,7 @@ ros2 run pcd2pgm pcd2pgm_node --ros-args \
 
 ```bash
 ros2 run nav2_map_server map_saver_cli \
-  -f /home/ros2_ws/src/mas2027_nav_bringup/map/lab3
+  -f mas2027_nav_bringup/map/lab3
 ```
 
 会生成 `lab3.pgm` + `lab3.yaml`。
@@ -225,8 +252,8 @@ ros2 launch map_edit map_edit.launch.py
 建议保存回：
 
 ```text
-/home/ros2_ws/src/mas2027_nav_bringup/map/lab3.pgm
-/home/ros2_ws/src/mas2027_nav_bringup/map/lab3.yaml
+mas2027_nav_bringup/map/lab3.pgm
+mas2027_nav_bringup/map/lab3.yaml
 ```
 
 Nav2 用地图时确认 yaml 里 `image:`、`resolution:`（0.05）、`origin:` 和实际 pgm 一致。
@@ -245,7 +272,7 @@ ros2 launch waypoint_editor waypoint_editor.launch.py
 
 ```bash
 ros2 launch mas2027_nav_bringup waypoint_navigator.launch.py \
-  waypoint_file:=/home/ros2_ws/src/mas2027_nav_bringup/config/lab3_patrol.csv
+  waypoint_file:=mas2027_nav_bringup/config/lab3_patrol.csv
 ```
 
 逐点 `navigate_to_pose`，**不要** `waypoint_to_nav2` / `FollowWaypoints`。导航已经在跑时用默认 RViz 里的 Add Waypoint，先把 Fixed Frame 改成 `map`。详情见 `mas2027_utils/waypoint_editor/README.md`。
@@ -281,5 +308,4 @@ ros2 launch pcd2esdf pcd2esdf.launch.py
 ```
 
 默认读 `map/lab3.yaml`，写出 `pcd/lab3_esdf.pcd`，并往 `/esdf_result` 发一份。
-
 

@@ -9,7 +9,7 @@
 
 namespace minco_planner {
 
-void Visualizer::configure(const nav2_util::LifecycleNode::WeakPtr & parent, const std::string & global_frame)
+void Visualizer::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & parent, const std::string & global_frame)
 {
   node_ = parent;
   global_frame_ = global_frame;

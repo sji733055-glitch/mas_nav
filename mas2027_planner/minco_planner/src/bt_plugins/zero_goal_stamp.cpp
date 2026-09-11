@@ -1,5 +1,5 @@
-#include "behaviortree_cpp_v3/bt_factory.h"
-#include "behaviortree_cpp_v3/action_node.h"
+#include "behaviortree_cpp/bt_factory.h"
+#include "behaviortree_cpp/action_node.h"
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
 
@@ -16,7 +16,7 @@ namespace minco_planner
 class ZeroGoalStamp : public BT::SyncActionNode
 {
 public:
-  ZeroGoalStamp(const std::string & name, const BT::NodeConfiguration & config)
+  ZeroGoalStamp(const std::string & name, const BT::NodeConfig & config)
   : BT::SyncActionNode(name, config)
   {
   }

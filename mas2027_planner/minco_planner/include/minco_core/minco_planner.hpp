@@ -24,7 +24,7 @@ public:
   MincoPlanner();
   ~MincoPlanner();
 
-  void configure(const nav2_util::LifecycleNode::WeakPtr & parent,
+  void configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & parent,
     std::string name,
     std::shared_ptr<tf2_ros::Buffer> tf,
     std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros) override;
@@ -34,7 +34,9 @@ public:
 
   // === Core Planning Interfaces ===
   nav_msgs::msg::Path createPlan(
-    const geometry_msgs::msg::PoseStamped & start, const geometry_msgs::msg::PoseStamped & goal) override;
+    const geometry_msgs::msg::PoseStamped & start,
+    const geometry_msgs::msg::PoseStamped & goal,
+    std::function<bool()> cancel_checker) override;
 
   bool PlanGlobalPath(
     const geometry_msgs::msg::PoseStamped & start, const geometry_msgs::msg::PoseStamped & goal);
@@ -130,11 +132,11 @@ private:
   rcl_interfaces::msg::SetParametersResult onSetParameters(
     const std::vector<rclcpp::Parameter> & parameters);
 
-  bool configureRogMap(const nav2_util::LifecycleNode::SharedPtr & node, const std::string & plugin_prefix);
+  bool configureRogMap(const rclcpp_lifecycle::LifecycleNode::SharedPtr & node, const std::string & plugin_prefix);
 
   bool ensureMapAvailable();
   void rebuildModeDependentQueries();
-  void configureMincoPerfLogging(const nav2_util::LifecycleNode::SharedPtr & node, const std::string & prefix);
+  void configureMincoPerfLogging(const rclcpp_lifecycle::LifecycleNode::SharedPtr & node, const std::string & prefix);
 
   void initPlannerMode(
     const std::string & planner_mode_param, const std::string & map_frame, const std::string & rog_frame);
@@ -154,7 +156,7 @@ private:
 
   // === TF & Costmap & Frames ===
   std::shared_ptr<tf2_ros::Buffer> tf_;
-  nav2_util::LifecycleNode::WeakPtr node_;
+  rclcpp_lifecycle::LifecycleNode::WeakPtr node_;
   std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros_;
   std::shared_ptr<rog_map::MapQueryInterface> map_;
   std::shared_ptr<rog_map::MapQueryInterface> rog_query_raw_;
