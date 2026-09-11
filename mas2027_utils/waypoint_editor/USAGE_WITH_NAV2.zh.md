@@ -2,11 +2,11 @@
 
 点航点用 `ros2 launch waypoint_editor waypoint_editor.launch.py`（默认 `lab3.yaml`）。
 
-**不要**用 `waypoint_to_nav2`（`FollowWaypoints`，Humble 无单点超时）或 `waypoint_through_nav2`（`NavigateThroughPoses`）。把 CSV 交给 `waypoint_navigator.py`：
+重复的 `waypoint_to_nav2` / `waypoint_through_nav2` 动作客户端已删除。把 CSV 统一交给主导航的 `waypoint_navigator.py`：
 
 ```bash
 ros2 launch mas2027_nav_bringup waypoint_navigator.launch.py \
   waypoint_file:=/path/to/lab3_patrol.csv
 ```
 
-导航已经在跑时，用默认 RViz 里的 Add Waypoint，不要再起第二份 `map_server`。完整说明见 [README.md](README.md)。
+导航已经在跑时，单独启动编辑器并传入 `use_map_server:=false`；主导航 RViz 不再加载编辑器插件。完整说明见 [README.md](README.md)。

@@ -30,6 +30,9 @@ def generate_launch_description():
     # Get the launch directory
     bringup_dir = get_package_share_directory("mas2027_nav_bringup")
     launch_dir = os.path.join(bringup_dir, "launch")
+    system_first_library_path = os.pathsep.join(
+        ["/lib/x86_64-linux-gnu", os.environ.get("LD_LIBRARY_PATH", "")]
+    )
 
     # Create the launch configuration variables、
     namespace = LaunchConfiguration("namespace")
@@ -182,6 +185,7 @@ def generate_launch_description():
         name="odom_localizer",
         output="screen",
         emulate_tty=True,
+        additional_env={"LD_LIBRARY_PATH": system_first_library_path},
         condition=IfCondition(use_odom_localizer),
         parameters=[
             ParameterFile(

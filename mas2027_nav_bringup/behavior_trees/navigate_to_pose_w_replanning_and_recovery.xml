@@ -6,7 +6,7 @@
                   number_of_retries="20">
       <!-- Minco replans locally at 20 Hz. Compute the Nav2 seed once, and
            restart this child only when RViz supplies a different goal. -->
-      <GoalUpdatedController goal="{goal}">
+      <MincoGoalUpdatedController goal="{goal}">
         <Sequence name="ComputeAndFollow">
           <ZeroGoalStamp goal="{goal}"/>
           <RecoveryNode name="ComputePathToPose"
@@ -25,7 +25,7 @@
                                 service_name="local_costmap/clear_entirely_local_costmap"/>
           </RecoveryNode>
         </Sequence>
-      </GoalUpdatedController>
+      </MincoGoalUpdatedController>
       <ReactiveFallback name="RecoveryFallback">
         <GoalUpdated/>
           <Sequence name="RecoveryActions">

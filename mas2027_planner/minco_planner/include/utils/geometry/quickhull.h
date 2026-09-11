@@ -15,6 +15,7 @@
 #include <unordered_map>
 #include <fstream>
 #include <cassert>
+#include <cstdint>
 
 namespace geometry_utils {
 
@@ -25,7 +26,7 @@ namespace geometry_utils {
     public:
         Vector3() = default;
 
-        Vector3(const T &x, const T &y, const T &z) : x(x), y(y), z(z) {}
+        Vector3(const T &x_, const T &y_, const T &z_) : x(x_), y(y_), z(z_) {}
 
         T x, y, z;
 

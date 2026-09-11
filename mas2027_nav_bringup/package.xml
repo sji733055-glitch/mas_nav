@@ -30,7 +30,6 @@
   <exec_depend>fake_vel_transform</exec_depend>
   <exec_depend>ros2_comm</exec_depend>
   <exec_depend>rviz2</exec_depend>
-  <exec_depend>waypoint_editor</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

@@ -2,7 +2,7 @@
 
 从上游 `navi_minco_bit/src/utils/bt_editor/bt_editor.html` 搬来的浏览器行为树编辑器。不进主 launch，也不依赖 Groot。
 
-本仓库的树在 `mas2027_nav_bringup/behavior_trees/`。编辑器已经认识 Nav2 / MINCO 节点（`RecoveryNode`、`ComputePathToPose`、`FollowPath`、`ZeroGoalStamp`、`GoalUpdatedController` 等），导出带 `BTCPP_format="3"`。
+本仓库的树在 `mas2027_nav_bringup/behavior_trees/`。编辑器已经认识 Nav2 / MINCO 节点（`RecoveryNode`、`ComputePathToPose`、`FollowPath`、`ZeroGoalStamp`、`MincoGoalUpdatedController` 等），导出带 `BTCPP_format="3"`。
 
 ## 用法
 

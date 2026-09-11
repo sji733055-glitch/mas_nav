@@ -2,11 +2,11 @@
 
 Place waypoints with `ros2 launch waypoint_editor waypoint_editor.launch.py` (defaults to `lab3.yaml`).
 
-Do **not** use `waypoint_to_nav2` (`FollowWaypoints`) or `waypoint_through_nav2` (`NavigateThroughPoses`). Feed the CSV to `waypoint_navigator.py`:
+The redundant `waypoint_to_nav2` and `waypoint_through_nav2` clients have been removed. Feed the CSV to the main stack's `waypoint_navigator.py`:
 
 ```bash
 ros2 launch mas2027_nav_bringup waypoint_navigator.launch.py \
   waypoint_file:=/path/to/lab3_patrol.csv
 ```
 
-If Nav2 is already running, use Add Waypoint in the default RViz config. Do not start a second `map_server`. See [README.md](README.md).
+If Nav2 is already running, start the standalone editor with `use_map_server:=false`; the main RViz intentionally does not load editor plugins. See [README.md](README.md).

@@ -275,7 +275,7 @@ ros2 launch mas2027_nav_bringup waypoint_navigator.launch.py \
   waypoint_file:=mas2027_nav_bringup/config/lab3_patrol.csv
 ```
 
-逐点 `navigate_to_pose`，**不要** `waypoint_to_nav2` / `FollowWaypoints`。导航已经在跑时用默认 RViz 里的 Add Waypoint，先把 Fixed Frame 改成 `map`。详情见 `mas2027_utils/waypoint_editor/README.md`。
+逐点 `navigate_to_pose`；重复的 `waypoint_to_nav2` / `waypoint_through_nav2` 已删除。主导航 RViz 不加载编辑器，在线编辑需另启 `waypoint_editor.launch.py use_map_server:=false`。详情见 `mas2027_utils/waypoint_editor/README.md`。
 
 ### 5. 接到导航（三处一起改）
 
@@ -308,4 +308,3 @@ ros2 launch pcd2esdf pcd2esdf.launch.py
 ```
 
 默认读 `map/lab3.yaml`，写出 `pcd/lab3_esdf.pcd`，并往 `/esdf_result` 发一份。
-

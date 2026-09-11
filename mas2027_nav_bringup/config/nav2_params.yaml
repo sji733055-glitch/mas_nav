@@ -24,22 +24,10 @@ bt_navigator:
     default_nav_to_pose_bt_xml: $(find-pkg-share mas2027_nav_bringup)/behavior_trees/navigate_to_pose_w_replanning_and_recovery.xml
     # 多目标点连续导航行为树：失败时重规划并触发恢复行为
     default_nav_through_poses_bt_xml: $(find-pkg-share mas2027_nav_bringup)/behavior_trees/navigate_through_poses_w_replanning_and_recovery.xml
-    plugin_lib_names:                                   # 行为树 XML 用到的节点插件库，缺项会导致行为树加载失败
-      - nav2_compute_path_to_pose_action_bt_node        # 单点路径规划
-      - nav2_compute_path_through_poses_action_bt_node  # 多点路径规划
-      - nav2_follow_path_action_bt_node                 # 路径跟踪
-      - nav2_back_up_action_bt_node                     # 后退恢复
-      - nav2_wait_action_bt_node                        # 等待恢复
-      - nav2_clear_costmap_service_bt_node              # 清空代价地图恢复
-      - nav2_goal_updated_condition_bt_node             # 判断目标点是否被更新
-      - nav2_rate_controller_bt_node                    # 限制子树执行频率
-      - nav2_recovery_node_bt_node                      # 恢复行为循环控制
-      - nav2_pipeline_sequence_bt_node                  # 流水线顺序执行
-      - nav2_remove_passed_goals_action_bt_node         # 剔除已通过的目标点
-      - nav2_navigate_to_pose_action_bt_node            # 单点导航入口
-      - nav2_navigate_through_poses_action_bt_node      # 多点导航入口
+    # Jazzy 会自动加载 Nav2 自带的 BT 节点；这里只列项目自定义插件，避免重复注册。
+    plugin_lib_names:
       - minco_zero_goal_stamp_bt_node                   # 把目标 stamp 置 0，避免 10s TF 缓存过期
-      - minco_goal_updated_controller_bt_node            # 新目标抢占 FollowPath 并重新计算一次
+      - minco_goal_updated_controller_bt_node           # 新目标抢占 FollowPath 并重新计算一次
 
 # 行为树内部使用的 rclcpp 节点（承载 action 客户端）
 bt_navigator_navigate_to_pose_rclcpp_node:
@@ -623,9 +611,9 @@ behavior_server:
     cycle_frequency: 10.0                  # 恢复行为执行频率，单位 Hz
     behavior_plugins: [backup, wait]
     backup:
-      plugin: nav2_behaviors/BackUp        # 沿 -x 后退一段距离
+      plugin: nav2_behaviors::BackUp       # 沿 -x 后退一段距离
     wait:
-      plugin: nav2_behaviors/Wait          # 原地等待，等动态障碍离开
+      plugin: nav2_behaviors::Wait         # 原地等待，等动态障碍离开
     global_frame: odom
     robot_base_frame: base_link_fake
     transform_tolerance: 0.3               # TF 允许的最大滞后，单位秒
@@ -658,4 +646,3 @@ velocity_smoother:
     odom_duration: 0.1                     # 里程计反馈缓存时长，单位秒，仅 CLOSED_LOOP 使用
     deadband_velocity: [0.0, 0.0, 0.0]     # 输出死区，低于该值直接归零，用于抑制底盘抖动
     velocity_timeout: 0.5                  # 超过该时间未收到新指令则输出零速，单位秒
-

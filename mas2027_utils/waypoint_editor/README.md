@@ -2,7 +2,7 @@
 
 在先验 2D 图（`map` 系）上点、拖、转航点，保存为 CSV。来源：[kzm784/waypoint_editor](https://github.com/kzm784/waypoint_editor)（Apache-2.0），本仓库默认图改成 `lab3.yaml`。
 
-**跑车不要用本包自带的 `waypoint_to_nav2` / `waypoint_through_nav2`。** 前者走 Humble `FollowWaypoints`（没有单点超时），后者走 `NavigateThroughPoses`。本仓库巡逻用 `waypoint_navigator.py`，逐点发 `navigate_to_pose` → MincoPlanner。
+重复实现 Nav2 动作客户端的 `waypoint_to_nav2` / `waypoint_through_nav2` 已删除。本仓库巡逻统一使用主导航的 `waypoint_navigator.py`，逐点发送 `navigate_to_pose` → MincoPlanner。
 
 ## 离线点航点（导航不要同时开）
 
@@ -26,7 +26,13 @@ CSV 列：`id,pose_x,pose_y,pose_z,rot_x,rot_y,rot_z,rot_w,command,...`
 
 ## 导航已经在跑
 
-不要再 launch 这份带 `map_server` 的文件。默认导航 RViz（`nav2_default_view.rviz`）已经挂了面板和 **Add Waypoint** 工具。`/map` 用 Nav2 那份。选 Interact 才能拖已放的点。
+主导航 RViz 不加载航点编辑器。确需在线编辑时，另开编辑器并复用 Nav2 的 `/map`：
+
+```bash
+ros2 launch waypoint_editor waypoint_editor.launch.py use_map_server:=false
+```
+
+选 Interact 才能拖已放的点。
 
 点航点前把 Fixed Frame 改成 **map**（默认视图是 `odom`）。插件把点击坐标直接标成 `map`，Fixed Frame 留在 `odom` 上存下去会偏。
 

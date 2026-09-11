@@ -20,6 +20,9 @@ from nav2_common.launch import RewrittenYaml
 
 def generate_launch_description():
     bringup_dir = get_package_share_directory("mas2027_nav_bringup")
+    system_first_library_path = os.pathsep.join(
+        ["/lib/x86_64-linux-gnu", os.environ.get("LD_LIBRARY_PATH", "")]
+    )
 
     namespace = LaunchConfiguration("namespace")
     use_sim_time = LaunchConfiguration("use_sim_time")
@@ -179,6 +182,7 @@ def generate_launch_description():
         arguments=nav_arguments,
         remappings=tf_remappings,
         additional_env={
+            "LD_LIBRARY_PATH": system_first_library_path,
             # ROG/ESDF 小规模热点开宽 OpenMP team 会把 fork/join 拖到调度延迟上。
             # 2 线程是这台 20 核机器上 EDT 的实测最优点（4 线程反而到 21 ms）。
             "OMP_NUM_THREADS": "2",

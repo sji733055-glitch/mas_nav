@@ -4,7 +4,7 @@
   <BehaviorTree ID="MainTree">
     <RecoveryNode name="NavigateRecovery"
                   number_of_retries="10">
-      <GoalUpdatedController goals="{goals}">
+      <MincoGoalUpdatedController goals="{goals}">
         <Sequence name="ComputeAndFollow">
           <ZeroGoalStamp goals="{goals}"/>
           <RecoveryNode name="ComputePathThroughPoses"
@@ -28,7 +28,7 @@
                                 service_name="local_costmap/clear_entirely_local_costmap"/>
           </RecoveryNode>
         </Sequence>
-      </GoalUpdatedController>
+      </MincoGoalUpdatedController>
       <ReactiveFallback name="RecoveryFallback">
         <GoalUpdated/>
           <Sequence name="RecoveryActions">

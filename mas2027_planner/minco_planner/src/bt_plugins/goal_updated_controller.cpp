@@ -108,5 +108,5 @@ private:
 
 BT_REGISTER_NODES(factory)
 {
-  factory.registerNodeType<minco_planner::GoalUpdatedController>("GoalUpdatedController");
+  factory.registerNodeType<minco_planner::GoalUpdatedController>("MincoGoalUpdatedController");
 }

@@ -7,7 +7,6 @@ if(CMAKE_COMPILER_ID MATCHES "Clang|GNU")
   set(CMAKE_CXX_EXTENSIONS OFF) # 禁用编译器扩展
   add_compile_options(-Wall -Wextra -Wpedantic)
   set(CMAKE_BUILD_TYPE "Release")
-  add_compile_options(-Werror -Wno-error=unused-variable -Wno-error=unused-parameter)
 endif()
 
 find_package(ament_cmake REQUIRED)
@@ -35,6 +34,9 @@ find_package(OpenMP REQUIRED)
 find_package(behaviortree_cpp REQUIRED)
 
 nav2_package()
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+  add_compile_options(-Wno-error)
+endif()
 
 set(library_name minco_planner)
 

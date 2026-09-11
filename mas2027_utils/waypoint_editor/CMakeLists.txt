@@ -7,7 +7,6 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
-find_package(rclcpp_action REQUIRED)
 find_package(rviz_common REQUIRED)
 find_package(rviz_default_plugins REQUIRED)
 find_package(pluginlib REQUIRED)
@@ -89,7 +88,7 @@ install(
   DESTINATION share/${PROJECT_NAME}
 )
 
-install(DIRECTORY launch rviz data
+install(DIRECTORY launch rviz
   DESTINATION share/${PROJECT_NAME}
 )
 
@@ -105,32 +104,6 @@ ament_export_dependencies(
   std_srvs
   std_msgs
   nav2_msgs
-)
-
-# Build waypoint_to_nav2 node (follow waypoints - stop at each)
-add_executable(waypoint_to_nav2 src/waypoint_to_nav2.cpp)
-
-ament_target_dependencies(waypoint_to_nav2
-  rclcpp
-  rclcpp_action
-  nav2_msgs
-  geometry_msgs
-  std_srvs
-)
-
-# Build waypoint_through_nav2 node (navigate through poses - no stop)
-add_executable(waypoint_through_nav2 src/waypoint_through_nav2.cpp)
-
-ament_target_dependencies(waypoint_through_nav2
-  rclcpp
-  rclcpp_action
-  nav2_msgs
-  geometry_msgs
-  std_srvs
-)
-
-install(TARGETS waypoint_to_nav2 waypoint_through_nav2
-  DESTINATION lib/${PROJECT_NAME}
 )
 
 ament_package()
