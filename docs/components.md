@@ -16,7 +16,7 @@ Livox MID360 的轻量 UDP 驱动。把设备点云和 IMU 变成 ROS 话题 `/m
 - 去畸变点云：`/cloud_registered`（已经变到 odom）
 - TF：`odom → base_link`（需要先从 URDF lookup 到 `base_link → lidar_link`）
 
-`align_odom_with_gravity: true` 时，会把 odom 的 z 对齐重力，避免车体倾斜把地面扫成一堵墙。盲区球心（`blind` 相关）必须是 **base_link 原点在 lidar_link 中的坐标**；改 URDF `lidar_joint` 后要用 `scripts/measure_lidar_mount.py` 重算，否则车身点会被当成障碍。
+`align_odom_with_gravity: true` 时，会把 odom 的 z 对齐重力，避免车体倾斜把地面扫成一堵墙。盲区球心（`blind` 相关）必须是 **base_link 原点在 lidar_link 中的坐标**；改 URDF `lidar_joint` 后要跑 `scripts/measure_lidar_mount.sh` 重算，否则车身点会被当成障碍。
 
 LIO 是相对定位：开机点就是 odom 原点。开得越久漂得越多，这是后面 odom_localizer 存在的原因。
 
@@ -85,7 +85,7 @@ costmap 看不懂 OccupancyGrid 的滑动 origin，也和 best_effort QoS 对不
 3. 按 `lookahead_dist`（6 m）截局部段，稀疏化，分配时间
 4. MINCO：分段多项式，L-BFGS 优化形状与时间。惩罚项包括净空（ESDF）、速度/加速度上限、总时长
 5. `validateTrajectory`：硬阈值 `collision_dist`（0.30 m）必须小于优化软目标 `safe_dist`（0.40 m），否则会出现「惩罚为 0 但校验判碰撞」
-6. 通过则发 `/opt_path`；失败则重规划或进规划器自己的 RecoverServer
+6. 通过则发 `/opt_path`。跟随中 20 Hz 监视剩余轨迹（净空 `collision_dist + max(v·replan_react_time, monitor_margin)`），默认 5 Hz 强制 `ReplanLocal`；轨迹不安全且重规划失败则发急停，不再跟已经撞上的旧轨迹
 
 `nav_msgs/Path` 仍然返回给 BT，所以「规划成功但车不动」很常见：Path 有两个点，`/opt_path` 没有。被挡在未知区后面的目标尤其如此（`unknown_as_occupied: true`），BT 不会进恢复。
 
@@ -95,7 +95,7 @@ costmap 看不懂 OccupancyGrid 的滑动 origin，也和 best_effort QoS 对不
 
 - 状态 `[px, py, yaw]`，控制 `[vx, vy, wz]`
 - 预测时域 `lookahead_time / dt = 0.5 / 0.05 = 10` 步
-- qpOASES 解有约束 QP；本车 `vx/vy` ±1.0 m/s，`omega` 锁死 0
+- qpOASES 解有约束 QP；本车 `vx/vy` ±3.0 m/s（动态障碍先从 4.0 降下来），`omega` 锁死 0
 - 输出 twist 在 odom 轴（= base_link_fake 轴）
 - 控制频率 `controller_frequency: 20` Hz（不是上游的 100 Hz），和 smoother、UDP 发送能力匹配
 

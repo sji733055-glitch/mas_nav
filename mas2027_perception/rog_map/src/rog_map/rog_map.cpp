@@ -373,7 +373,9 @@ void ROGMap::refreshLayers()
 {
   const auto config_start = std::chrono::steady_clock::now();
   // 从三维概率占据地图按 xy 列生成二维 layer，并把 layer mask 作为 field/ESDF 的障碍输入。
-  // scan_z_min_abs/scan_z_max_abs 是 ROGMap frame 中的绝对 Z 坐标，不是相对地面的高度。
+  // scan_z_min_abs/scan_z_max_abs are Z bounds in the ROGMap frame.
+  // When scan_z_relative_to_robot is true they are offsets from /Odometry z so a
+  // floating LIO pose does not clip body-height obstacles out of the projection.
   if (!cfg_.layer_en || !layer_) {
     fused_projection_mask_.clear();
     fused_projection_values_.clear();
@@ -409,8 +411,12 @@ void ROGMap::refreshLayers()
 
   int z_min = 0;
   int z_max = 0;
-  posToGlobalIndex(cfg_.scan_z_min_abs, z_min);
-  posToGlobalIndex(cfg_.scan_z_max_abs, z_max);
+  const double scan_z_min =
+    cfg_.scan_z_relative_to_robot ? robot_state_.p.z() + cfg_.scan_z_min_abs : cfg_.scan_z_min_abs;
+  const double scan_z_max =
+    cfg_.scan_z_relative_to_robot ? robot_state_.p.z() + cfg_.scan_z_max_abs : cfg_.scan_z_max_abs;
+  posToGlobalIndex(scan_z_min, z_min);
+  posToGlobalIndex(scan_z_max, z_max);
   if (z_min > z_max) {
     std::swap(z_min, z_max);
   }

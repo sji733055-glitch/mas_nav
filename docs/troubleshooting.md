@@ -38,7 +38,7 @@ ROG-Map 打 `No odom received, skip cloud callback`：先有 `/Odometry` 再有�
 | 障碍距离过滤以场地原点为中心 | costmap `sensor_frame` 没填 `lidar_link` |
 | Nav2 报 `base_link_fake` 不存在 | `use_fake_vel_transform:=False`，或 fake_vel 没收到 `/Odometry`（QoS） |
 
-改 URDF 雷达安装后，LIO 盲区球心、`lidar_offset_*`、ROG `center_offset` 是同一组标定量，要一起改。
+改 URDF 雷达安装后，LIO 盲区球心、`lidar_offset_*`、ROG `center_offset` 是同一组标定量，要一起改。一键重测：`bash mas2027_nav_bringup/scripts/measure_lidar_mount.sh`（须先停导航）。
 
 ## 3. 地图不对：空的、全是墙、闪烁、范围太小
 
@@ -69,6 +69,7 @@ BT `planner_id` 必须是 `MincoPlanner`。配成 `GridBased` 时启动正常，
 | `ComputePathToPose` 成功，车原地、`/cmd_vel` 为 0 | 看有没有 `/opt_path`。没有 = MINCO 优化后被 `validateTrajectory` 拒绝。被墙挡住的目标会 20 Hz 刷 `collision detected` / `Rejecting`，BT 仍认为规划成功，**不会进恢复** |
 | 有 `/astar_path_vis` 无 `/opt_path` | 搜索通了，优化或安全检查没过：`safe_dist`/`collision_dist`、速度加速度上限、ESDF 是否有效 |
 | 轨迹贴障/穿障 | 点云时延、投影高度、`field.inflation_radius`（必须 0；非零会把净空抬到车钻不过去，L-BFGS 三次迭代就退出） |
+| 会撞倒障碍、动态障碍来不及让 | MINCO 在 `FOLLOW_TRAJ` 里以前 1 Hz 才重规划（YAML 写了 5 Hz 但 C++ 没读），安全检查用贴车的 `collision_dist: 0.30`，失败还继续跟旧 `/opt_path`，MPC 不看 ESDF。现已接到：监视净空 `collision_dist + max(v·0.35, 0.20)`、强制重规划 5 Hz、不安全 10 Hz 封顶、`ReplanLocal` 失败则急停 `/opt_path`（不改 `last_traj_` / 冷热启动）。速度三处 3.0。需重建 `minco_planner`。查 `[MincoPlanner] Trajectory collision detected` 和有没有新的 `/opt_path` |
 | 0.95 m 目标开成爬行 | `penalty_weight_time` 过小（代码默认 0.01，本仓库已改成 100） |
 | 优化日志 cost 地板 1e4 且 iter 很少 | Pos 惩罚被抬成常数，检查 ESDF inflation 和 `safe_dist` |
 

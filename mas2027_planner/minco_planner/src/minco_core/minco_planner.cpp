@@ -376,6 +376,35 @@ void MincoPlanner::configure(const nav2_util::LifecycleNode::WeakPtr & parent,
   nav2_util::declare_parameter_if_not_declared(
     node, prefix + "minco_optimizer.collision_dist", rclcpp::ParameterValue(collision_dist));
   node->get_parameter(prefix + "minco_optimizer.collision_dist", collision_dist);
+  collision_dist_ = collision_dist;
+
+  nav2_util::declare_parameter_if_not_declared(
+    node, prefix + "minco_optimizer.replan_period_s", rclcpp::ParameterValue(0.2));
+  node->get_parameter(prefix + "minco_optimizer.replan_period_s", force_replan_period_sec_);
+  if (!(std::isfinite(force_replan_period_sec_) && force_replan_period_sec_ > 0.0)) {
+    force_replan_period_sec_ = 0.2;
+  }
+
+  nav2_util::declare_parameter_if_not_declared(
+    node, prefix + "minco_optimizer.replan_react_time", rclcpp::ParameterValue(0.35));
+  node->get_parameter(prefix + "minco_optimizer.replan_react_time", replan_react_time_);
+  if (!(std::isfinite(replan_react_time_) && replan_react_time_ >= 0.0)) {
+    replan_react_time_ = 0.35;
+  }
+
+  nav2_util::declare_parameter_if_not_declared(
+    node, prefix + "minco_optimizer.safety_lookahead_time", rclcpp::ParameterValue(1.2));
+  node->get_parameter(prefix + "minco_optimizer.safety_lookahead_time", safety_lookahead_time_);
+  if (!(std::isfinite(safety_lookahead_time_) && safety_lookahead_time_ > 0.0)) {
+    safety_lookahead_time_ = 1.2;
+  }
+
+  nav2_util::declare_parameter_if_not_declared(
+    node, prefix + "minco_optimizer.monitor_margin", rclcpp::ParameterValue(0.20));
+  node->get_parameter(prefix + "minco_optimizer.monitor_margin", monitor_margin_);
+  if (!(std::isfinite(monitor_margin_) && monitor_margin_ >= 0.0)) {
+    monitor_margin_ = 0.20;
+  }
 
   nav2_util::declare_parameter_if_not_declared(
     node, prefix + "minco_optimizer.max_velocity", rclcpp::ParameterValue(2.0));
@@ -1687,7 +1716,13 @@ bool MincoPlanner::checkCollision()
     return true;
   }
 
-  return safety_checker_->checkTrajectory(traj_snapshot);
+  const double t_start = nowSeconds() - traj_snapshot.start_WT;
+  const double speed = getCurrentSpeed().head<2>().norm();
+  const double v = std::isfinite(speed) ? std::max(0.0, speed) : 0.0;
+  const double monitor_dist =
+    collision_dist_ + std::max(v * replan_react_time_, monitor_margin_);
+  return safety_checker_->checkTrajectory(
+    traj_snapshot, t_start, monitor_dist, safety_lookahead_time_);
 }
 
 bool MincoPlanner::checkCollision(const traj_opt::Trajectory & traj)
@@ -1721,26 +1756,44 @@ void MincoPlanner::safetyTimerCallback()
 
 void MincoPlanner::publishEmergencyStop(const geometry_msgs::msg::PoseStamped & current_pose)
 {
+  const double now_s = nowSeconds();
+  if (last_estop_s_ >= 0.0 && (now_s - last_estop_s_) < 0.1) {
+    return;
+  }
+  last_estop_s_ = now_s;
+
+  auto node = node_.lock();
+  if (node) {
+    RCLCPP_WARN_THROTTLE(
+      logger_, *node->get_clock(), 1000,
+      "[MincoPlanner] Publishing emergency stop: committed traj unsafe and replan failed.");
+  }
+
   std_msgs::msg::Header header_msg;
   header_msg.frame_id = output_frame_;
   header_msg.stamp = rclcpp::Clock().now();
 
   Eigen::Matrix3d start_state;
   prepareColdStart(current_pose.pose, start_state, std::vector<Eigen::Vector3d>{});
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (has_last_traj_) {
-    const double t_dur = nowSeconds() - last_traj_.start_WT;
-    const double total = last_traj_.getTotalDuration();
-    if (std::isfinite(t_dur) && std::isfinite(total) && t_dur >= 0.0 && t_dur <= total) {
-      start_state.col(1) = last_traj_.getVel(t_dur);
-      start_state.col(2) = last_traj_.getAcc(t_dur);
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (has_last_traj_) {
+      const double t_dur = now_s - last_traj_.start_WT;
+      const double total = last_traj_.getTotalDuration();
+      if (std::isfinite(t_dur) && std::isfinite(total) && t_dur >= 0.0 && t_dur <= total) {
+        start_state.col(1) = last_traj_.getVel(t_dur);
+        start_state.col(2) = last_traj_.getAcc(t_dur);
+      }
     }
   }
 
   const double current_yaw = getCurrentYawFromOdom();
   traj_opt::Trajectory backup_traj = generateBackupTraj(start_state);
+  backup_traj.start_WT = now_s;
   utils::publishBackupTrajectory(
     backup_traj, opt_path_pub_, opt_trajectory_id_, header_msg, 20, 0.1, current_yaw);
+  // Do not replace last_traj_ with the brake piece: determinePlanningState / HOT_START
+  // still inherit the committed velocity so the chassis does not drop into a crawl.
 }
 
 traj_opt::Trajectory MincoPlanner::generateBackupTraj(const Eigen::Matrix3d & start_state)

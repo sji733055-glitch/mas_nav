@@ -65,3 +65,7 @@
       ema_ratio: 0.6
       max_translation_step: 0.3
       max_rotation_step: 0.15
+      # Dual-lidar live cloud vs single-lidar lab3.pcd biases GICP in z and
+      # lifts the robot above the prior map. Ground vehicle: pin map->odom z
+      # to startup.initial_transform (0). Remake the PCD then this can stay on.
+      lock_z: true

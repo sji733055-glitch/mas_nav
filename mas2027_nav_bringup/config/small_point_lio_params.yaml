@@ -7,7 +7,19 @@ mid360_driver:
     imu_frame: lidar_imu
     lidar_publish_time_interval: 0.05 # 雷达点云发布间隔，单位秒
     host_ip: 192.168.1.50 # 主机ip地址
-    is_topic_name_with_lidar_ip: false # 是否在话题名后面加雷达ip，可以用于区分多个雷达
+    is_topic_name_with_lidar_ip: false # 融合模式只发布一个不带 IP 后缀的话题
+    front_lidar_ip: "192.168.1.136"
+    front_lidar_frame: lidar_link
+    back_lidar_ip: "192.168.1.193"
+    back_lidar_frame: lidar_back_link
+    enable_lidar_merge: true # 驱动内将两台雷达融合后发布到 lidar_topic
+    merge_front_ip: "192.168.1.136" # 参考雷达，点坐标保持不变
+    merge_back_ip: "192.168.1.193" # 此雷达点转换到参考雷达坐标系
+    merge_extrinsic_back_to_front: [0.0, 0.200484459, -0.223172538, -1.677800, 0.0, 0.0] # 左→右：T_lidar_link^{-1}*T_lidar_back；手性对称 R=Rx(-2α)，α=0.8389；[x,y,z,roll,pitch,yaw]
+    # 配对窗口：两路帧的最小点时间戳之差超过它就丢更旧的那帧，绝不发半帧。
+    # 两路由同一个 lidar_publish_time_interval 定时器切帧，所以差值主要来自两台雷达时钟偏移：
+    # 上了 PTP 收到 5.0；现在没有 PTP（time_type=0，每个 IP 只在首包算一次 delta）留 50.0 容纳慢漂。
+    merge_max_interval_ms: 50.0
     validate_crc: false # 是否校验Livox数据包CRC32
     max_packet_time_jump: 0.5 # 单个雷达UDP包时间戳允许的最大跳变，单位秒
     max_packet_time_span: 0.1 # 单个雷达包/发布帧允许的最大点时间跨度，单位秒
@@ -31,10 +43,12 @@ small_point_lio:
     # 点云过滤
     point_filter_num: 1                               # 每 N 个点保留一个点
     # 盲区球心，雷达坐标系，单位米。取 base_link 原点在 lidar_link 中的坐标：
-    # URDF lidar_joint 是 xyz="0.09 0.03 0.11" rpy="0.8389 0 1.5708"，反解得 (-0.030, -0.022, -0.1405)。
-    # 改 URDF 里雷达的安装位姿时这三个数要跟着重算，跑 scripts/measure_lidar_mount.py 会直接给出来。
-    # 模长恒为 0.1453（只跟 xyz 有关，跟倾角无关），可以拿来自查。
-    blind_center: [ -0.030, -0.022, -0.1405 ]
+    # URDF lidar_joint 现为 xyz="0.00 -0.15 0.11" rpy="0.8389 0 0"（只有 Rx，没有 yaw=π/2），
+    # 反解 -Rx(-α)ᵀ·t 得 (0.000, 0.0184, -0.1851)。模长等于 |t|=0.1860。
+    # 改 URDF 雷达安装后跑 scripts/measure_lidar_mount.sh 重算这三个数。
+    # 旧值 (-0.030, -0.022, -0.1405) 来自 xyz="0.09 0.03 0.11" rpy="0.8389 0 1.5708"，
+    # 球心偏了 ~7 cm，左雷达会把车体点送进 LIO，z 往上漂。
+    blind_center: [ 0.000, 0.0184, -0.1851 ]
     # 盲区半径（以 blind_center 为球心），单位米。0.38 = 底盘 0.5x0.5 的对角半径 0.354 加余量，
     # 刚好裹住车身和 lakibeam（距车心 0.241），不多裁近场地面。
     # 之前是 0.5 且以雷达原点为球心：雷达偏车心 0.095 m，地面空洞在车体一侧 0.55 m、另一侧 0.36 m；
@@ -45,7 +59,7 @@ small_point_lio:
     space_downsample_leaf_size: 0.5                   # 体素降采样分辨率，单位米
 
     # IMU 处理
-    # 重力向量（雷达系，单位 g），= 静止时 IMU 加速度均值取反，由 scripts/measure_lidar_mount.py 实测。
+    # 重力向量（雷达系，单位 g），= 静止时 IMU 加速度均值取反，由 scripts/measure_lidar_mount.sh 实测。
     # fix_gravity_direction 为 true 时只有模长被用到（缩放 IMU 加速度），方向启动时重估。
     # 模长 0.9956 是 IMU 的标度误差，不要手改：它同时决定滤波器内部加速度的单位，
     # 改了等于把 acceleration_cov / ba_cov / satu_acc 全部重新标定一遍。
@@ -101,4 +115,3 @@ fake_vel_transform:
     # 而 /Odometry 的 twist 在随车体转动的 base_link 中，两者相差一个车体 yaw，
     output_odom_topic: /Odometry_world_fixed  # Nav2 里程计话题，位姿与 /Odometry 相同，twist 在 base_link_fake 中
     init_spin_speed: 0.0                              # 未收到 /cmd_spin 时的默认自旋角速度，单位 rad/s
-

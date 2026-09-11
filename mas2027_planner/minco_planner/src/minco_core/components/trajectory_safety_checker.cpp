@@ -2,6 +2,7 @@
 
 #include "data_structure/base/trajectory.h"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -33,8 +34,13 @@ bool TrajectorySafetyChecker::ensureQueryAvailable() const
 
 bool TrajectorySafetyChecker::checkPoint(const Eigen::Vector3d & pos) const
 {
-  // 安全检查先拒绝二维 layer 中的致命/膨胀代价值，再用 ROGMap distance field 与 safe_dist_ 比较。
-  // ROGMap field 已扣除 field.inflation_radius，safe_dist_ 会继续增加规划安全余量。
+  return checkPoint(pos, safe_dist_);
+}
+
+bool TrajectorySafetyChecker::checkPoint(const Eigen::Vector3d & pos, double check_dist) const
+{
+  // 安全检查先拒绝二维 layer 中的致命/膨胀代价值，再用 ROGMap distance field 与 check_dist 比较。
+  // ROGMap field 已扣除 field.inflation_radius，check_dist 会继续增加规划安全余量。
   if (!ensureQueryAvailable()) {
     return false;
   }
@@ -62,22 +68,44 @@ bool TrajectorySafetyChecker::checkPoint(const Eigen::Vector3d & pos) const
   esdf_dist = query.distance;
   esdf_grad = query.gradient;
   (void)esdf_grad;
-  return std::isfinite(esdf_dist) && esdf_dist > safe_dist_;
+  return std::isfinite(esdf_dist) && esdf_dist > check_dist;
 }
 
 bool TrajectorySafetyChecker::checkTrajectory(const traj_opt::Trajectory & traj) const
+{
+  return checkTrajectory(traj, 0.0, safe_dist_, traj.getTotalDuration());
+}
+
+bool TrajectorySafetyChecker::checkTrajectory(
+  const traj_opt::Trajectory & traj, double t_start, double check_dist) const
+{
+  return checkTrajectory(traj, t_start, check_dist, traj.getTotalDuration());
+}
+
+bool TrajectorySafetyChecker::checkTrajectory(
+  const traj_opt::Trajectory & traj, double t_start, double check_dist, double horizon) const
 {
   if (!ensureQueryAvailable()) {
     return false;
   }
 
   const double dur = traj.getTotalDuration();
-  for (double t = 0.0; t <= dur; t += sample_dt_) {
-    if (!checkPoint(traj.getPos(t))) {
+  if (!(std::isfinite(dur) && dur > 1e-6)) {
+    return true;
+  }
+
+  const double t0 = std::max(0.0, std::min(t_start, dur));
+  const double span = (horizon > 0.0 && std::isfinite(horizon)) ? horizon : dur;
+  const double t1 = std::min(dur, t0 + span);
+  if (t1 <= t0 + 1e-9) {
+    return checkPoint(traj.getPos(std::min(dur, t0)), check_dist);
+  }
+  for (double t = t0; t <= t1; t += sample_dt_) {
+    if (!checkPoint(traj.getPos(t), check_dist)) {
       return false;
     }
   }
-  return true;
+  return checkPoint(traj.getPos(t1), check_dist);
 }
 
 double TrajectorySafetyChecker::getDistance(const Eigen::Vector3d & pos) const

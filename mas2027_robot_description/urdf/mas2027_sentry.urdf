@@ -54,14 +54,35 @@
     </collision>
   </link>
 
-  <!-- MID-360 LiDAR Joint -->
-  <!-- rpy 的 roll 就是雷达前倾角（0.8389 rad = 48.07°），由静止 IMU 实测得到：
-       scripts/measure_lidar_mount.py。改这里之后 small_point_lio_params.yaml 的
+  <!-- 右侧原 MID360（设备 IP 192.168.1.136）：ROS Y- 为右。
+       rpy 的 roll 就是雷达前倾角（0.8389 rad = 48.07°），由静止 IMU 实测得到：
+       scripts/measure_lidar_mount.sh。改这里之后 small_point_lio_params.yaml 的
        blind_center 和 gravity 要跟着改，脚本会把三行一起算出来。 -->
   <joint name="lidar_joint" type="fixed">
     <parent link="base_link"/>
     <child link="lidar_link"/>
     <origin xyz="0.00 -0.15 0.11" rpy="0.8389 0 0"/>
+  </joint>
+
+  <!-- 左侧 MID360（设备 IP 192.168.1.193）：与右侧关于 base_link 的 XZ 平面手性对称
+       （Y 取反、roll 取反）。不是两侧同一套 rpy，也不要 yaw=π。
+       相对旋转 R=Rx(-2α)，α=0.8389。只做可视化 / 标定辅助，LIO 仍 lookup lidar_link。
+       merge_extrinsic_back_to_front 必须等于 T_lidar_link^{-1} * T_lidar_back。 -->
+  <link name="lidar_back_link">
+    <visual>
+      <geometry>
+        <mesh filename="package://mas2027_robot_description/meshes/mid360.STL"/>
+      </geometry>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <material name="black">
+        <color rgba="0.1 0.1 0.1 1"/>
+      </material>
+    </visual>
+  </link>
+  <joint name="lidar_back_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="lidar_back_link"/>
+    <origin xyz="0.00 0.15 0.11" rpy="-0.8389 0 0"/>
   </joint>
 
 

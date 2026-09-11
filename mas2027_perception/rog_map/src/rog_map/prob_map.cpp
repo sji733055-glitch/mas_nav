@@ -377,16 +377,16 @@ void ProbMap::updateProbMap(
   }
 
   updateLocalBox(map_center_pos);
-  TimeConsuming t_raycast("raycast", false);
+  const auto raycast_start = std::chrono::steady_clock::now();
   raycastProcess(cloud, sensor_pos);
-  runtime_stats_.raycast_time = t_raycast.stop();
+  runtime_stats_.raycast_time = elapsedMs(raycast_start);
   raycast_data_.batch_update_counter++;
   if (raycast_data_.batch_update_counter >= cfg_.batch_update_size) {
     raycast_data_.batch_update_counter = 0;
     runtime_stats_.cache_count = static_cast<double>(raycast_data_.update_cache_id_g.size());
-    TimeConsuming t_update("update", false);
+    const auto update_start = std::chrono::steady_clock::now();
     probabilisticMapFromCache();
-    runtime_stats_.prob_update_time = t_update.stop();
+    runtime_stats_.prob_update_time = elapsedMs(update_start);
     map_empty_ = false;
   }
   runtime_stats_.dirty_column_count_from_probmap = static_cast<double>(dirtyColumnIds().size());

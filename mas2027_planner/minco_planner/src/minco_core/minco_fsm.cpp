@@ -1,6 +1,7 @@
 #include "minco_core/minco_fsm.hpp"
 
 // C++ standard library
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 
@@ -190,26 +191,27 @@ void MincoFsm::callMainFsmOnce()
     // goal_stop_published_ = false;
 
     const double now_s = planner_->nowSeconds();
-
-    bool need_replan = planner_->isTrajectoryTimeExpired(now_s) || !planner_->isTrajSafe();
-
-    // 强制高频重规划：1Hz刷新轨迹，避免轨迹“卡死”不更新。
-    if (has_odom) {
-      static double last_replan_time = 0.0;
-      const double current_time = planner_->nowSeconds();
-      if (current_time - last_replan_time > 1.0) {
-        need_replan = true;
-        last_replan_time = current_time;
-      }
-    }
-
-    if (!need_replan) {
+    const bool expired = planner_->isTrajectoryTimeExpired(now_s);
+    const bool unsafe = !planner_->isTrajSafe();
+    const double period = unsafe
+      ? std::min(planner_->getForceReplanPeriod(), 0.10)
+      : planner_->getForceReplanPeriod();
+    const bool due = (now_s - last_force_replan_s_) > period;
+    if (!expired && !due) {
       return;
     }
+    last_force_replan_s_ = now_s;
 
     if (!planner_->ReplanLocal(current_pose)) {
+      // Unsafe committed traj: brake instead of keeping the old /opt_path.
+      // HOT/COLD selection is unchanged; this only replaces the command stream.
+      if (!planner_->isTrajSafe()) {
+        planner_->publishEmergencyStop(current_pose);
+        return;
+      }
+
       // P0: If the old trajectory still has remaining time, keep following it.
-      if (!planner_->isTrajectoryTimeExpired(now_s)) {
+      if (!expired) {
         return;
       }
 

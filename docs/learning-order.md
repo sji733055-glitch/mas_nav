@@ -107,7 +107,7 @@ Nav2 的 `global_frame` 仍是 `odom`。`map` 帧主要给 ROG-Map 的二维先�
 | `mas2027_nav_bringup/scripts/save_pcd_and_make_map.sh` | `/map_save` + pcd2pgm 一切出 PGM |
 | `mas2027_nav_bringup/scripts/waypoint_navigator.py` | 多点巡航（可读 waypoint_editor 的 CSV） |
 | `mas2027_utils/waypoint_editor/` | 在先验 PGM 上点航点，存 CSV |
-| `mas2027_nav_bringup/scripts/measure_lidar_mount.py` | 重标雷达安装时 |
+| `mas2027_nav_bringup/scripts/measure_lidar_mount.sh` | 一键重标双雷达安装（倾角 + 自旋半径）；底层算法是同目录的 `.py` |
 | `mas2027_utils/bt_editor/bt_editor.html` | 改行为树 XML |
 | `mas2027_utils/data_analyzer/scripts/nav2_performance_analyzer.py` | 看规划 vs 实测速度 |
 

@@ -100,11 +100,11 @@ controller_server:
       # 代价权重：Q 对应状态误差 [x, y, yaw]，R 对应控制量误差 [vx, vy, omega]
       Q: [3.0, 3.0, 2.0]
       R: [1.5, 1.5, 1.0]
-      # 速度上下限。与 MINCO max_velocity、velocity_smoother 一致。
-      vx_min: -4.0
-      vx_max: 4.0
-      vy_min: -4.0
-      vy_max: 4.0
+      # 速度上下限。与 MINCO max_velocity、velocity_smoother 一致（动态障碍先降到 3.0）。
+      vx_min: -3.0
+      vx_max: 3.0
+      vy_min: -3.0
+      vy_max: 3.0
       fixed_wz: 4.18                       # 仅 use_small_gyro_mode 为 true 时生效，单位 rad/s
       # base_link_fake 的 yaw 恒定、车体自旋由 /cmd_spin 单独下发，所以角速度自由度
       # 整体锁死为 0（等价于原 DWB 的 max_vel_theta / acc_lim_theta 置零）。
@@ -357,11 +357,19 @@ planner_server:
         # 上游是 0.35 / 0.25，留 0.10 m 松弛；本车内切半径 0.30，按同样关系取 0.40 / 0.30。
         safe_dist: 0.40
         collision_dist: 0.30
+        # FOLLOW_TRAJ 强制重规划周期。以前写着「高频」其实是 1 Hz，4 m/s 下已经冲过 4 m。
+        # 轨迹不安全时按 10 Hz 封顶（20 Hz 会饿死 planner_server bond），不要改冷热启动。
+        replan_period_s: 0.2
+        # 运行时监视净空 = collision_dist + max(v * replan_react_time, monitor_margin)。
+        # 3 m/s * 0.35 = 1.05，加上 0.30 约 1.35 m，够 ROG 更新和一次重规划。
+        replan_react_time: 0.35
+        safety_lookahead_time: 1.2
+        monitor_margin: 0.20
 
         # 必须与执行侧限幅一致。MincoMpcController 的 vx/vy 以及
         # velocity_smoother 的 max_velocity 同改成 3.0。
         # 三层不一致时 MPC 会一直落后。
-        max_velocity: 4.0
+        max_velocity: 3.0
         max_acceleration: 4.0
 
         turn_angle_deadzone: 0.1            # 转向角死区，单位弧度（上游取值，代码默认 0.174）
@@ -411,6 +419,9 @@ planner_server:
         inflation_resolution: 0.05
         map_size: [10.0, 10.0, 1.5]
         fix_map_origin: [0.0, 0.0, 0.0]
+        # odom z 漂高时默认 virtual_ceil 1.8 会整帧跳过更新。地面车给宽一点的绝对高度范围。
+        virtual_ground_height: -1.5
+        virtual_ceil_height: 3.0
 
         map_sliding:
           enable: true
@@ -455,8 +466,10 @@ planner_server:
           keep_time: 0.8
           # [decay][s] 最后一次 hit 后强制衰减到 free 的最大时间；必须大于 keep_time。
           clear_time: 1.2
-          # [decay][bool] 只维护活跃 cell 衰减列表；开启通常降低计算量，若列表维护异常会影响动态清除完整性。
-          active_list_enable: false
+          # 只遍历最近 hit 过的 occupied voxel。false 时每帧扫整张 10x10x1.5
+          # （约 1.2M 格），实测 decay 6~9 ms，还会把大量 column 标 dirty，
+          # 把 projection 从增量打回全量刷新。列表在 hitPointUpdate 里维护。
+          active_list_enable: true
 
         projection:
           enable: true
@@ -475,15 +488,12 @@ planner_server:
             pgm_path: "/home/ros2_ws/src/mas2027_nav_bringup/map/lab3.pgm"
             frame_id: map
 
-          # [absolute Z coordinate, m]
-          # ROGMap frame 中参与单柱扫描的绝对 Z 下界。
-          # 这是坐标值，不是地面相对高度，也不是高度差。
+          # 相对 /Odometry z 的偏移（scan_z_relative_to_robot: true）。
+          # 车体高度附近的障碍在 robot_z+0，必须落在这个窗口里。
+          # 以前是 odom 绝对坐标，LIO/GICP 把车抬高后近处点会被切掉。
+          scan_z_relative_to_robot: true
           scan_z_min_abs: -1.2
-
-          # [absolute Z coordinate, m]
-          # ROGMap frame 中参与单柱扫描的绝对 Z 上界。
-          # 这是坐标值，不是障碍高度，也不是高度差。
-          scan_z_max_abs: 1.5
+          scan_z_max_abs: 0.75
 
           # UNKNOWN 是否作为 ESDF 障碍。
           unknown_as_occupied: false
@@ -560,8 +570,8 @@ planner_server:
           # " -- [ROG WARN] Unfinished frame cnt > 1" 临时打开的，用于量出单帧更新里
           # raycast / prob_update / decay / projection / field / snapshot 各占多少毫秒。
           # detailed 每帧写一行，量完请改回 false，不要长期开着跑比赛。
-          detailed_csv_enable: true
-          summary_csv_enable: true
+          detailed_csv_enable: false
+          summary_csv_enable: false
           detailed_csv_path: /tmp/rog_map_perf_detailed.csv
           summary_csv_path: /tmp/rog_map_perf_summary.csv
           run_id: ""
@@ -640,8 +650,8 @@ velocity_smoother:
     smoothing_frequency: 20.0              # 输出频率，单位 Hz，与 controller_frequency 一致
     scale_velocities: true                 # 超限时等比缩放各轴，逐轴裁剪会改变速度方向、导致跑偏
     feedback: OPEN_LOOP                    # 以上一次输出作为当前速度，不依赖里程计反馈
-    max_velocity: [4.0, 4.0, 0.0]          # [x, y, theta] 输出速度上限，与 MINCO / MPC 一致
-    min_velocity: [-4.0, -4.0, 0.0]        # [x, y, theta] 输出速度下限
+    max_velocity: [3.0, 3.0, 0.0]          # [x, y, theta] 输出速度上限，与 MINCO / MPC 一致
+    min_velocity: [-3.0, -3.0, 0.0]        # [x, y, theta] 输出速度下限
     max_accel: [4.0, 4.0, 0.0]             # [x, y, theta] 加速度上限，单位 m/s²、rad/s²
     max_decel: [-4.0, -4.0, 0.0]           # [x, y, theta] 减速度上限（负值）
     odom_topic: /Odometry_world_fixed      # 仅 CLOSED_LOOP 模式使用；与控制器同源，twist 在 base_link_fake 轴系

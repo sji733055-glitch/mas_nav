@@ -177,6 +177,12 @@ def generate_launch_description():
         parameters=[configured_nav2_params],
         arguments=nav_arguments,
         remappings=tf_remappings,
+        additional_env={
+            # ROG/ESDF 小规模热点开宽 OpenMP team 会把 fork/join 拖到调度延迟上。
+            # 2 线程是这台 20 核机器上 EDT 的实测最优点（4 线程反而到 21 ms）。
+            "OMP_NUM_THREADS": "2",
+            "OMP_WAIT_POLICY": "PASSIVE",
+        },
     )
     behavior_server = Node(
         package="nav2_behaviors",

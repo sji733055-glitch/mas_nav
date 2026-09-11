@@ -57,6 +57,7 @@ public:
 
   // Accessors for FSM
   bool isTrajSafe() const { return is_traj_safe_.load(); }
+  double getForceReplanPeriod() const { return force_replan_period_sec_; }
   double nowSeconds() const;
   double getTrajectoryRemainTime() const;
   bool isTrajectoryTimeExpired(double now_s) const;
@@ -179,6 +180,12 @@ private:
   double opt_freq_;
   double lookahead_dist_;
   double traj_goal_tolerance_{0.15};
+  double collision_dist_{0.30};
+  double force_replan_period_sec_{0.2};
+  double replan_react_time_{0.35};
+  double safety_lookahead_time_{1.2};
+  double monitor_margin_{0.20};
+  double last_estop_s_{-1.0};
   MincoOptimizer::Config minco_config;
   RecoverServer::Config recovery_server_config_{};
   PlannerPerformanceMonitor planner_perf_monitor_;

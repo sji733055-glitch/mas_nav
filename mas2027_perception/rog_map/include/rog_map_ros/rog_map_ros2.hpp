@@ -46,10 +46,17 @@
 #include <super_utils/color_msg_utils.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
+#include <thread>
 #include <utility>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 namespace rog_map {
 using namespace super_utils;
@@ -170,14 +177,46 @@ class ROGMapROS : public ROGMap
     PointCloud pc;
     double pc_odom_age_ms{0.0};
     rclcpp::TimerBase::SharedPtr update_timer;
-    mutex updete_lock;
+    std::mutex updete_lock;
+    std::condition_variable cv;
+    std::atomic<bool> stop_worker{false};
+    std::thread update_worker;
   } rc_;
+  std::mutex map_io_mutex_;
+  std::mutex viz_frame_mutex_;
+  struct VizFrame
+  {
+    sensor_msgs::msg::PointCloud2 occ, raw_occ, unknown, occ_inf, unknown_inf, frontier, esdf,
+      height_delta, field, decay;
+    nav_msgs::msg::OccupancyGrid layer_value, layer_dynamic, layer_static, layer_type, layer_confidence;
+    visualization_msgs::msg::MarkerArray markers;
+    bool has_occ{false};
+    bool has_raw_occ{false};
+    bool has_unknown{false};
+    bool has_occ_inf{false};
+    bool has_unknown_inf{false};
+    bool has_frontier{false};
+    bool has_esdf{false};
+    bool has_height_delta{false};
+    bool has_field{false};
+    bool has_decay{false};
+    bool has_layer_value{false};
+    bool has_layer_dynamic{false};
+    bool has_layer_static{false};
+    bool has_layer_type{false};
+    bool has_layer_confidence{false};
+    bool has_markers{false};
+  };
+  std::shared_ptr<const VizFrame> viz_frame_;
+  std::shared_ptr<const VizFrame> viz_heavy_;
+  double last_heavy_viz_s_{0.0};
 
   void odomCallback(const nav_msgs::msg::Odometry::SharedPtr odom_msg)
   {
     if (performance_monitor_) {
       performance_monitor_->recordOdom(now().seconds());
     }
+    std::lock_guard<std::mutex> lk(rc_.updete_lock);
     updateRobotState(std::make_pair(
       Vec3f(odom_msg->pose.pose.position.x, odom_msg->pose.pose.position.y, odom_msg->pose.pose.position.z),
       Quatf(odom_msg->pose.pose.orientation.w,
@@ -237,57 +276,99 @@ class ROGMapROS : public ROGMap
     rc_.unfinished_frame_cnt++;
     map_empty_ = false;
     rc_.updete_lock.unlock();
+    rc_.cv.notify_one();
   }
 
-  void updateCallback()
+  void watchdogCallback()
   {
-    if (map_empty_) {
-      static double last_print_t = now().seconds();
-      double cur_t = now().seconds();
-      if (cfg_.ros_callback_en && (cur_t - last_print_t > 1.0)) {
-        std::cout << YELLOW << " -- [ROG WARN] No point cloud input, check the topic name." << RESET
-                  << std::endl;
-        last_print_t = cur_t;
+    if (map_empty_ && cfg_.ros_callback_en) {
+      std::cout << YELLOW << " -- [ROG WARN] No point cloud input, check the topic name." << RESET
+                << std::endl;
+    }
+  }
+
+  void stopUpdateWorker()
+  {
+    rc_.stop_worker.store(true);
+    rc_.cv.notify_all();
+    if (rc_.update_worker.joinable()) {
+      rc_.update_worker.join();
+    }
+  }
+
+  void updateWorkerLoop()
+  {
+    while (!rc_.stop_worker.load()) {
+      PointCloud temp_pc;
+      Pose temp_pose;
+      double temp_odom_age_ms = 0.0;
+      int dropped = 0;
+      {
+        std::unique_lock<std::mutex> lk(rc_.updete_lock);
+        rc_.cv.wait(lk, [this]() {
+          return rc_.stop_worker.load() || rc_.unfinished_frame_cnt > 0;
+        });
+        if (rc_.stop_worker.load()) {
+          break;
+        }
+        dropped = rc_.unfinished_frame_cnt;
+        temp_pc.swap(rc_.pc);
+        temp_pose = rc_.pc_pose;
+        temp_odom_age_ms = rc_.pc_odom_age_ms;
+        rc_.unfinished_frame_cnt = 0;
       }
-      return;
+      if (dropped > 1) {
+        static double last_warn_t = 0.0;
+        const double cur_t = now().seconds();
+        if (cur_t - last_warn_t > 1.0) {
+          std::cout << YELLOW << " -- [ROG WARN] Unfinished frame cnt > 1 (dropped "
+                    << (dropped - 1) << "), the map may not work in real-time" << RESET
+                    << std::endl;
+          last_warn_t = cur_t;
+        }
+      }
+      if (performance_monitor_) {
+        performance_monitor_->recordValidCloud(temp_odom_age_ms);
+      }
+      {
+        std::lock_guard<std::mutex> io(map_io_mutex_);
+        updateMapInternal(temp_pc, temp_pose);
+      }
+      if (cfg_.visualization_en && hasVisualizationSubscriber()) {
+        captureVizFrame();
+      }
     }
-    if (rc_.unfinished_frame_cnt == 0) {
-      return;
-    }
-
-    if (rc_.unfinished_frame_cnt > 1) {
-      std::cout << YELLOW << " -- [ROG WARN] Unfinished frame cnt > 1, the map may not work in real-time"
-                << RESET << std::endl;
-    }
-    static PointCloud temp_pc;
-    static Pose temp_pose;
-    static double temp_odom_age_ms{0.0};
-
-    rc_.updete_lock.lock();
-    temp_pc = rc_.pc;
-    temp_pose = rc_.pc_pose;
-    temp_odom_age_ms = rc_.pc_odom_age_ms;
-    rc_.unfinished_frame_cnt = 0;
-    rc_.updete_lock.unlock();
-
-    if (performance_monitor_) {
-      performance_monitor_->recordValidCloud(temp_odom_age_ms);
-    }
-    updateMapInternal(temp_pc, temp_pose);
   }
 
-  void vizCallback()
+  void collectOccupiedForViz(const Vec3f & box_min, const Vec3f & box_max, vec_E<Vec3f> & out)
   {
-    if (!cfg_.visualization_en) {
+    out.clear();
+    if (!cfg_.decay_active_list_en) {
+      boxSearch(box_min, box_max, OCCUPIED, out);
       return;
     }
+    out.reserve(active_ids_.size());
+    for (const int hash_id : active_ids_) {
+      if (hash_id < 0 || hash_id >= static_cast<int>(occupancy_buffer_.size()) ||
+          hash_id >= static_cast<int>(active_flags_.size()) || !active_flags_[hash_id] ||
+          !isOccupied(occupancy_buffer_[hash_id])) {
+        continue;
+      }
+      Vec3f pos;
+      hashIdToPos(hash_id, pos);
+      if ((pos.array() < box_min.array()).any() || (pos.array() > box_max.array()).any()) {
+        continue;
+      }
+      out.push_back(pos);
+    }
+  }
+
+  void captureVizFrame()
+  {
     if (map_empty_) {
       return;
     }
-    if (!hasVisualizationSubscriber()) {
-      return;
-    }
-
+    auto frame = std::make_shared<VizFrame>();
     Vec3f box_max = robot_state_.p + cfg_.visualization_range / 2;
     Vec3f box_min = robot_state_.p - cfg_.visualization_range / 2;
 
@@ -297,39 +378,20 @@ class ROGMapROS : public ROGMap
       return;
     }
 
-    if (vm_.unknown_pub && vm_.unknown_pub->get_subscription_count() >= 1) {
-      vec_E<Vec3f> unknown_map;
-      boxSearch(box_min, box_max, UNKNOWN, unknown_map);
-      sensor_msgs::msg::PointCloud2 cloud_msg;
-      vecEVec3fToPC2(unknown_map, cloud_msg);
-      vm_.unknown_pub->publish(cloud_msg);
-    }
-    if (cfg_.unk_inflation_en && vm_.unknown_inf_pub &&
-        vm_.unknown_inf_pub->get_subscription_count() >= 1) {
-      vec_E<Vec3f> inf_unknown_map;
-      boxSearchInflate(box_min, box_max, UNKNOWN, inf_unknown_map);
-      sensor_msgs::msg::PointCloud2 cloud_msg;
-      vecEVec3fToPC2(inf_unknown_map, cloud_msg);
-      vm_.unknown_inf_pub->publish(cloud_msg);
-    }
-
     if (layer_ && !layer_->empty()) {
       if (vm_.layer_value_pub && vm_.layer_value_pub->get_subscription_count() >= 1) {
-        nav_msgs::msg::OccupancyGrid grid;
-        fillLayerMaskGrid(fused_projection_mask_, grid);
-        vm_.layer_value_pub->publish(grid);
+        fillLayerMaskGrid(fused_projection_mask_, frame->layer_value);
+        frame->has_layer_value = true;
       }
       if (vm_.layer_value_dynamic_pub &&
           vm_.layer_value_dynamic_pub->get_subscription_count() >= 1) {
-        nav_msgs::msg::OccupancyGrid grid;
-        fillLayerMaskGrid(layer_->mask(), grid);
-        vm_.layer_value_dynamic_pub->publish(grid);
+        fillLayerMaskGrid(layer_->mask(), frame->layer_dynamic);
+        frame->has_layer_dynamic = true;
       }
       if (vm_.layer_value_static_pub &&
           vm_.layer_value_static_pub->get_subscription_count() >= 1) {
-        nav_msgs::msg::OccupancyGrid grid;
-        fillLayerMaskGrid(prior_projection_mask_, grid);
-        vm_.layer_value_static_pub->publish(grid);
+        fillLayerMaskGrid(prior_projection_mask_, frame->layer_static);
+        frame->has_layer_static = true;
       }
       if (vm_.layer_type_pub && vm_.layer_type_pub->get_subscription_count() >= 1) {
         std::vector<uint8_t> types(layer_->cells().size(), 0U);
@@ -349,9 +411,8 @@ class ROGMapROS : public ROGMap
             break;
           }
         }
-        nav_msgs::msg::OccupancyGrid grid;
-        fillLayerGrid(types, grid);
-        vm_.layer_type_pub->publish(grid);
+        fillLayerGrid(types, frame->layer_type);
+        frame->has_layer_type = true;
       }
       if (vm_.layer_confidence_pub && vm_.layer_confidence_pub->get_subscription_count() >= 1) {
         std::vector<uint8_t> confidence(layer_->cells().size(), 0U);
@@ -359,100 +420,36 @@ class ROGMapROS : public ROGMap
           confidence[i] = static_cast<uint8_t>(
             std::clamp(static_cast<int>(std::round(layer_->cells()[i].confidence * 100.0f)), 0, 100));
         }
-        nav_msgs::msg::OccupancyGrid grid;
-        fillLayerGrid(confidence, grid);
-        vm_.layer_confidence_pub->publish(grid);
+        fillLayerGrid(confidence, frame->layer_confidence);
+        frame->has_layer_confidence = true;
       }
       if (vm_.layer_height_delta_pub && vm_.layer_height_delta_pub->get_subscription_count() >= 1) {
-        sensor_msgs::msg::PointCloud2 height_delta_cloud;
-        fillLayerHeightDeltaCloud(height_delta_cloud);
-        vm_.layer_height_delta_pub->publish(height_delta_cloud);
+        fillLayerHeightDeltaCloud(frame->height_delta);
+        frame->has_height_delta = true;
       }
     }
 
     if (field_ && field_->isValid() && vm_.field_pub && vm_.field_pub->get_subscription_count() >= 1) {
-      sensor_msgs::msg::PointCloud2 field_cloud;
-      fillFieldCloud(field_cloud);
-      vm_.field_pub->publish(field_cloud);
+      fillFieldCloud(frame->field);
+      frame->has_field = true;
     }
     if (vm_.decay_cells_pub && vm_.decay_cells_pub->get_subscription_count() >= 1) {
-      sensor_msgs::msg::PointCloud2 decay_cloud;
-      fillDecayCellsCloud(decay_cloud);
-      vm_.decay_cells_pub->publish(decay_cloud);
+      fillDecayCellsCloud(frame->decay);
+      frame->has_decay = true;
     }
 
-    if (cfg_.frontier_extraction_en && vm_.frontier_pub &&
-        vm_.frontier_pub->get_subscription_count() >= 1) {
-      vec_E<Vec3f> frontier_map;
-      boxSearch(box_min, box_max, FRONTIER, frontier_map);
-      sensor_msgs::msg::PointCloud2 cloud_msg;
-      vecEVec3fToPC2(frontier_map, cloud_msg);
-      cloud_msg.header.stamp = now();
-      vm_.frontier_pub->publish(cloud_msg);
+    vec_E<Vec3f> occ_map;
+    if ((vm_.occ_pub && vm_.occ_pub->get_subscription_count() >= 1) ||
+        (vm_.raw_occ_pub && vm_.raw_occ_pub->get_subscription_count() >= 1)) {
+      collectOccupiedForViz(box_min, box_max, occ_map);
     }
-
-    vec_E<Vec3f> occ_map, inf_occ_map;
-    sensor_msgs::msg::PointCloud2 cloud_msg;
-    bool original_occ_available = false;
-
     if (vm_.occ_pub && vm_.occ_pub->get_subscription_count() >= 1) {
-      boxSearch(box_min, box_max, OCCUPIED, occ_map);
-      vecEVec3fToPC2(occ_map, cloud_msg);
-      vm_.occ_pub->publish(cloud_msg);
-      original_occ_available = true;
+      vecEVec3fToPC2(occ_map, frame->occ);
+      frame->has_occ = true;
     }
-
     if (vm_.raw_occ_pub && vm_.raw_occ_pub->get_subscription_count() >= 1) {
-      vec_E<Vec3f> raw_occ_map;
-      rawOccupiedBoxSearch(box_min, box_max, raw_occ_map);
-      sensor_msgs::msg::PointCloud2 raw_cloud_msg;
-      vecEVec3fToPC2(raw_occ_map, raw_cloud_msg);
-      vm_.raw_occ_pub->publish(raw_cloud_msg);
-
-      static auto last_raw_occ_log = std::chrono::steady_clock::time_point{};
-      const auto log_now = std::chrono::steady_clock::now();
-      if (last_raw_occ_log.time_since_epoch().count() == 0 ||
-          std::chrono::duration<double>(log_now - last_raw_occ_log).count() >= 1.0) {
-        if (!original_occ_available) {
-          boxSearch(box_min, box_max, OCCUPIED, occ_map);
-        }
-        std::cout << "[ROGMapViz] raw_occupied_points=" << raw_occ_map.size()
-                  << ", original_occupied_points=" << occ_map.size() << std::endl;
-        last_raw_occ_log = log_now;
-      }
-    }
-
-    if (vm_.occ_inf_pub && vm_.occ_inf_pub->get_subscription_count() >= 1) {
-      boxSearchInflate(box_min, box_max, OCCUPIED, inf_occ_map);
-      vecEVec3fToPC2(inf_occ_map, cloud_msg);
-      vm_.occ_inf_pub->publish(cloud_msg);
-    }
-
-    /* visualize ESDF Map*/
-    if (cfg_.esdf_en) {
-      if (vm_.esdf_pub && vm_.esdf_pub->get_subscription_count() >= 1) {
-        PointCloud pc;
-        esdf_map_->getPositiveESDFPointCloud(box_min, box_max, robot_state_.p.z() - 0.5, pc);
-        pcl::toROSMsg(pc, cloud_msg);
-        cloud_msg.header.frame_id = cfg_.visualization_frame_id;
-        cloud_msg.header.stamp = now();
-        vm_.esdf_pub->publish(cloud_msg);
-      }
-
-      // if (vm_.esdf_neg_pub->get_subscription_count() >= 1) {
-      //     PointCloud pc;
-      //     esdf_map_->getNegativeESDFPointCloud(box_min, box_max, robot_state_.p.z() - 0.5, pc);
-      //     pcl::toROSMsg(pc, cloud_msg);
-      //     cloud_msg.header.frame_id = "world";
-      //     cloud_msg.header.stamp = now();
-      //     vm_.esdf_neg_pub->publish(cloud_msg);
-      // }
-
-#ifdef ESDF_MAP_DEBUG
-      esdf_map_->getESDFOccPC2(box_min, box_max, cloud_msg);
-      cloud_msg.header.stamp = now();
-      vm_.esdf_occ_pub->publish(cloud_msg);
-#endif
+      vecEVec3fToPC2(occ_map, frame->raw_occ);
+      frame->has_raw_occ = true;
     }
 
     if (vm_.mkr_arr_pub && vm_.mkr_arr_pub->get_subscription_count() >= 1) {
@@ -517,7 +514,131 @@ class ROGMapROS : public ROGMap
       for (auto & marker : mkr_arr.markers) {
         marker.header.frame_id = cfg_.visualization_frame_id;
       }
-      vm_.mkr_arr_pub->publish(mkr_arr);
+      frame->markers = std::move(mkr_arr);
+      frame->has_markers = true;
+    }
+
+    const double now_s = now().seconds();
+    const bool heavy_due = (now_s - last_heavy_viz_s_) >= 0.5;
+    std::shared_ptr<VizFrame> heavy;
+    if (heavy_due) {
+      last_heavy_viz_s_ = now_s;
+      heavy = std::make_shared<VizFrame>();
+      if (vm_.unknown_pub && vm_.unknown_pub->get_subscription_count() >= 1) {
+        vec_E<Vec3f> unknown_map;
+        boxSearch(box_min, box_max, UNKNOWN, unknown_map);
+        vecEVec3fToPC2(unknown_map, heavy->unknown);
+        heavy->has_unknown = true;
+      }
+      if (cfg_.unk_inflation_en && vm_.unknown_inf_pub &&
+          vm_.unknown_inf_pub->get_subscription_count() >= 1) {
+        vec_E<Vec3f> inf_unknown_map;
+        boxSearchInflate(box_min, box_max, UNKNOWN, inf_unknown_map);
+        vecEVec3fToPC2(inf_unknown_map, heavy->unknown_inf);
+        heavy->has_unknown_inf = true;
+      }
+      if (cfg_.frontier_extraction_en && vm_.frontier_pub &&
+          vm_.frontier_pub->get_subscription_count() >= 1) {
+        vec_E<Vec3f> frontier_map;
+        boxSearch(box_min, box_max, FRONTIER, frontier_map);
+        vecEVec3fToPC2(frontier_map, heavy->frontier);
+        heavy->has_frontier = true;
+      }
+      if (vm_.occ_inf_pub && vm_.occ_inf_pub->get_subscription_count() >= 1) {
+        vec_E<Vec3f> inf_occ_map;
+        boxSearchInflate(box_min, box_max, OCCUPIED, inf_occ_map);
+        vecEVec3fToPC2(inf_occ_map, heavy->occ_inf);
+        heavy->has_occ_inf = true;
+      }
+      if (cfg_.esdf_en && vm_.esdf_pub && vm_.esdf_pub->get_subscription_count() >= 1) {
+        PointCloud pc;
+        esdf_map_->getPositiveESDFPointCloud(box_min, box_max, robot_state_.p.z() - 0.5, pc);
+        pcl::toROSMsg(pc, heavy->esdf);
+        heavy->esdf.header.frame_id = cfg_.visualization_frame_id;
+        heavy->esdf.header.stamp = now();
+        heavy->has_esdf = true;
+      }
+    }
+
+    {
+      std::lock_guard<std::mutex> lk(viz_frame_mutex_);
+      viz_frame_ = std::move(frame);
+      if (heavy) {
+        viz_heavy_ = std::move(heavy);
+      }
+    }
+  }
+
+  void vizCallback()
+  {
+    if (!cfg_.visualization_en) {
+      return;
+    }
+    if (!hasVisualizationSubscriber()) {
+      return;
+    }
+    std::shared_ptr<const VizFrame> frame;
+    std::shared_ptr<const VizFrame> heavy;
+    {
+      std::lock_guard<std::mutex> lk(viz_frame_mutex_);
+      frame = viz_frame_;
+      heavy = viz_heavy_;
+    }
+    if (!frame && !heavy) {
+      return;
+    }
+    if (heavy) {
+      if (heavy->has_unknown && vm_.unknown_pub) {
+        vm_.unknown_pub->publish(heavy->unknown);
+      }
+      if (heavy->has_unknown_inf && vm_.unknown_inf_pub) {
+        vm_.unknown_inf_pub->publish(heavy->unknown_inf);
+      }
+      if (heavy->has_frontier && vm_.frontier_pub) {
+        vm_.frontier_pub->publish(heavy->frontier);
+      }
+      if (heavy->has_occ_inf && vm_.occ_inf_pub) {
+        vm_.occ_inf_pub->publish(heavy->occ_inf);
+      }
+      if (heavy->has_esdf && vm_.esdf_pub) {
+        vm_.esdf_pub->publish(heavy->esdf);
+      }
+    }
+    if (!frame) {
+      return;
+    }
+    if (frame->has_layer_value && vm_.layer_value_pub) {
+      vm_.layer_value_pub->publish(frame->layer_value);
+    }
+    if (frame->has_layer_dynamic && vm_.layer_value_dynamic_pub) {
+      vm_.layer_value_dynamic_pub->publish(frame->layer_dynamic);
+    }
+    if (frame->has_layer_static && vm_.layer_value_static_pub) {
+      vm_.layer_value_static_pub->publish(frame->layer_static);
+    }
+    if (frame->has_layer_type && vm_.layer_type_pub) {
+      vm_.layer_type_pub->publish(frame->layer_type);
+    }
+    if (frame->has_layer_confidence && vm_.layer_confidence_pub) {
+      vm_.layer_confidence_pub->publish(frame->layer_confidence);
+    }
+    if (frame->has_height_delta && vm_.layer_height_delta_pub) {
+      vm_.layer_height_delta_pub->publish(frame->height_delta);
+    }
+    if (frame->has_field && vm_.field_pub) {
+      vm_.field_pub->publish(frame->field);
+    }
+    if (frame->has_decay && vm_.decay_cells_pub) {
+      vm_.decay_cells_pub->publish(frame->decay);
+    }
+    if (frame->has_occ && vm_.occ_pub) {
+      vm_.occ_pub->publish(frame->occ);
+    }
+    if (frame->has_raw_occ && vm_.raw_occ_pub) {
+      vm_.raw_occ_pub->publish(frame->raw_occ);
+    }
+    if (frame->has_markers && vm_.mkr_arr_pub) {
+      vm_.mkr_arr_pub->publish(frame->markers);
     }
   }
 
@@ -716,6 +837,10 @@ class ROGMapROS : public ROGMap
     }
 
     if (cfg_.ros_callback_en) {
+#ifdef _OPENMP
+      omp_set_dynamic(0);
+      omp_set_num_threads(2);
+#endif
       rc_.odom_me_cbk_group = createCallbackGroup(rclcpp::CallbackGroupType::MutuallyExclusive);
       rc_.cloud_me_cbk_group = createCallbackGroup(rclcpp::CallbackGroupType::MutuallyExclusive);
       rclcpp::SubscriptionOptions so;
@@ -730,14 +855,24 @@ class ROGMapROS : public ROGMap
         [this](sensor_msgs::msg::PointCloud2::UniquePtr msg) { this->cloudCallback(std::move(msg)); },
         so);
       rc_.update_cbk_group = createCallbackGroup(rclcpp::CallbackGroupType::MutuallyExclusive);
-      rc_.update_timer = createWallTimer(std::chrono::milliseconds(cfg_.update_period_ms),
-        std::bind(&ROGMapROS::updateCallback, this),
+      rc_.update_timer = createWallTimer(std::chrono::seconds(1),
+        std::bind(&ROGMapROS::watchdogCallback, this),
         rc_.update_cbk_group);
+      rc_.stop_worker.store(false);
+      rc_.update_worker = std::thread([this]() { this->updateWorkerLoop(); });
     }
   }
 
 public:
   typedef shared_ptr<ROGMapROS> Ptr;
+
+  ROGMapROS(const ROGMapROS &) = delete;
+  ROGMapROS & operator=(const ROGMapROS &) = delete;
+
+  ~ROGMapROS()
+  {
+    stopUpdateWorker();
+  }
 
   ROGMapROS(const rclcpp_lifecycle::LifecycleNode::SharedPtr nh,
     const rog_map::Config & cfg,

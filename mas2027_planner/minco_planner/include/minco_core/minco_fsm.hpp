@@ -62,6 +62,7 @@ private:
   bool stop_published_{false};
   bool goal_stop_published_{false};
   double emer_stop_start_time_{0.0};
+  double last_force_replan_s_{0.0};
   Eigen::Vector2d current_escape_vel_{0.0, 0.0};
 };
 

@@ -87,6 +87,7 @@ private:
     RegistrationMetrics & metrics,
     std::string & reason) const;
   bool apply_registration_update(const Eigen::Isometry3d & transform);
+  Eigen::Isometry3d maybe_lock_z(const Eigen::Isometry3d & transform) const;
   void publish_transform();
   void maybe_publish_prior_cloud();
 
@@ -134,6 +135,7 @@ private:
   double ema_ratio_{0.6};
   double max_translation_step_{0.3};
   double max_rotation_step_{0.15};
+  bool lock_z_{true};
 
   small_gicp::PointCloud::Ptr map_cloud_;
   std::shared_ptr<small_gicp::KdTree<small_gicp::PointCloud>> map_kd_tree_;

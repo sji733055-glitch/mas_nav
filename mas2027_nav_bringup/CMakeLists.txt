@@ -17,6 +17,8 @@ endif()
 install(PROGRAMS
   scripts/waypoint_navigator.py
   scripts/save_pcd_and_make_map.sh
+  scripts/measure_lidar_mount.py
+  scripts/measure_lidar_mount.sh
   DESTINATION lib/${PROJECT_NAME}
 )
 

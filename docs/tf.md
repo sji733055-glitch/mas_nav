@@ -9,7 +9,8 @@ map
  └── odom                          动态：odom_localizer（GICP）
       └── base_link                动态：small_point_lio
            ├── base_link_fake      动态 50 Hz：fake_vel_transform
-           ├── lidar_link          静态：robot_state_publisher ← URDF lidar_joint
+           ├── lidar_link          静态：robot_state_publisher ← URDF lidar_joint（前雷达）
+           ├── lidar_back_link    静态：URDF lidar_back_joint，与右侧手性对称（Y 取反、roll 取反）；LIO 不 lookup
            ├── lidar_imu           LIO 根据 IMU 外参推（lookup 失败时发不出 odom TF）
            ├── chassis_link        静态 URDF（与 base_link 重合）
            └── base_footprint      静态 URDF，z = -0.1
@@ -56,7 +57,7 @@ LIO 开机清零的局部世界。点云 `/cloud_registered`、ROG-Map `frame_id
 
 雷达光学中心。costmap 观测源的 `sensor_frame: lidar_link` 必须填：点云 header 是 `odom`，不填的话距离过滤会以 odom 原点（开机位置）为中心，而不是雷达。
 
-双雷达时 `lidar_link` 仍是前雷达；后雷达点在驱动里变过来，LIO 不 lookup 后雷达 link。URDF 可加 `lidar_back_link` 只做可视化。详见 [dual-lidar.md](dual-lidar.md)。
+双雷达时 `lidar_link` 仍是右侧原雷达；左侧点在驱动里变过来，LIO 不 lookup `lidar_back_link`。左侧与右侧手性对称：`xyz="0.00 0.15 0.11"` `rpy="-0.8389 0 0"`。详见 [dual-lidar.md](dual-lidar.md)。
 
 ## 速度轴系（和 TF 配套）
 

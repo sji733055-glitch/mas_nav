@@ -237,6 +237,7 @@ public:
     layer_en = true;
     scan_z_min_abs = -0.25;
     scan_z_max_abs = 1.50;
+    scan_z_relative_to_robot = false;
     min_observed_voxels = 2;
     unknown_as_occupied = true;
     surface_height_delta_max = 0.10;
@@ -256,6 +257,7 @@ public:
     load("projection.enable", layer_en);
     load("projection.scan_z_min_abs", scan_z_min_abs);
     load("projection.scan_z_max_abs", scan_z_max_abs);
+    load("projection.scan_z_relative_to_robot", scan_z_relative_to_robot);
     load("projection.min_observed_voxels", min_observed_voxels);
     load("projection.unknown_as_occupied", unknown_as_occupied);
     load("projection.surface_height_delta_max", surface_height_delta_max);
@@ -299,8 +301,9 @@ public:
     if (!std::isfinite(scan_z_min_abs) || !std::isfinite(scan_z_max_abs) ||
         scan_z_max_abs <= scan_z_min_abs) {
       throw std::invalid_argument(
-        "projection.scan_z_min_abs and projection.scan_z_max_abs must be finite absolute Z "
-        "coordinates in the ROGMap frame, and scan_z_max_abs must be greater than scan_z_min_abs.");
+        "projection.scan_z_min_abs and projection.scan_z_max_abs must be finite, and "
+        "scan_z_max_abs must be greater than scan_z_min_abs. When scan_z_relative_to_robot "
+        "is true they are offsets from /Odometry z, otherwise absolute Z in the ROGMap frame.");
     }
     if (!std::isfinite(surface_height_delta_max) || surface_height_delta_max < 0.0) {
       throw std::invalid_argument(
@@ -510,6 +513,7 @@ public:
   bool layer_en{true};
   double scan_z_min_abs{-0.25};
   double scan_z_max_abs{1.50};
+  bool scan_z_relative_to_robot{false};
   int min_observed_voxels{2};
   bool unknown_as_occupied{true};
   double surface_height_delta_max{0.10};
