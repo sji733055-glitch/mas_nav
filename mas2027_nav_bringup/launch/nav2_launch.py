@@ -146,6 +146,25 @@ def generate_launch_description():
         arguments=nav_arguments,
         remappings=tf_remappings + [("cmd_vel", "/cmd_vel_nav")],
     )
+    terrain_map_server = Node(
+        package="map_server",
+        executable="map_server_node",
+        name="terrain_map_server",
+        namespace=namespace,
+        output="screen",
+        respawn=use_respawn,
+        respawn_delay=2.0,
+        parameters=[{
+            "use_sim_time": use_sim_time,
+            "terrain_map_path": os.path.join(bringup_dir, "map", "lab3_terrain.msgpack"),
+            "frame_id": "map",
+            "origin_x": -4.6,
+            "origin_y": -7.94,
+            "bypass_dynamic_obstacle": True,
+        }],
+        arguments=nav_arguments,
+        remappings=tf_remappings + [("cost_map", "/cost_map"), ("direction_map", "/direction_map"), ("cost_maps", "/cost_maps")],
+    )
     map_server = Node(
         package="nav2_map_server",
         executable="map_server",
@@ -280,6 +299,7 @@ def generate_launch_description():
             declare_use_ros2_comm,
             fake_vel_transform,
             ros2_comm,
+            terrain_map_server,
             map_server,
             controller_server,
             smoother_server,

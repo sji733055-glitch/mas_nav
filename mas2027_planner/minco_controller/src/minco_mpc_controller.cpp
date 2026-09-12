@@ -144,6 +144,16 @@ void MincoMpcController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPt
     node, name + ".control_delay_compensation", rclcpp::ParameterValue(0.25));
   nav2_util::declare_parameter_if_not_declared(
     node, name + ".use_small_gyro_mode", rclcpp::ParameterValue(true));
+  nav2_util::declare_parameter_if_not_declared(
+    node, name + ".terrain_cost_control.enabled", rclcpp::ParameterValue(true));
+  nav2_util::declare_parameter_if_not_declared(
+    node, name + ".terrain_cost_control.lookahead", rclcpp::ParameterValue(0.45));
+  nav2_util::declare_parameter_if_not_declared(
+    node, name + ".terrain_cost_control.slowdown_cost", rclcpp::ParameterValue(40));
+  nav2_util::declare_parameter_if_not_declared(
+    node, name + ".terrain_cost_control.stop_cost", rclcpp::ParameterValue(253));
+  nav2_util::declare_parameter_if_not_declared(
+    node, name + ".terrain_cost_control.min_speed_scale", rclcpp::ParameterValue(0.25));
 
   nav2_util::declare_parameter_if_not_declared(
     node, name + ".use_acc_constraints", rclcpp::ParameterValue(false));
@@ -203,6 +213,14 @@ void MincoMpcController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPt
   node->get_parameter(name + ".deadzone_speed_threshold", deadzone_speed_threshold_);
   node->get_parameter(name + ".control_delay_compensation", control_delay_compensation_);
   node->get_parameter(name + ".use_small_gyro_mode", use_small_gyro_mode_);
+  node->get_parameter(name + ".terrain_cost_control.enabled", terrain_cost_control_enabled_);
+  node->get_parameter(name + ".terrain_cost_control.lookahead", terrain_cost_lookahead_);
+  node->get_parameter(name + ".terrain_cost_control.slowdown_cost", terrain_slowdown_cost_);
+  node->get_parameter(name + ".terrain_cost_control.stop_cost", terrain_stop_cost_);
+  node->get_parameter(name + ".terrain_cost_control.min_speed_scale", terrain_min_speed_scale_);
+  terrain_slowdown_cost_ = std::clamp(terrain_slowdown_cost_, 0, 252);
+  terrain_stop_cost_ = std::clamp(terrain_stop_cost_, terrain_slowdown_cost_ + 1, 254);
+  terrain_min_speed_scale_ = std::clamp(terrain_min_speed_scale_, 0.0, 1.0);
 
   node->get_parameter(name + ".use_acc_constraints", mpc_config_.use_acc_constraints);
   node->get_parameter(name + ".ax_min", mpc_config_.ax_min);
@@ -362,6 +380,30 @@ void MincoMpcController::setSpeedLimit(const double & speed_limit, const bool & 
 {
   speed_limit_ = speed_limit;
   speed_limit_percentage_ = percentage;
+}
+
+void MincoMpcController::applyTerrainCostLimit(
+  const geometry_msgs::msg::PoseStamped & pose, double & vx, double & vy) const
+{
+  if (!terrain_cost_control_enabled_ || !costmap_ros_) return;
+  const double speed = std::hypot(vx, vy);
+  if (speed < 1e-6) return;
+  auto * costmap = costmap_ros_->getCostmap();
+  if (!costmap) { vx = 0.0; vy = 0.0; return; }
+  std::lock_guard<nav2_costmap_2d::Costmap2D::mutex_t> lock(*costmap->getMutex());
+  const double sample_x = pose.pose.position.x + terrain_cost_lookahead_ * vx / speed;
+  const double sample_y = pose.pose.position.y + terrain_cost_lookahead_ * vy / speed;
+  unsigned int mx = 0, my = 0;
+  if (!costmap->worldToMap(sample_x, sample_y, mx, my)) { vx = 0.0; vy = 0.0; return; }
+  const int cost = static_cast<int>(costmap->getCost(mx, my));
+  if (cost >= terrain_stop_cost_) { vx = 0.0; vy = 0.0; return; }
+  if (cost > terrain_slowdown_cost_) {
+    const double ratio = static_cast<double>(terrain_stop_cost_ - cost) /
+      static_cast<double>(terrain_stop_cost_ - terrain_slowdown_cost_);
+    const double scale = terrain_min_speed_scale_ + (1.0 - terrain_min_speed_scale_) * ratio;
+    vx *= scale;
+    vy *= scale;
+  }
 }
 
 void MincoMpcController::onOptPath(const interfaces::msg::MpcPositionCommand::SharedPtr msg)
@@ -907,6 +949,8 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
       vy *= scale;
     }
   }
+
+  applyTerrainCostLimit(pose, vx, vy);
 
   // 6) 死区截断
   const double deadzone = deadzone_speed_threshold_;

@@ -125,6 +125,12 @@ controller_server:
       # 以取到与该速度同时刻的车体 yaw；RViz 的 "Local Plan" 显示也读它。
       # 用相对名，命名空间行为与 DWB 一致（空 namespace 下即 /local_plan）。
       local_plan_topic: local_plan
+      terrain_cost_control:
+        enabled: true
+        lookahead: 0.45
+        slowdown_cost: 40
+        stop_cost: 253
+        min_speed_scale: 0.25
       #
       # === 输出速度的坐标系 ===
       # computeVelocityCommands() 返回的 twist 表达在 global_frame(odom) 轴系。
@@ -167,7 +173,13 @@ local_costmap:
       footprint: "[[-0.30, -0.30], [-0.30, 0.30], [0.30, 0.30], [0.30, -0.30]]"  # 0.6×0.6 m 方形轮廓
       footprint_padding: 0.02              # 轮廓外扩量，单位米
       track_unknown_space: false           # 未知区域按空闲处理，允许穿越无观测区域
-      plugins: [intensity_voxel_layer, inflation_layer]
+      plugins: [terrain_static_layer, intensity_voxel_layer, inflation_layer]
+      terrain_static_layer:
+        plugin: nav2_costmap_2d::StaticLayer
+        map_subscribe_transient_local: true
+        subscribe_to_updates: false
+        map_topic: /cost_map
+        trinary_costmap: false
       # 地形点云 -> 三维体素 -> 二维代价，带强度筛选
       intensity_voxel_layer:
         plugin: pb_nav2_costmap_2d::IntensityVoxelLayer
@@ -245,7 +257,8 @@ global_costmap:
         plugin: nav2_costmap_2d::StaticLayer
         map_subscribe_transient_local: true
         subscribe_to_updates: false
-        map_topic: /map
+        map_topic: /cost_map
+        trinary_costmap: false
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
         inflation_radius: 0.55

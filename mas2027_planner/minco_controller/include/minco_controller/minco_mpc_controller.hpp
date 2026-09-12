@@ -83,6 +83,9 @@ private:
     double & omega_global,
     double & yaw_global) const;
 
+  void applyTerrainCostLimit(
+    const geometry_msgs::msg::PoseStamped & pose, double & vx, double & vy) const;
+
   // --- Interpolation Utilities ---
   static double normalizeYaw(double yaw);
   inline static double interpolateYaw(double yaw1, double yaw2, double alpha)
@@ -180,6 +183,12 @@ private:
   // Low-pass filter for MPC output to prevent stick-slip oscillation on slopes.
   mutable Eigen::Vector3d prev_u_global_{0.0, 0.0, 0.0};
   double vel_smooth_alpha_{0.3};
+
+  bool terrain_cost_control_enabled_{true};
+  double terrain_cost_lookahead_{0.45};
+  int terrain_slowdown_cost_{40};
+  int terrain_stop_cost_{253};
+  double terrain_min_speed_scale_{0.25};
 
   // P0: Integral action for unmodeled disturbances (gravity on slopes, slip).
   // Leaky integrators of along-track and cross-track position errors.
