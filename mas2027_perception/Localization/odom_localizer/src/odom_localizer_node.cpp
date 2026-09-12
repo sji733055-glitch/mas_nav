@@ -118,7 +118,9 @@ OdomLocalizerNode::OdomLocalizerNode(const rclcpp::NodeOptions & options)
   map_to_odom_filter_ = std::make_unique<EMAIsometry>(ema_ratio_);
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
-  tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(this);
+  if (publish_tf_direct_) {
+    tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(this);
+  }
   load_map();
   create_interfaces();
   initialize_transform(initial_transform_, "startup.initial_transform");
@@ -189,6 +191,8 @@ void OdomLocalizerNode::load_parameters()
     declare_parameter<double>("update.max_translation_step", max_translation_step_);
   max_rotation_step_ = declare_parameter<double>("update.max_rotation_step", max_rotation_step_);
   lock_z_ = declare_parameter<bool>("update.lock_z", lock_z_);
+  publish_tf_direct_ = declare_parameter<bool>("tf.publish_direct", publish_tf_direct_);
+  map_to_odom_topic_ = declare_parameter<std::string>("tf.transform_topic", map_to_odom_topic_);
 
   if (num_threads_ < 1) {
     throw std::runtime_error("general.num_threads must be >= 1");
@@ -242,6 +246,9 @@ void OdomLocalizerNode::create_interfaces()
       "/odom_localizer/prior_cloud", rclcpp::QoS(1).transient_local());
     maybe_publish_prior_cloud();
   }
+
+  map_to_odom_pub_ = create_publisher<geometry_msgs::msg::TransformStamped>(
+    map_to_odom_topic_, rclcpp::QoS(1).transient_local());
 
   const auto publish_period = std::chrono::duration_cast<std::chrono::nanoseconds>(
     std::chrono::duration<double>(1.0 / publish_rate_hz_));
@@ -579,7 +586,10 @@ void OdomLocalizerNode::publish_transform()
   msg.header.frame_id = map_frame_;
   msg.child_frame_id = odom_frame_;
   msg.transform = tf2::eigenToTransform(get_current_map_to_odom()).transform;
-  tf_broadcaster_->sendTransform(msg);
+  map_to_odom_pub_->publish(msg);
+  if (tf_broadcaster_) {
+    tf_broadcaster_->sendTransform(msg);
+  }
 }
 
 void OdomLocalizerNode::maybe_publish_prior_cloud()

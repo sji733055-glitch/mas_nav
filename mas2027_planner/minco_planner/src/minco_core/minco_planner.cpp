@@ -125,6 +125,12 @@ bool MincoPlanner::configureRogMap(
     return false;
   }
 
+  if (auto external_query = rog_map::MapRegistry::get()) {
+    rog_query_raw_ = external_query;
+    RCLCPP_INFO(logger_, "[MincoPlanner] Reusing executor-owned ROGMap query interface.");
+    return true;
+  }
+
   rog_map::Config rog_cfg;
   try {
     rog_cfg.loadFromRosNode(node, plugin_prefix + "rog_map");

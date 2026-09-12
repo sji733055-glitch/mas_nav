@@ -37,6 +37,9 @@ small_point_lio:
     lidar_frame: lidar_link                           # 雷达坐标系
     odom_frame: odom                                  # Nav2 里程计父坐标系；/Odometry pose 和 TF 均使用此坐标系
     base_frame: base_link                             # Nav2 机器人坐标系；/Odometry twist 在此坐标轴表达
+    # 独立 nav_executor + tf_maintainer 启动时设为 false，由 tf_maintainer 从 /Odometry
+    # 唯一发布 odom→base_link；默认保留当前独立 LIO 启动行为。
+    publish_odom_tf: true
     align_odom_with_gravity: true                     # 用启动时静止估计的重力水平化 odom；初始位置和 yaw 为零，保留车体真实 roll/pitch
     save_pcd: false                                   # 是否缓存点云供 map_save 服务保存
 

@@ -1,0 +1,20 @@
+/**:
+  ros__parameters:
+    mpc:
+      dt: 0.05
+      lookahead_time: 0.5
+      control_delay_compensation: 0.05
+      deadzone_speed_threshold: 0.1
+      weights:
+        state: [3.0, 3.0, 2.0]
+        command: [1.5, 1.5, 1.0]
+      constraints:
+        velocity:
+          x: {min: -3.0, max: 3.0}
+          y: {min: -3.0, max: 3.0}
+          omega: {min: 0.0, max: 0.0}
+        acceleration:
+          enable: true
+          x: {min: -4.0, max: 4.0}
+          y: {min: -4.0, max: 4.0}
+          omega: {min: 0.0, max: 0.0}

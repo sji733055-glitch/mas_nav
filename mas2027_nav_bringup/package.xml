@@ -17,15 +17,18 @@
   <exec_depend>navigation2</exec_depend>
   <exec_depend>pb_nav2_plugins</exec_depend>
   <exec_depend>nav2_map_server</exec_depend>
+  <exec_depend>map_server</exec_depend>
   <exec_depend>mid360_driver</exec_depend>
   <exec_depend>mas2027_robot_description</exec_depend>
   <exec_depend>small_point_lio</exec_depend>
   <exec_depend>odom_localizer</exec_depend>
+  <exec_depend>tf_maintainer</exec_depend>
   <exec_depend>rog_map</exec_depend>
   <!-- MINCO 全局规划器与 MPC 控制器，作为 nav2_core 插件由 planner_server /
        controller_server 动态加载，nav2_params.yaml 里配置 -->
   <exec_depend>minco_planner</exec_depend>
   <exec_depend>minco_controller</exec_depend>
+  <exec_depend>mas2027_nav_executor</exec_depend>
   <exec_depend>interfaces</exec_depend>
   <exec_depend>fake_vel_transform</exec_depend>
   <exec_depend>ros2_comm</exec_depend>

@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.8)
 project(minco_planner)
 
+if(POLICY CMP0144)
+  cmake_policy(SET CMP0144 NEW)
+  # PCLConfig resets its policy version to 3.10 before finding FLANN.
+  set(CMAKE_POLICY_DEFAULT_CMP0144 NEW)
+endif()
+
 if(CMAKE_COMPILER_ID MATCHES "Clang|GNU")
   set(CMAKE_CXX_STANDARD 17)
   set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -106,7 +112,7 @@ ament_target_dependencies(${library_name}
 
 target_link_libraries(${library_name}
   OpenMP::OpenMP_CXX
-  yaml-cpp
+  yaml-cpp::yaml-cpp
   dw
 )
 
@@ -150,14 +156,14 @@ install(TARGETS minco_goal_updated_controller_bt_node
 )
 
 install(DIRECTORY include/
-  DESTINATION include/${PROJECT_NAME}
+  DESTINATION include
 )
 
 install(FILES global_planner_plugin.xml
   DESTINATION share/${PROJECT_NAME}
 )
 
-ament_export_include_directories(include/${PROJECT_NAME})
+ament_export_include_directories(include)
 ament_export_libraries(${library_name})
 ament_export_dependencies(
   geometry_msgs
@@ -171,6 +177,7 @@ ament_export_dependencies(
   tf2_ros
   interfaces
   rog_map
+  yaml-cpp
 )
 ament_export_targets(${library_name})
 ament_package()

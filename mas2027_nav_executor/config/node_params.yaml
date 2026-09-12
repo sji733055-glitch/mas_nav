@@ -1,0 +1,21 @@
+/**:
+  ros__parameters:
+    node:
+      control_rate_hz: 20.0
+      planner_frequency: 20.0
+      trajectory_timeout_s: 0.6
+      output_in_body_frame: true
+      frames:
+        odom: odom
+      topics:
+        goal_sub: /goal_pose
+        odom_sub: /Odometry
+        trajectory_sub: /opt_path
+        spin_cmd_sub: /cmd_spin
+        global_path_pub: /nav_executor/global_path
+        minco_trajectory_pub: /nav_executor/debug/minco_trajectory
+        # 独立包直接输出到底盘入口；不要与旧 Nav2 启动文件同时运行。
+        cmd_vel_pub: /cmd_vel
+      visualization:
+        velocity_color_min: 0.0
+        velocity_color_max: 3.0

@@ -69,3 +69,9 @@
       # lifts the robot above the prior map. Ground vehicle: pin map->odom z
       # to startup.initial_transform (0). Remake the PCD then this can stay on.
       lock_z: true
+
+    # 默认由定位器直发 map→odom，保持既有启动方式。独立 executor 模式设
+    # publish_direct=false，再由 tf_maintainer 成为该 TF 边的唯一发布者。
+    tf:
+      publish_direct: true
+      transform_topic: /tf_maintainer/map_to_odom

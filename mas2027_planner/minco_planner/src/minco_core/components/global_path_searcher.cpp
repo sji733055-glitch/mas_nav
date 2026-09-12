@@ -309,7 +309,7 @@ bool GlobalPathSearcher::planExploration(const geometry_msgs::msg::PoseStamped &
   unsigned int sx = 0;
   unsigned int sy = 0;
   if (!query->worldToMap(start_rog.pose.position.x, start_rog.pose.position.y, sx, sy)) {
-    RCLCPP_ERROR(logger_,
+    RCLCPP_WARN_THROTTLE(logger_, *rclcpp::Clock::make_shared(), 2000,
       "[MincoPlanner] ROGMap boundary check failed: EXPLORATION start (%.2f, %.2f) is outside ROGMap.",
       start_rog.pose.position.x,
       start_rog.pose.position.y);

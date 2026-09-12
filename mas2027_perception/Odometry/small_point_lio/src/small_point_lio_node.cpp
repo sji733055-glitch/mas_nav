@@ -25,6 +25,7 @@ namespace small_point_lio {
         std::string lidar_frame = declare_parameter<std::string>("lidar_frame");
         std::string odom_frame = declare_parameter<std::string>("odom_frame", "odom");
         std::string base_frame = declare_parameter<std::string>("base_frame", "base_link");
+        bool publish_odom_tf = declare_parameter<bool>("publish_odom_tf", true);
         bool align_odom_with_gravity = declare_parameter<bool>("align_odom_with_gravity", true);
         bool save_pcd = declare_parameter<bool>("save_pcd");
         small_point_lio = std::make_unique<small_point_lio::SmallPointLio>(*this);
@@ -36,7 +37,9 @@ namespace small_point_lio {
         // 供 ROG-Map、odom_localizer 和离线 /map_save 继续使用。
         pointcloud_full_publisher = create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered_full", rclcpp::SensorDataQoS().keep_last(1));
         pointcloud_publisher = create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered", rclcpp::SensorDataQoS().keep_last(1));
-        tf_broadcaster = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+        if (publish_odom_tf) {
+            tf_broadcaster = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+        }
         tf_buffer = std::make_unique<tf2_ros::Buffer>(get_clock());
         tf_listener = std::make_shared<tf2_ros::TransformListener>(*tf_buffer);
         if (save_pcd) {
@@ -87,7 +90,7 @@ namespace small_point_lio {
                         RCLCPP_INFO(rclcpp::get_logger("small_point_lio"), "save pcd success");
                     }).detach();
                 });
-        small_point_lio->set_odometry_callback([this, lidar_frame, odom_frame, base_frame, align_odom_with_gravity](const common::Odometry &odometry) {
+        small_point_lio->set_odometry_callback([this, lidar_frame, odom_frame, base_frame, align_odom_with_gravity, publish_odom_tf](const common::Odometry &odometry) {
             last_odometry = odometry;
 
             builtin_interfaces::msg::Time time_msg;
@@ -217,7 +220,9 @@ namespace small_point_lio {
             odometry_msg.twist.twist.angular.y = angular_velocity_in_base_link.y();
             odometry_msg.twist.twist.angular.z = angular_velocity_in_base_link.z();
 
-            tf_broadcaster->sendTransform(transform_stamped);
+            if (publish_odom_tf) {
+                tf_broadcaster->sendTransform(transform_stamped);
+            }
             odometry_publisher->publish(odometry_msg);
         });
         small_point_lio->set_pointcloud_callback([this, save_pcd, odom_frame](const std::vector<Eigen::Vector3f> &pointcloud) {

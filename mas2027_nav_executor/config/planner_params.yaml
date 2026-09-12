@@ -1,0 +1,140 @@
+# Like HW/nav_executor, every config file uses a wildcard node selector and
+# hierarchical parameter names. The embedded planner node receives this too.
+/**:
+  ros__parameters:
+    planner:
+      # EXPLORATION uses ROGMap directly in odom, so it has no Nav2 Costmap
+      # or SMAC dependency. A prior-map global planner can be added later.
+      planner_mode: EXPLORATION
+      global_frame: odom
+      frames:
+        map_frame: map
+        rog_frame: odom
+      use_smac: false
+      allow_unknown: false
+      odom_topic: /Odometry
+      tolerance: 0.3
+      exploration:
+        boundary_margin: 0.2
+        boundary_sample_step: 0.1
+        unknown_as_occupied: true
+        prefer_goal_direction: true
+      corridor:
+        robot_radius: 0.30
+        extra_margin: 0.05
+      minco_optimizer:
+        opt_freq: 20.0
+        lookahead_dist: 10.0
+        traj_goal_tolerance: 0.15
+        enable_yaw_opt: true
+        max_yaw_dot: 5.0
+        safe_dist: 0.40
+        collision_dist: 0.30
+        replan_period_s: 0.2
+        replan_react_time: 0.35
+        safety_lookahead_time: 1.2
+        monitor_margin: 0.20
+        max_velocity: 3.0
+        max_acceleration: 4.0
+        turn_angle_deadzone: 0.1
+        turn_angle_saturation: 1.0
+        min_turn_vel: 0.8
+        decay_power: 1.3
+        opt_accuracy: 0.001
+        print_optimizer_log: false
+        penalty_weight_time: 100.0
+        penalty_weight_pos: 50000.0
+        penalty_weight_vel: 1500.0
+        penalty_weight_acc: 1500.0
+        penalty_weight_att: 100.0
+        penalty_weight_time_barrier: 50.0
+      recovery_server:
+        fail_threshold: 5
+        cooldown_sec: 1.0
+        recovery_window_sec: 3.0
+        escape_speed: 0.5
+      performance:
+        enable: false
+        print_enable: false
+        odom_sub_debug_enable: false
+      rog_map:
+        frame_id: odom
+        resolution: 0.05
+        inflation_resolution: 0.05
+        map_size: [10.0, 10.0, 1.5]
+        fix_map_origin: [0.0, 0.0, 0.0]
+        virtual_ground_height: -1.5
+        virtual_ceil_height: 3.0
+        map_sliding:
+          enable: true
+          threshold: 0.2
+          center_offset_enable: false
+          center_offset: [0.0, 0.0, 0.0]
+        ros_callback:
+          enable: true
+          cloud_topic: /cloud_registered
+          odom_topic: /Odometry
+          odom_timeout: 0.08
+          update_period_ms: 20
+        raycasting:
+          enable: true
+          batch_update_size: 1
+          ray_range: [0.01, 10.0]
+          local_update_box: [10.0, 10.0, 2.5]
+          unk_thresh: 0.70
+          p_hit: 0.9
+          p_miss: 0.45
+          p_min: 0.12
+          p_max: 0.97
+          p_occ: 0.85
+          p_free: 0.499
+          parallel_enable: false
+          num_threads: 4
+        decay:
+          enable: true
+          keep_time: 0.8
+          clear_time: 1.2
+          active_list_enable: true
+        projection:
+          enable: true
+          prior_map:
+            enable: false
+          scan_z_relative_to_robot: true
+          scan_z_min_abs: -1.2
+          scan_z_max_abs: 0.75
+          unknown_as_occupied: false
+          min_observed_voxels: 1
+          surface_height_delta_max: 0.1
+          wall_height_delta_min: 0.40
+          wall_occupancy_ratio_min: 0.80
+          tunnel_height_delta_min: 0.25
+          tunnel_height_delta_max: 0.40
+          tunnel_occupancy_ratio_max: 0.45
+          passable_cost: 50
+          passable_as_free: true
+          hysteresis_enable: false
+          hysteresis_count: 2
+          obstacle_hold_time: 1.5
+          mask_filter_en: true
+          fill_occ_min: 4
+          denoise_occ_max: 0
+        field:
+          enable: true
+          inflation_radius: 0.0
+          max_distance: 6.0
+          min_distance: -3.0
+          clamp_distance: true
+          interpolation: quadratic
+          update_rate: 20.0
+        performance:
+          enable: true
+          print_enable: false
+          dirty_column_enable: true
+          dirty_full_ratio: 0.30
+          parallel_raycast_enable: false
+          raycast_num_threads: 4
+        visualization:
+          enable: true
+          frame_id: odom
+          rate: 5.0
+          range: [10.0, 10.0, 1.5]
