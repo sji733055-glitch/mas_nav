@@ -20,6 +20,7 @@ ros2 launch mas2027_nav_bringup rm_navigation_small_point_lio_launch.py
 | [组件原理](components.md) | 感知、定位、建图、规划、控制各自解决什么问题 |
 | [排查定位](troubleshooting.md) | 常见症状 → 该看哪一段、哪种误判 |
 | [双 MID360 融合](dual-lidar.md) | 硬件接线、PTP、驱动内融合、外参；左右手性对称，bringup 已开 `enable_lidar_merge`。近处同身高漏障 / `lock_z` / `blind_center` 的修改清单在 [§11](dual-lidar.md#11-近处同身高障碍与-z--修改清单2026-09-10) |
+| [修改历史](change-history.md) | 每次代码、配置、脚本、资源或文档修改的内容与验证结果 |
 
 ## 读代码前先记住的三件事
 
