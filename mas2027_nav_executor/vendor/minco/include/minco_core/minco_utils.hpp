@@ -81,25 +81,6 @@ void publishEscapeCommand(const geometry_msgs::msg::PoseStamped & current_pose,
   uint32_t & trajectory_id_counter,
   const std_msgs::msg::Header & header);
 
-// === Costmap Utilities ===
-// --- Collision / Visibility Checks ---
-
-bool isLineFree(
-  nav2_costmap_2d::Costmap2D * costmap, const Eigen::Vector3d & p1, const Eigen::Vector3d & p2);
-
-// --- Coordinate Conversion ---
-bool worldToMap(nav2_costmap_2d::Costmap2D * costmap,
-  const rclcpp::Logger & logger,
-  double wx,
-  double wy,
-  unsigned int & mx,
-  unsigned int & my);
-
-void mapToWorld(nav2_costmap_2d::Costmap2D * costmap, double mx, double my, double & wx, double & wy);
-
-// --- Costmap Cell Editing ---
-void clearRobotCell(nav2_costmap_2d::Costmap2D * costmap, unsigned int mx, unsigned int my);
-
 void compensateLeverArm(double v_lidar_x,
   double v_lidar_y,
   double omega_z,

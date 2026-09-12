@@ -3,14 +3,12 @@
 /**:
   ros__parameters:
     planner:
-      # EXPLORATION uses ROGMap directly in odom, so it has no Nav2 Costmap
-      # or SMAC dependency. A prior-map global planner can be added later.
+      # EXPLORATION directly plans against ROGMap in odom.
       planner_mode: EXPLORATION
       global_frame: odom
       frames:
         map_frame: map
         rog_frame: odom
-      use_smac: false
       allow_unknown: false
       odom_topic: /Odometry
       tolerance: 0.3

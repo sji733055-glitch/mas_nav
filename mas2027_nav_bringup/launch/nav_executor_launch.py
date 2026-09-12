@@ -10,8 +10,6 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from launch_ros.descriptions import ParameterFile
-from nav2_common.launch import RewrittenYaml
 
 
 def generate_launch_description():
@@ -29,22 +27,10 @@ def generate_launch_description():
     output_topic = LaunchConfiguration("output_topic")
     map_pcd = LaunchConfiguration("map_pcd")
 
-    lio_params = ParameterFile(
-        RewrittenYaml(
-            source_file=os.path.join(bringup_dir, "config", "small_point_lio_params.yaml"),
-            param_rewrites={"use_sim_time": use_sim_time},
-            convert_types=True,
-        ),
-        allow_substs=True,
-    )
+    lio_params = os.path.join(bringup_dir, "config", "small_point_lio_params.yaml")
     executor_params = sorted(glob.glob(os.path.join(executor_dir, "config", "*.yaml")))
-    localizer_params = ParameterFile(
-        RewrittenYaml(
-            source_file=os.path.join(get_package_share_directory("odom_localizer"), "config", "params.yaml"),
-            param_rewrites={"prior_pcd_file": map_pcd, "use_sim_time": use_sim_time},
-            convert_types=True,
-        ),
-        allow_substs=True,
+    localizer_params = os.path.join(
+        get_package_share_directory("odom_localizer"), "config", "params.yaml"
     )
 
     robot_state_publisher = IncludeLaunchDescription(
@@ -58,14 +44,14 @@ def generate_launch_description():
         executable="mid360_driver_node",
         name="mid360_driver",
         output="screen",
-        parameters=[lio_params],
+        parameters=[lio_params, {"use_sim_time": use_sim_time}],
     )
     small_point_lio = Node(
         package="small_point_lio",
         executable="small_point_lio_node",
         name="small_point_lio",
         output="screen",
-        parameters=[lio_params, {"publish_odom_tf": False}],
+        parameters=[lio_params, {"use_sim_time": use_sim_time, "publish_odom_tf": False}],
     )
     odom_localizer = Node(
         package="odom_localizer",
@@ -75,7 +61,14 @@ def generate_launch_description():
         emulate_tty=True,
         condition=IfCondition(use_odom_localizer),
         additional_env={"LD_LIBRARY_PATH": system_first_library_path},
-        parameters=[localizer_params, {"tf.publish_direct": False}],
+        parameters=[
+            localizer_params,
+            {
+                "map.prior_pcd_file": map_pcd,
+                "use_sim_time": use_sim_time,
+                "tf.publish_direct": False,
+            },
+        ],
     )
     tf_maintainer = Node(
         package="tf_maintainer",

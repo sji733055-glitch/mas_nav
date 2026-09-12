@@ -27,11 +27,6 @@
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/quaternion.hpp"
 #include "geometry_msgs/msg/vector3_stamped.hpp"
-#include "nav2_core/global_planner.hpp"
-#include "nav2_costmap_2d/cost_values.hpp"
-#include "nav2_costmap_2d/costmap_2d.hpp"
-#include "nav2_costmap_2d/costmap_2d_ros.hpp"
-#include "nav2_util/lifecycle_node.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "rcl_interfaces/msg/set_parameters_result.hpp"
@@ -40,6 +35,7 @@
 #include "tf2/LinearMath/Matrix3x3.h"
 #include "tf2/LinearMath/Quaternion.h"
 #include "tf2/exceptions.h"
+#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include "tf2_ros/buffer.h"
 #include "visualization_msgs/msg/marker.hpp"
 
@@ -51,7 +47,6 @@
 // Project dependencies
 #include "data_structure/base/trajectory.h"
 #include "rog_map/map_query_interface.hpp"
-#include "smac_search/smac_planner_2d_simple.hpp"
 #include "traj_opt/backup_traj_optimizer_s4.h"
 #include "traj_opt/minco_optimizer.hpp"
 #include "traj_opt/yaw_traj_opt.h"
@@ -69,5 +64,12 @@
 #include "minco_core/minco_fsm.hpp"
 #include "minco_core/minco_utils.hpp"
 #include "minco_core/visualizer.hpp"
+
+namespace minco_planner {
+inline constexpr unsigned char kFreeCost = 0;
+inline constexpr unsigned char kInscribedCost = 253;
+inline constexpr unsigned char kLethalCost = 254;
+inline constexpr unsigned char kUnknownCost = 255;
+}  // namespace minco_planner
 
 #endif  // MINCO_PLANNER__UTILS__HEADER_HPP_

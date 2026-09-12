@@ -26,7 +26,6 @@
 #include <cmath>
 #include <stdexcept>
 
-#include <nav2_util/node_utils.hpp>
 #include <rclcpp/rclcpp.hpp>
 
 #include <rog_map/rog_map_core/common_lib.hpp>
@@ -76,7 +75,9 @@ public:
   {
     auto load = [&node, &prefix](const string & key, auto & value) {
       const string param_name = prefix + "." + key;
-      nav2_util::declare_parameter_if_not_declared(node, param_name, rclcpp::ParameterValue(value));
+      if (!node->has_parameter(param_name)) {
+        node->declare_parameter(param_name, rclcpp::ParameterValue(value));
+      }
       if (!node->get_parameter(param_name, value)) {
         RCLCPP_WARN(node->get_logger(),
           "[ROGMap Config] parameter '%s' not found after declaration, using default.",
@@ -87,7 +88,9 @@ public:
     auto loadVec3 = [&node, &prefix](const string & key, const vector<double> & default_value) {
       vector<double> values = default_value;
       const string param_name = prefix + "." + key;
-      nav2_util::declare_parameter_if_not_declared(node, param_name, rclcpp::ParameterValue(values));
+      if (!node->has_parameter(param_name)) {
+        node->declare_parameter(param_name, rclcpp::ParameterValue(values));
+      }
       if (!node->get_parameter(param_name, values)) {
         RCLCPP_WARN(node->get_logger(),
           "[ROGMap Config] parameter '%s' not found after declaration, using default vector.",
@@ -102,7 +105,9 @@ public:
     auto loadVec2 = [&node, &prefix](const string & key, const vector<double> & default_value) {
       vector<double> values = default_value;
       const string param_name = prefix + "." + key;
-      nav2_util::declare_parameter_if_not_declared(node, param_name, rclcpp::ParameterValue(values));
+      if (!node->has_parameter(param_name)) {
+        node->declare_parameter(param_name, rclcpp::ParameterValue(values));
+      }
       if (!node->get_parameter(param_name, values)) {
         RCLCPP_WARN(node->get_logger(),
           "[ROGMap Config] parameter '%s' not found after declaration, using default vector.",

@@ -15,7 +15,7 @@ namespace minco_planner {
 class Visualizer;
 class MincoFsm;
 
-class MincoPlanner : public nav2_core::GlobalPlanner
+class MincoPlanner
 {
 public:
   using Ptr = std::shared_ptr<MincoPlanner>;
@@ -26,17 +26,14 @@ public:
 
   void configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & parent,
     std::string name,
-    std::shared_ptr<tf2_ros::Buffer> tf,
-    std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros) override;
-  void activate() override;
-  void deactivate() override;
-  void cleanup() override;
+    std::shared_ptr<tf2_ros::Buffer> tf);
+  void cleanup();
 
   // === Core Planning Interfaces ===
   nav_msgs::msg::Path createPlan(
     const geometry_msgs::msg::PoseStamped & start,
     const geometry_msgs::msg::PoseStamped & goal,
-    std::function<bool()> cancel_checker) override;
+    std::function<bool()> cancel_checker);
 
   bool PlanGlobalPath(
     const geometry_msgs::msg::PoseStamped & start, const geometry_msgs::msg::PoseStamped & goal);
@@ -157,7 +154,6 @@ private:
   // === TF & Costmap & Frames ===
   std::shared_ptr<tf2_ros::Buffer> tf_;
   rclcpp_lifecycle::LifecycleNode::WeakPtr node_;
-  std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros_;
   std::shared_ptr<rog_map::MapQueryInterface> map_;
   std::shared_ptr<rog_map::MapQueryInterface> rog_query_raw_;
   std::shared_ptr<rog_map::ROGMapROS> rog_map_ros_;
@@ -167,14 +163,9 @@ private:
   // === Configurations & Parameters ===
   double tolerance_;
   bool allow_unknown_;
-  bool use_smac_;
   bool use_yaw_opt_{true};
-  bool priormap_use_nav2_global_search_{true};
-  bool priormap_clip_seed_by_rog_boundary_{true};
   bool exploration_unknown_as_occupied_{true};
   bool exploration_prefer_goal_direction_{true};
-  double priormap_rog_boundary_margin_{0.8};
-  double priormap_rog_boundary_sample_step_{0.1};
   double exploration_boundary_margin_{0.8};
   double exploration_boundary_sample_step_{0.1};
   double lidar_offset_x_{0.0};
@@ -194,7 +185,6 @@ private:
 
   // === Core Modules (Pointers to FSM, Optimizers, etc.) ===
   std::unique_ptr<Astar> astar_planner_;
-  std::unique_ptr<minco_planner::smac::SmacPlanner2DSimple> smac_planner_;
   std::unique_ptr<MincoOptimizer> minco_optimizer_;
   std::unique_ptr<traj_opt::BackupTrajOpt> backup_opt_;
   std::unique_ptr<traj_opt::YawTrajOpt> yaw_opt_;

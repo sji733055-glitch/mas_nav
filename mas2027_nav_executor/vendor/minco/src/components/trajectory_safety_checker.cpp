@@ -51,7 +51,7 @@ bool TrajectorySafetyChecker::checkPoint(const Eigen::Vector3d & pos, double che
     return false;
   }
   const unsigned char cost = dynamic_query_->value(mx, my);
-  if (cost == nav2_costmap_2d::LETHAL_OBSTACLE || cost == nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE) {
+  if (cost == kLethalCost || cost == kInscribedCost) {
     return false;
   }
   double esdf_dist = 0.0;

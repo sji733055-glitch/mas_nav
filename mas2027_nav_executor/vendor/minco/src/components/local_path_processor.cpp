@@ -63,10 +63,8 @@ LocalPathSeed LocalPathProcessor::buildSeed(
   Eigen::Vector3d cur_pos(current_pose.pose.position.x, current_pose.pose.position.y, 0.0);
 
   seed.dense_path = extractLocalPath(global_path, cur_pos);
-  const bool clip_required =
-    mode_context.mode() == PlannerMode::EXPLORATION || mode_context.clipSeedByRogBoundary();
   const bool clip_ok = clipLocalPathByRogBoundary(seed.dense_path, mode_context);
-  if (clip_required && (!clip_ok || seed.dense_path.size() < 2U)) {
+  if (!clip_ok || seed.dense_path.size() < 2U) {
     RCLCPP_WARN_THROTTLE(logger_,
       *rclcpp::Clock::make_shared(),
       2000,
@@ -142,20 +140,12 @@ bool LocalPathProcessor::clipLocalPathByRogBoundary(
     return false;
   }
 
-  const bool enable_clip =
-    mode_context.mode() == PlannerMode::EXPLORATION || mode_context.clipSeedByRogBoundary();
-  if (!enable_clip) {
-    return path.size() >= 2U;
-  }
-
   const auto query = mode_context.dynamicQuery();
   if (!query) {
     return false;
   }
 
-  const double margin = mode_context.mode() == PlannerMode::PRIORMAP
-                          ? mode_context.rogBoundaryMargin()
-                          : mode_context.explorationBoundaryMargin();
+  const double margin = mode_context.explorationBoundaryMargin();
   const int margin_cells =
     std::max(0, static_cast<int>(std::ceil(margin / std::max(1e-6, query->resolution()))));
   const int max_x = static_cast<int>(query->sizeX());
@@ -164,9 +154,7 @@ bool LocalPathProcessor::clipLocalPathByRogBoundary(
     return false;
   }
 
-  const double sample_step = mode_context.mode() == PlannerMode::PRIORMAP
-                               ? mode_context.rogBoundarySampleStep()
-                               : mode_context.explorationBoundarySampleStep();
+  const double sample_step = mode_context.explorationBoundarySampleStep();
   const double step = std::max(query->resolution(), std::max(1e-3, sample_step));
 
   auto inside_boundary = [&query, margin_cells, max_x, max_y](const Eigen::Vector3d & p) {

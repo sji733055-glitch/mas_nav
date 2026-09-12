@@ -5,30 +5,6 @@
 
 namespace minco_planner {
 
-class Nav2CostmapQuery : public rog_map::MapQueryInterface
-{
-public:
-  explicit Nav2CostmapQuery(nav2_costmap_2d::Costmap2D * costmap);
-
-  bool worldToMap(double wx, double wy, unsigned int & mx, unsigned int & my) const override;
-  void mapToWorld(unsigned int mx, unsigned int my, double & wx, double & wy) const override;
-  unsigned int sizeX() const override;
-  unsigned int sizeY() const override;
-  double resolution() const override;
-  double originX() const override;
-  double originY() const override;
-  uint8_t value(unsigned int mx, unsigned int my) const override;
-  const unsigned char * values() const override;
-  bool copyValues(std::vector<unsigned char> & out) const override;
-  bool isValid(unsigned int mx, unsigned int my) const override;
-  bool isFree(unsigned int mx, unsigned int my) const override;
-  rog_map::QueryResult query(const Eigen::Vector3d & pos) const override;
-  bool evaluate(const Eigen::Vector3d & pos, double & dist, Eigen::Vector3d & grad) const override;
-
-private:
-  nav2_costmap_2d::Costmap2D * costmap_{nullptr};
-};
-
 class FrameAwareRogQuery : public rog_map::MapQueryInterface
 {
 public:

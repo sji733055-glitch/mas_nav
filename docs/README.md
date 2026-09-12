@@ -1,34 +1,72 @@
-# mas_nav_2027 学习文档
+# 独立导航说明
 
-这是 RoboMaster 2027 哨兵导航栈的阅读入口。根目录 `README.md` 讲环境、建图与离线地图流程；这里讲**在线导航时系统怎么转起来**。
-
-当前主启动：
+当前唯一入口是：
 
 ```bash
-ros2 launch mas2027_nav_bringup rm_navigation_small_point_lio_launch.py
+ros2 launch mas2027_nav_bringup nav_executor_launch.py
 ```
 
-一句话：MID360 点云进 Small Point-LIO，得到 `odom → base_link` 和 `/cloud_registered`；`MincoPlanner` 在 `planner_server` 进程里建一份 ROG-Map（ESDF + 二维投影），优化轨迹发到 `/opt_path`；`MincoMpcController` 跟踪它，速度经 `fake_vel_transform` 旋到车体系，再由 `ros2_comm` UDP 下发到底盘。
+## 组件职责
 
-## 文档地图
+| 组件 | 输入 | 输出 | 职责 |
+|---|---|---|---|
+| `small_point_lio` | MID360 点云与 IMU | `/Odometry`、`/cloud_registered` | 实时里程计与配准点云 |
+| `odom_localizer` | `lab3.pcd`、实时点云 | 定位结果 | 先验点云配准 |
+| `tf_maintainer` | LIO 与定位结果 | `map→odom→base_link` | 唯一 TF 发布者 |
+| `ROGMap` | `/Odometry`、`/cloud_registered` | 进程内查询接口 | 在线占据、距离和梯度查询 |
+| `PathPlanner` | `/goal_pose`、ROGMap | `/opt_path` | A* 搜索、MINCO 优化与安全重规划 |
+| `PathExecutor` | `/opt_path`、`/Odometry` | `/cmd_vel` | MPC 轨迹跟踪和失败制动 |
+| `terrain_map_server` | `lab3_terrain.msgpack` | `/cost_map`、`/direction_map` | HW 地形图可视化 |
 
-| 文档 | 内容 |
-|---|---|
-| [学习顺序](learning-order.md) | 建议读代码的顺序，以及每个包/关键文件干什么 |
-| [数据链路](data-flow.md) | 话题从雷达到轮子怎么走，谁订阅谁 |
-| [TF 链路](tf.md) | 坐标系树、谁发布、和速度轴系的关系 |
-| [组件原理](components.md) | 感知、定位、建图、规划、控制各自解决什么问题 |
-| [排查定位](troubleshooting.md) | 常见症状 → 该看哪一段、哪种误判 |
-| [双 MID360 融合](dual-lidar.md) | 硬件接线、PTP、驱动内融合、外参；左右手性对称，bringup 已开 `enable_lidar_merge`。近处同身高漏障 / `lock_z` / `blind_center` 的修改清单在 [§11](dual-lidar.md#11-近处同身高障碍与-z--修改清单2026-09-10) |
-| [修改历史](change-history.md) | 每次代码、配置、脚本、资源或文档修改的内容与验证结果 |
+规划器固定使用 ROGMap 的 `EXPLORATION` 模式。HW 地形图目前不参与轨迹优化，
+因此 RViz 里的代价图和方向图是观察通道，不是规划输入。
 
-## 读代码前先记住的三件事
+## 关键话题
 
-1. **导航时没有独立的 `rog_map_node`。** ROG-Map 是 `MincoPlanner` 在 `planner_server` 里 new 出来的库对象。`rog_map_node` 只用于不跑 Nav2 时单独调建图，不能和导航同时开。
-2. **MINCO 不靠 `nav_msgs/Path` 开车。** `createPlan()` 返回的 Path 只喂行为树和 RViz；真正给控制器的是 `/opt_path`（`interfaces/msg/MpcPositionCommand`）。
-3. **Nav2 跑在 `base_link_fake` 上。** 这个坐标系和 `base_link` 同原点，但 yaw 钉死在启动方向，用来把全向底盘的平移和车体自旋解耦。车体自旋走 `/cmd_spin`，不走 MPC 的 `omega`。
+- 目标：`/goal_pose`
+- 在线点云：`/cloud_registered`
+- 里程计：`/Odometry`
+- 优化轨迹：`/opt_path`
+- 底盘速度：`/cmd_vel`
+- 自旋叠加：`/cmd_spin`
+- 地形代价：`/cost_map`
+- 地形方向：`/direction_map`
+- RViz 路径：`/nav_executor/global_path`
+- RViz 彩色轨迹：`/nav_executor/minco_trajectory`
 
-改参数几乎总是改这两份 YAML，不要在包内另起一份：
+## TF 约束
 
-- `mas2027_nav_bringup/config/nav2_params.yaml` — Nav2、MINCO、ROG-Map（`MincoPlanner.rog_map` 是全仓库唯一一份 ROG-Map 参数）
-- `mas2027_nav_bringup/config/small_point_lio_params.yaml` — 雷达驱动、LIO、`fake_vel_transform`
+```text
+map → odom → base_link → lidar_link
+```
+
+`small_point_lio.publish_odom_tf=false`，`odom_localizer.tf.publish_direct=false`；两者只
+提供数据，`tf_maintainer` 统一发布动态 TF。控制器以 `odom` 为全局控制坐标系，输出
+可通过 `node.output_in_body_frame` 切换到车体坐标系。
+
+## RViz
+
+默认视图为 `mas2027_nav_bringup/rviz/nav_executor_view.rviz`。其中：
+
+- `HW Cost Map` 显示 `/cost_map`；
+- `HW Direction Map` 显示 `/direction_map`；
+- `Global Path` 显示 `/nav_executor/global_path`；
+- `MINCO Trajectory` 显示 `/nav_executor/minco_trajectory`。
+
+独立执行器没有 `Global Costmap` / `Local Costmap`，这是预期行为。
+
+## 快速检查
+
+```bash
+ros2 topic hz /Odometry
+ros2 topic hz /cloud_registered
+ros2 topic echo /cost_map --once
+ros2 topic echo /direction_map --once
+ros2 topic echo /opt_path --once
+ros2 topic echo /cmd_vel --once
+ros2 run tf2_ros tf2_echo map odom
+ros2 run tf2_ros tf2_echo odom base_link
+```
+
+若点击目标后没有轨迹，依次确认 ROGMap 已收到点云和里程计、目标位于当前滑窗可达
+范围、`/opt_path` 有发布。若 MPC 输入过期、TF 转换失败或求解失败，执行器会发布零速。

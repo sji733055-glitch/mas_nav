@@ -21,7 +21,7 @@ PathPlanner::PathPlanner()
   rog_map::MapRegistry::set(query);
   map_query_ = std::make_shared<RogMapQueryAdapter>(query);
   planner_ = std::make_shared<minco_planner::MincoPlanner>();
-  planner_->configure(node_, "planner", tf_buffer_, nullptr);
+  planner_->configure(node_, "planner", tf_buffer_);
 }
 
 PathPlanner::~PathPlanner()

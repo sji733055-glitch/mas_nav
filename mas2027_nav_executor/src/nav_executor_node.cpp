@@ -11,7 +11,7 @@
 #include "geometry_msgs/msg/twist.hpp"
 #include "example_interfaces/msg/float32.hpp"
 #include "interfaces/msg/mpc_position_command.hpp"
-#include "minco_controller/mpc_solver.hpp"
+#include "mpc/mpc_solver.hpp"
 #include "mas2027_nav_executor/path_planner.hpp"
 #include "mas2027_nav_executor/path_executor.hpp"
 #include "nav_msgs/msg/odometry.hpp"

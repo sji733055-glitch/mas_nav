@@ -1,4 +1,4 @@
-#include "minco_controller/mpc_solver.hpp"
+#include "mpc/mpc_solver.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -6,7 +6,6 @@
 #include <limits>
 #include <vector>
 
-#include "color_text.hpp"
 #include <qpOASES.hpp>
 
 namespace minco_controller {
@@ -295,13 +294,12 @@ bool MpcSolver::solve(const State & curr,
 
   if (ret != qpOASES::SUCCESSFUL_RETURN) {
     if (ret == qpOASES::RET_MAX_NWSR_REACHED) {
-      std::cout << color_text::RED << "[MpcSolver] qpOASES Max NWSR Reached!" << color_text::RESET
+      std::cout << "[MpcSolver] qpOASES Max NWSR Reached!"
                 << std::endl;
     } else if (ret == qpOASES::RET_INIT_FAILED_INFEASIBILITY) {
-      std::cout << color_text::RED << "[MpcSolver] qpOASES Infeasible!" << color_text::RESET << std::endl;
+      std::cout << "[MpcSolver] qpOASES Infeasible!" << std::endl;
     } else {
-      std::cout << color_text::RED << "[MpcSolver] qpOASES Error Code: " << static_cast<int>(ret)
-                << color_text::RESET << std::endl;
+      std::cout << "[MpcSolver] qpOASES Error Code: " << static_cast<int>(ret) << std::endl;
     }
     return false;
   }

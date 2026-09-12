@@ -4,7 +4,7 @@
 
 #include <Eigen/Core>
 
-#include "minco_controller/mpc_types.hpp"
+#include "mpc/mpc_types.hpp"
 
 namespace minco_controller {
 

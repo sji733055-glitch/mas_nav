@@ -1,6 +1,5 @@
 // Corresponding header
 #include "minco_core/minco_planner.hpp"
-#include "nav2_util/node_utils.hpp"
 
 // Project
 #include "rog_map/map_registry.hpp"
@@ -13,6 +12,20 @@
 #include <optional>
 
 namespace minco_planner {
+
+namespace {
+
+void declareParameterIfMissing(
+  const rclcpp_lifecycle::LifecycleNode::SharedPtr & node,
+  const std::string & name,
+  const rclcpp::ParameterValue & default_value)
+{
+  if (!node->has_parameter(name)) {
+    node->declare_parameter(name, default_value);
+  }
+}
+
+}  // namespace
 
 using namespace color_text;
 
@@ -30,37 +43,37 @@ void MincoPlanner::configureMincoPerfLogging(
 {
   const std::string default_minco_csv_path = "/tmp/minco_perf_detailed.csv";
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "performance.enable", rclcpp::ParameterValue(true));
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "performance.print_enable", rclcpp::ParameterValue(true));
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "performance.detailed_csv_enable", rclcpp::ParameterValue(false));
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "performance.odom_sub_debug_enable", rclcpp::ParameterValue(true));
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "performance.print_period_sec", rclcpp::ParameterValue(1.0));
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "performance.csv_flush_every_n", rclcpp::ParameterValue(30));
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "performance.minco_csv_path", rclcpp::ParameterValue(default_minco_csv_path));
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "performance.run_id", rclcpp::ParameterValue(""));
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "performance.scenario", rclcpp::ParameterValue(""));
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "performance.variant", rclcpp::ParameterValue(""));
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "rog_map.performance.enable", rclcpp::ParameterValue(true));
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "rog_map.performance.detailed_csv_enable", rclcpp::ParameterValue(false));
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "rog_map.performance.minco_csv_path", rclcpp::ParameterValue(default_minco_csv_path));
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "rog_map.performance.run_id", rclcpp::ParameterValue(""));
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "rog_map.performance.scenario", rclcpp::ParameterValue(""));
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "rog_map.performance.variant", rclcpp::ParameterValue(""));
 
   bool performance_enable = true;
@@ -192,7 +205,7 @@ void MincoPlanner::rebuildModeDependentQueries()
     return;
   }
 
-  mode_context_->rebuildQueries(rog_query_raw_, costmap_ros_.get(), tf_, logger_);
+  mode_context_->rebuildQueries(rog_query_raw_, tf_, logger_);
   map_ = mode_context_->dynamicQuery();
 
   if (global_path_searcher_) {
@@ -200,10 +213,6 @@ void MincoPlanner::rebuildModeDependentQueries()
   }
   if (astar_planner_) {
     astar_planner_->setMap(mode_context_->globalQuery());
-  }
-  if (smac_planner_) {
-    smac_planner_->setMap(mode_context_->globalQuery());
-    smac_planner_->setESDFQuery(mode_context_->dynamicQuery());
   }
   if (minco_optimizer_) {
     minco_optimizer_->setMap(mode_context_->dynamicQuery());
@@ -224,17 +233,13 @@ void MincoPlanner::initPlannerMode(
   mode_params_.planner_mode = planner_mode_param;
   mode_params_.map_frame = map_frame.empty() ? "map" : map_frame;
   mode_params_.rog_frame = rog_frame.empty() ? "camera_init" : rog_frame;
-  mode_params_.priormap_use_nav2_global_search = priormap_use_nav2_global_search_;
-  mode_params_.priormap_clip_seed_by_rog_boundary = priormap_clip_seed_by_rog_boundary_;
-  mode_params_.priormap_rog_boundary_margin = priormap_rog_boundary_margin_;
-  mode_params_.priormap_rog_boundary_sample_step = priormap_rog_boundary_sample_step_;
   mode_params_.exploration_boundary_margin = exploration_boundary_margin_;
   mode_params_.exploration_boundary_sample_step = exploration_boundary_sample_step_;
   mode_params_.exploration_unknown_as_occupied = exploration_unknown_as_occupied_;
   mode_params_.exploration_prefer_goal_direction = exploration_prefer_goal_direction_;
 
   mode_context_ = std::make_unique<PlannerModeContext>();
-  mode_context_->configure(mode_params_, rog_query_raw_, costmap_ros_.get(), tf_, logger_);
+  mode_context_->configure(mode_params_, rog_query_raw_, tf_, logger_);
 
   planning_frame_ = mode_context_->planningFrame();
   output_frame_ = mode_context_->outputFrame();
@@ -245,7 +250,7 @@ void MincoPlanner::initPlannerMode(
 
   RCLCPP_INFO(logger_,
     "[MincoPlanner] planner_mode=%s",
-    mode_context_->mode() == PlannerMode::PRIORMAP ? "PRIORMAP" : "EXPLORATION");
+    "EXPLORATION");
   RCLCPP_INFO(logger_,
     "[MincoPlanner] planning_frame=%s output_frame=%s rog_frame=%s",
     planning_frame_.c_str(),
@@ -253,8 +258,8 @@ void MincoPlanner::initPlannerMode(
     rog_frame_.c_str());
   RCLCPP_INFO(logger_,
     "[MincoPlanner] global_search=%s dynamic_query=%s",
-    mode_context_->mode() == PlannerMode::PRIORMAP ? "Nav2Costmap" : "ROGMapBoundaryAstar",
-    mode_context_->mode() == PlannerMode::PRIORMAP ? "FrameAwareRogQuery" : "DirectRogQuery");
+    "ROGMapBoundaryAstar",
+    "DirectRogQuery");
 }
 
 // -----------------------------------------------------------------------------
@@ -263,13 +268,11 @@ void MincoPlanner::initPlannerMode(
 
 void MincoPlanner::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & parent,
   std::string name,
-  std::shared_ptr<tf2_ros::Buffer> tf,
-  std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros)
+  std::shared_ptr<tf2_ros::Buffer> tf)
 {
   node_ = parent;
   name_ = name;
   tf_ = tf;
-  costmap_ros_ = costmap_ros;
 
   auto node = parent.lock();
   logger_ = node->get_logger();
@@ -279,218 +282,199 @@ void MincoPlanner::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & pa
 
   // --- General config --------------------------------------------------------
 
-  std::string planner_mode_param = "PRIORMAP";
-  nav2_util::declare_parameter_if_not_declared(
+  std::string planner_mode_param = "EXPLORATION";
+  declareParameterIfMissing(
     node, prefix + "planner_mode", rclcpp::ParameterValue(planner_mode_param));
   node->get_parameter(prefix + "planner_mode", planner_mode_param);
 
   std::string configured_map_frame = "map";
   std::string configured_rog_frame = "camera_init";
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "frames.map_frame", rclcpp::ParameterValue(configured_map_frame));
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "frames.rog_frame", rclcpp::ParameterValue(configured_rog_frame));
   node->get_parameter(prefix + "frames.map_frame", configured_map_frame);
   node->get_parameter(prefix + "frames.rog_frame", configured_rog_frame);
 
-  nav2_util::declare_parameter_if_not_declared(
-    node, prefix + "priormap.use_nav2_global_search", rclcpp::ParameterValue(true));
-  node->get_parameter(prefix + "priormap.use_nav2_global_search", priormap_use_nav2_global_search_);
-
-  nav2_util::declare_parameter_if_not_declared(
-    node, prefix + "priormap.clip_seed_by_rog_boundary", rclcpp::ParameterValue(true));
-  node->get_parameter(prefix + "priormap.clip_seed_by_rog_boundary", priormap_clip_seed_by_rog_boundary_);
-
-  nav2_util::declare_parameter_if_not_declared(
-    node, prefix + "priormap.rog_boundary_margin", rclcpp::ParameterValue(0.8));
-  node->get_parameter(prefix + "priormap.rog_boundary_margin", priormap_rog_boundary_margin_);
-
-  nav2_util::declare_parameter_if_not_declared(
-    node, prefix + "priormap.rog_boundary_sample_step", rclcpp::ParameterValue(0.1));
-  node->get_parameter(prefix + "priormap.rog_boundary_sample_step", priormap_rog_boundary_sample_step_);
-
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "exploration.boundary_margin", rclcpp::ParameterValue(0.8));
   node->get_parameter(prefix + "exploration.boundary_margin", exploration_boundary_margin_);
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "exploration.boundary_sample_step", rclcpp::ParameterValue(0.1));
   node->get_parameter(prefix + "exploration.boundary_sample_step", exploration_boundary_sample_step_);
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "exploration.unknown_as_occupied", rclcpp::ParameterValue(true));
   node->get_parameter(prefix + "exploration.unknown_as_occupied", exploration_unknown_as_occupied_);
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "exploration.prefer_goal_direction", rclcpp::ParameterValue(true));
   node->get_parameter(prefix + "exploration.prefer_goal_direction", exploration_prefer_goal_direction_);
 
   std::string configured_global_frame = "map";
   
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "global_frame", rclcpp::ParameterValue(configured_global_frame));
   node->get_parameter(prefix + "global_frame", configured_global_frame);
 
-  global_frame_ = costmap_ros_ ? costmap_ros_->getGlobalFrameID() : configured_global_frame;
+  global_frame_ = configured_global_frame;
   if (!configureRogMap(node, prefix)) {
     ensureMapAvailable();
   }
   initPlannerMode(planner_mode_param, configured_map_frame, configured_rog_frame);
 
-  nav2_util::declare_parameter_if_not_declared(node, prefix + "tolerance", rclcpp::ParameterValue(0.5));
+  declareParameterIfMissing(node, prefix + "tolerance", rclcpp::ParameterValue(0.5));
   node->get_parameter(prefix + "tolerance", tolerance_);
 
-  nav2_util::declare_parameter_if_not_declared(node, prefix + "use_smac", rclcpp::ParameterValue(false));
-  node->get_parameter(prefix + "use_smac", use_smac_);
-
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "allow_unknown", rclcpp::ParameterValue(true));
   node->get_parameter(prefix + "allow_unknown", allow_unknown_);
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "lidar_offset_x", rclcpp::ParameterValue(0.0));
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "lidar_offset_y", rclcpp::ParameterValue(-0.2));
   node->get_parameter(prefix + "lidar_offset_x", lidar_offset_x_);
   node->get_parameter(prefix + "lidar_offset_y", lidar_offset_y_);
 
   // Odometry topic
   std::string odom_topic = "/odom";
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "odom_topic", rclcpp::ParameterValue(odom_topic));
   node->get_parameter(prefix + "odom_topic", odom_topic);
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "minco_optimizer.opt_freq", rclcpp::ParameterValue(20.0));
   node->get_parameter(prefix + "minco_optimizer.opt_freq", opt_freq_);
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "minco_optimizer.lookahead_dist", rclcpp::ParameterValue(5.0));
   node->get_parameter(prefix + "minco_optimizer.lookahead_dist", lookahead_dist_);
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "minco_optimizer.traj_goal_tolerance", rclcpp::ParameterValue(0.15));
   node->get_parameter(prefix + "minco_optimizer.traj_goal_tolerance", traj_goal_tolerance_);
 
   // --- Optimizer config ------------------------------------------------------
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "minco_optimizer.safe_dist", rclcpp::ParameterValue(0.3));
   node->get_parameter(prefix + "minco_optimizer.safe_dist", minco_config.safe_dist);
 
   double collision_dist = minco_config.safe_dist;
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "minco_optimizer.collision_dist", rclcpp::ParameterValue(collision_dist));
   node->get_parameter(prefix + "minco_optimizer.collision_dist", collision_dist);
   collision_dist_ = collision_dist;
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "minco_optimizer.replan_period_s", rclcpp::ParameterValue(0.2));
   node->get_parameter(prefix + "minco_optimizer.replan_period_s", force_replan_period_sec_);
   if (!(std::isfinite(force_replan_period_sec_) && force_replan_period_sec_ > 0.0)) {
     force_replan_period_sec_ = 0.2;
   }
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "minco_optimizer.replan_react_time", rclcpp::ParameterValue(0.35));
   node->get_parameter(prefix + "minco_optimizer.replan_react_time", replan_react_time_);
   if (!(std::isfinite(replan_react_time_) && replan_react_time_ >= 0.0)) {
     replan_react_time_ = 0.35;
   }
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "minco_optimizer.safety_lookahead_time", rclcpp::ParameterValue(1.2));
   node->get_parameter(prefix + "minco_optimizer.safety_lookahead_time", safety_lookahead_time_);
   if (!(std::isfinite(safety_lookahead_time_) && safety_lookahead_time_ > 0.0)) {
     safety_lookahead_time_ = 1.2;
   }
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "minco_optimizer.monitor_margin", rclcpp::ParameterValue(0.20));
   node->get_parameter(prefix + "minco_optimizer.monitor_margin", monitor_margin_);
   if (!(std::isfinite(monitor_margin_) && monitor_margin_ >= 0.0)) {
     monitor_margin_ = 0.20;
   }
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "minco_optimizer.max_velocity", rclcpp::ParameterValue(2.0));
   node->get_parameter(prefix + "minco_optimizer.max_velocity", minco_config.max_vel);
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "minco_optimizer.max_acceleration", rclcpp::ParameterValue(4.0));
   node->get_parameter(prefix + "minco_optimizer.max_acceleration", minco_config.max_acc);
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "minco_optimizer.turn_angle_deadzone", rclcpp::ParameterValue(0.174));
   node->get_parameter(prefix + "minco_optimizer.turn_angle_deadzone", minco_config.turn_angle_deadzone);
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "minco_optimizer.turn_angle_saturation", rclcpp::ParameterValue(1.57));
   node->get_parameter(prefix + "minco_optimizer.turn_angle_saturation", minco_config.turn_angle_saturation);
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "minco_optimizer.min_turn_vel", rclcpp::ParameterValue(1.0));
   node->get_parameter(prefix + "minco_optimizer.min_turn_vel", minco_config.min_turn_vel);
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "minco_optimizer.decay_power", rclcpp::ParameterValue(2.0));
   node->get_parameter(prefix + "minco_optimizer.decay_power", minco_config.decay_power);
 
   double max_yaw_dot = 3.14;
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "minco_optimizer.max_yaw_dot", rclcpp::ParameterValue(max_yaw_dot));
   node->get_parameter(prefix + "minco_optimizer.max_yaw_dot", max_yaw_dot);
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "minco_optimizer.enable_yaw_opt", rclcpp::ParameterValue(true));
   node->get_parameter(prefix + "minco_optimizer.enable_yaw_opt", use_yaw_opt_);
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "minco_optimizer.time_allocation_iters", rclcpp::ParameterValue(15));
   node->get_parameter(prefix + "minco_optimizer.time_allocation_iters", minco_config.time_allocation_iters);
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "minco_optimizer.penalty_weight_time", rclcpp::ParameterValue(0.01));
   node->get_parameter(prefix + "minco_optimizer.penalty_weight_time", minco_config.rho);
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "minco_optimizer.smooth_eps", rclcpp::ParameterValue(0.01));
   node->get_parameter(prefix + "minco_optimizer.smooth_eps", minco_config.smooth_eps);
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "minco_optimizer.integral_res", rclcpp::ParameterValue(16));
   node->get_parameter(prefix + "minco_optimizer.integral_res", minco_config.integral_res);
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "minco_optimizer.opt_accuracy", rclcpp::ParameterValue(1.0e-4));
   node->get_parameter(prefix + "minco_optimizer.opt_accuracy", minco_config.opt_accuracy);
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "minco_optimizer.print_optimizer_log", rclcpp::ParameterValue(true));
   node->get_parameter(prefix + "minco_optimizer.print_optimizer_log", minco_config.print_optimizer_log);
 
   double penalty_weight_pos = 0.0;
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "minco_optimizer.penalty_weight_pos", rclcpp::ParameterValue(1000.0));
   node->get_parameter(prefix + "minco_optimizer.penalty_weight_pos", penalty_weight_pos);
 
   double penalty_weight_vel = 0.0;
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "minco_optimizer.penalty_weight_vel", rclcpp::ParameterValue(1000.0));
   node->get_parameter(prefix + "minco_optimizer.penalty_weight_vel", penalty_weight_vel);
 
   double penalty_weight_acc = 0.0;
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "minco_optimizer.penalty_weight_acc", rclcpp::ParameterValue(10000.0));
   node->get_parameter(prefix + "minco_optimizer.penalty_weight_acc", penalty_weight_acc);
 
   double penalty_weight_att = 0.0;
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "minco_optimizer.penalty_weight_att", rclcpp::ParameterValue(1000.0));
   node->get_parameter(prefix + "minco_optimizer.penalty_weight_att", penalty_weight_att);
 
   double penalty_weight_time_barrier = 0.0;
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "minco_optimizer.penalty_weight_time_barrier", rclcpp::ParameterValue(100.0));
   node->get_parameter(prefix + "minco_optimizer.penalty_weight_time_barrier", penalty_weight_time_barrier);
 
@@ -509,31 +493,31 @@ void MincoPlanner::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & pa
   // --- Corridor config -------------------------------------------------------
 
   double corridor_robot_radius = 0.4;
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "corridor.robot_radius", rclcpp::ParameterValue(corridor_robot_radius));
   node->get_parameter(prefix + "corridor.robot_radius", corridor_robot_radius);
 
   double corridor_extra_margin = 0.15;
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "corridor.extra_margin", rclcpp::ParameterValue(corridor_extra_margin));
   node->get_parameter(prefix + "corridor.extra_margin", corridor_extra_margin);
 
   // --- Recovery server config -----------------------------------------------
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "recovery_server.fail_threshold", rclcpp::ParameterValue(3));
   node->get_parameter(prefix + "recovery_server.fail_threshold", recovery_server_config_.fail_threshold);
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "recovery_server.cooldown_sec", rclcpp::ParameterValue(2.0));
   node->get_parameter(prefix + "recovery_server.cooldown_sec", recovery_server_config_.cooldown_sec);
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "recovery_server.recovery_window_sec", rclcpp::ParameterValue(3.0));
   node->get_parameter(
     prefix + "recovery_server.recovery_window_sec", recovery_server_config_.recovery_window_sec);
 
-  nav2_util::declare_parameter_if_not_declared(
+  declareParameterIfMissing(
     node, prefix + "recovery_server.escape_speed", rclcpp::ParameterValue(0.4));
   node->get_parameter(prefix + "recovery_server.escape_speed", recovery_server_config_.escape_speed);
 
@@ -546,17 +530,9 @@ void MincoPlanner::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & pa
   astar_planner_ = std::make_unique<Astar>(init_size_x, init_size_y);
   astar_planner_->setMap(global_query);
 
-  if (use_smac_) {
-    smac_planner_ = std::make_unique<minco_planner::smac::SmacPlanner2DSimple>();
-    smac_planner_->configure(node, costmap_ros_, prefix);
-    smac_planner_->setParameters(allow_unknown_, 1000000, tolerance_);
-    smac_planner_->setMap(global_query);
-    smac_planner_->setESDFQuery(dynamic_query);
-  }
-
   global_path_searcher_ = std::make_unique<GlobalPathSearcher>();
   global_path_searcher_->configure(
-    tf_, astar_planner_.get(), smac_planner_.get(), use_smac_, allow_unknown_, tolerance_, logger_);
+    tf_, astar_planner_.get(), allow_unknown_, tolerance_, logger_);
   global_path_searcher_->setQuery(global_query);
 
   local_path_processor_ = std::make_unique<LocalPathProcessor>();
@@ -635,14 +611,6 @@ void MincoPlanner::setMap(const std::shared_ptr<rog_map::MapQueryInterface> & ma
   rebuildModeDependentQueries();
 }
 
-void MincoPlanner::activate()
-{
-}
-
-void MincoPlanner::deactivate()
-{
-}
-
 void MincoPlanner::cleanup()
 {
   planner_perf_monitor_.close();
@@ -662,7 +630,6 @@ void MincoPlanner::cleanup()
   }
 
   astar_planner_.reset();
-  smac_planner_.reset();
   global_path_searcher_.reset();
   local_path_processor_.reset();
   safety_checker_.reset();
@@ -674,7 +641,6 @@ void MincoPlanner::cleanup()
   opt_path_pub_.reset();
   backup_path_pub_.reset();
   odom_sub_.reset();
-  costmap_ros_.reset();
   map_.reset();
   rog_query_raw_.reset();
   rog_map_ros_.reset();
@@ -690,10 +656,6 @@ rcl_interfaces::msg::SetParametersResult MincoPlanner::onSetParameters(
   const auto is_configure_time_mode_param = [this, &planner_mode_param](const std::string & param_name) {
     return param_name == planner_mode_param || param_name == name_ + ".frames.map_frame" ||
            param_name == name_ + ".frames.rog_frame" ||
-           param_name == name_ + ".priormap.use_nav2_global_search" ||
-           param_name == name_ + ".priormap.clip_seed_by_rog_boundary" ||
-           param_name == name_ + ".priormap.rog_boundary_margin" ||
-           param_name == name_ + ".priormap.rog_boundary_sample_step" ||
            param_name == name_ + ".exploration.boundary_margin" ||
            param_name == name_ + ".exploration.boundary_sample_step" ||
            param_name == name_ + ".exploration.unknown_as_occupied" ||
@@ -1902,14 +1864,6 @@ double MincoPlanner::getTrajectoryRemainTime() const
 
 bool MincoPlanner::getRobotPose(geometry_msgs::msg::PoseStamped & pose) const
 {
-  const bool direct_odom_pose = mode_context_ && mode_context_->directOdomPose();
-  if (!direct_odom_pose && costmap_ros_) {
-    if (costmap_ros_->getRobotPose(pose)) {
-      pose.header.frame_id = planning_frame_;
-      return true;
-    }
-  }
-
   nav_msgs::msg::Odometry odom;
   {
     std::lock_guard<std::mutex> lk(odom_mutex_);
@@ -1919,63 +1873,17 @@ bool MincoPlanner::getRobotPose(geometry_msgs::msg::PoseStamped & pose) const
     odom = latest_odom_;
   }
 
-  geometry_msgs::msg::PoseStamped odom_pose;
-  odom_pose.header = odom.header;
-  odom_pose.pose = odom.pose.pose;
-
-  if (direct_odom_pose) {
-    if (odom_pose.header.frame_id.empty()) {
-      RCLCPP_WARN_THROTTLE(logger_,
-        *rclcpp::Clock::make_shared(),
-        2000,
-        "[MincoPlanner] EXPLORATION odom frame is empty, treating it as %s.",
-        planning_frame_.c_str());
-    }
-    odom_pose.header.frame_id = planning_frame_;
-    pose = odom_pose;
-    return true;
-  }
-
-  if (odom_pose.header.frame_id.empty()) {
+  pose.header = odom.header;
+  pose.pose = odom.pose.pose;
+  if (pose.header.frame_id.empty()) {
     RCLCPP_WARN_THROTTLE(logger_,
       *rclcpp::Clock::make_shared(),
       2000,
-      "[MincoPlanner] PRIORMAP odom frame is empty, treating it as %s before transforming to %s.",
-      rog_frame_.c_str(),
+      "[MincoPlanner] odom frame is empty, treating it as %s.",
       planning_frame_.c_str());
-    odom_pose.header.frame_id = rog_frame_;
   }
-
-  if (odom_pose.header.frame_id == planning_frame_ || odom_pose.header.frame_id == map_frame_) {
-    odom_pose.header.frame_id = planning_frame_;
-    pose = odom_pose;
-    return true;
-  }
-
-  if (!tf_) {
-    RCLCPP_WARN_THROTTLE(logger_,
-      *rclcpp::Clock::make_shared(),
-      2000,
-      "[MincoPlanner] Cannot transform PRIORMAP odom pose from %s to %s: TF buffer is null.",
-      odom_pose.header.frame_id.c_str(),
-      planning_frame_.c_str());
-    return false;
-  }
-
-  try {
-    pose = tf_->transform(odom_pose, planning_frame_);
-    pose.header.frame_id = planning_frame_;
-    return true;
-  } catch (const tf2::TransformException & ex) {
-    RCLCPP_WARN_THROTTLE(logger_,
-      *rclcpp::Clock::make_shared(),
-      2000,
-      "[MincoPlanner] Failed to transform odom pose from %s to %s: %s",
-      odom_pose.header.frame_id.c_str(),
-      planning_frame_.c_str(),
-      ex.what());
-    return false;
-  }
+  pose.header.frame_id = planning_frame_;
+  return true;
 }
 
 bool MincoPlanner::checkGoalReached(
@@ -2079,6 +1987,3 @@ void MincoPlanner::clearRecoveryDebugVisualization()
 }
 
 }  // namespace minco_planner
-
-#include "pluginlib/class_list_macros.hpp"
-PLUGINLIB_EXPORT_CLASS(minco_planner::MincoPlanner, nav2_core::GlobalPlanner)

@@ -7,7 +7,7 @@
 
 #include "geometry_msgs/msg/twist.hpp"
 #include "interfaces/msg/mpc_position_command.hpp"
-#include "minco_controller/mpc_solver.hpp"
+#include "mpc/mpc_solver.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/time.hpp"
 #include "tf2_ros/buffer.h"

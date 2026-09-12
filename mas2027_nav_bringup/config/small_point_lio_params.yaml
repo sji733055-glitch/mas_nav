@@ -100,21 +100,3 @@ small_point_lio:
 
     # 数据发布
     publish_odometry_without_downsample: false        # 是否发布未降采样的高频里程计，会增加计算开销
-
-# Nav2 固定朝向速度参考系
-# Nav2 使用 base_link_fake，控制速度经 velocity_smoother 发布到 /cmd_vel_nav_smoothed。
-# 本节点把平滑后的速度从 base_link_fake 旋转到真实 base_link，再通过 /cmd_vel 交给底盘。
-fake_vel_transform:
-  ros__parameters:
-    odom_topic: /Odometry                             # 必须包含 odom -> base_link 位姿
-    robot_base_frame: base_link                       # 随车体 yaw 转动的真实速度坐标系
-    fake_robot_base_frame: base_link_fake             # 与 base_link 同原点、yaw 固定在启动方向的 Nav2 坐标系
-    local_plan_topic: /local_plan                     # Nav2 controller 发布，用于给 Humble 的 Twist 补充时间参考
-    cmd_spin_topic: /cmd_spin                         # 叠加到底盘 angular.z 的独立自旋速度话题
-    input_cmd_vel_topic: /cmd_vel_nav_smoothed        # velocity_smoother 输出，表达在 base_link_fake 中
-    output_cmd_vel_topic: /cmd_vel                    # 转换到 base_link 后发送给底盘控制器
-    # 给 Nav2 用的里程计：位姿与 /Odometry 相同，twist 旋转到 base_link_fake 轴系。
-    # Nav2 不会变换 odom twist，直接当作 robot_base_frame(base_link_fake) 中的当前速度，
-    # 而 /Odometry 的 twist 在随车体转动的 base_link 中，两者相差一个车体 yaw，
-    output_odom_topic: /Odometry_world_fixed  # Nav2 里程计话题，位姿与 /Odometry 相同，twist 在 base_link_fake 中
-    init_spin_speed: 0.0                              # 未收到 /cmd_spin 时的默认自旋角速度，单位 rad/s

@@ -58,10 +58,10 @@ bool projectStartToFreeCell(
 
 const char * cellCostLabel(const unsigned char cost)
 {
-  if (cost == nav2_costmap_2d::NO_INFORMATION) {
+  if (cost == kUnknownCost) {
     return "unknown";
   }
-  if (cost >= nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE) {
+  if (cost >= kInscribedCost) {
     return "blocked/inflated";
   }
   if (cost > 128u) {
@@ -72,10 +72,10 @@ const char * cellCostLabel(const unsigned char cost)
 
 bool smacTraversableCost(const unsigned char cost, const bool allow_unknown)
 {
-  if (cost == nav2_costmap_2d::NO_INFORMATION) {
+  if (cost == kUnknownCost) {
     return allow_unknown;
   }
-  return cost < nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
+  return cost < kInscribedCost;
 }
 
 void logCellDiagnostics(const rclcpp::Logger & logger,
@@ -123,9 +123,9 @@ void logCellDiagnostics(const rclcpp::Logger & logger,
       const unsigned int uy = static_cast<unsigned int>(cy);
       const unsigned char nb_cost = query->value(ux, uy);
       ++valid;
-      if (nb_cost == nav2_costmap_2d::NO_INFORMATION) {
+      if (nb_cost == kUnknownCost) {
         ++unknown;
-      } else if (nb_cost >= nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE) {
+      } else if (nb_cost >= kInscribedCost) {
         ++blocked;
       } else {
         ++free;
@@ -163,16 +163,12 @@ void logCellDiagnostics(const rclcpp::Logger & logger,
 
 void GlobalPathSearcher::configure(std::shared_ptr<tf2_ros::Buffer> tf,
   Astar * astar,
-  smac::SmacPlanner2DSimple * smac,
-  bool use_smac,
   bool allow_unknown,
   double tolerance,
   rclcpp::Logger logger)
 {
   tf_ = std::move(tf);
   astar_ = astar;
-  smac_ = smac;
-  use_smac_ = use_smac;
   allow_unknown_ = allow_unknown;
   tolerance_ = tolerance;
   logger_ = logger;
@@ -183,9 +179,6 @@ void GlobalPathSearcher::setQuery(const std::shared_ptr<rog_map::MapQueryInterfa
   global_query_ = global_query;
   if (astar_) {
     astar_->setMap(global_query_);
-  }
-  if (smac_ && global_query_) {
-    smac_->setMap(global_query_);
   }
 }
 
@@ -238,48 +231,7 @@ bool GlobalPathSearcher::plan(const geometry_msgs::msg::PoseStamped & start,
   const PlannerModeContext & mode_context,
   std::vector<geometry_msgs::msg::PoseStamped> & latest_global_path)
 {
-  if (mode_context.mode() == PlannerMode::PRIORMAP) {
-    return planPriorMap(start, goal, mode_context, latest_global_path);
-  }
   return planExploration(start, goal, mode_context, latest_global_path);
-}
-
-bool GlobalPathSearcher::planPriorMap(const geometry_msgs::msg::PoseStamped & start,
-  const geometry_msgs::msg::PoseStamped & goal,
-  const PlannerModeContext & mode_context,
-  std::vector<geometry_msgs::msg::PoseStamped> & latest_global_path)
-{
-  if (!astar_ || !mode_context.globalQuery()) {
-    RCLCPP_ERROR(logger_, "[MincoPlanner] Nav2 costmap global search query is unavailable.");
-    return false;
-  }
-
-  geometry_msgs::msg::PoseStamped start_map;
-  geometry_msgs::msg::PoseStamped goal_map;
-  if (!normalizePoseToFrame(
-        start, mode_context.mapFrame(), mode_context.mapFrame(), "PRIORMAP start", start_map) ||
-      !normalizePoseToFrame(
-        goal, mode_context.mapFrame(), mode_context.mapFrame(), "PRIORMAP goal", goal_map)) {
-    return false;
-  }
-
-  nav_msgs::msg::Path dummy;
-  dummy.header.stamp = rclcpp::Clock().now();
-  dummy.header.frame_id = mode_context.outputFrame();
-
-  std::function<bool()> cancel_checker = []() {
-    return !rclcpp::ok();
-  };
-
-  return makePlanOnQuery(start_map.pose,
-    goal_map.pose,
-    mode_context.globalQuery(),
-    mode_context.outputFrame(),
-    "Nav2 costmap",
-    tolerance_,
-    cancel_checker,
-    dummy,
-    latest_global_path);
 }
 
 bool GlobalPathSearcher::planExploration(const geometry_msgs::msg::PoseStamped & start,
@@ -322,9 +274,9 @@ bool GlobalPathSearcher::planExploration(const geometry_msgs::msg::PoseStamped &
   bool goal_traversable = false;
   if (goal_inside) {
     const unsigned char goal_cost = query->value(gx, gy);
-    goal_traversable = goal_cost == nav2_costmap_2d::NO_INFORMATION
+    goal_traversable = goal_cost == kUnknownCost
                          ? !mode_context.explorationUnknownAsOccupied()
-                         : goal_cost < nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
+                         : goal_cost < kInscribedCost;
   }
   if (goal_traversable) {
     nav_msgs::msg::Path direct_plan;
@@ -367,10 +319,10 @@ bool GlobalPathSearcher::planExploration(const geometry_msgs::msg::PoseStamped &
   const bool allow_unknown = !mode_context.explorationUnknownAsOccupied();
   const auto traversable = [&costs, allow_unknown](size_t idx) {
     const unsigned char cost = costs[idx];
-    if (cost == nav2_costmap_2d::NO_INFORMATION) {
+    if (cost == kUnknownCost) {
       return allow_unknown;
     }
-    return cost < nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
+    return cost < kInscribedCost;
   };
 
   const size_t start_idx = index_of(sx, sy);
@@ -523,7 +475,7 @@ bool GlobalPathSearcher::makePlan(const geometry_msgs::msg::Pose & start,
     goal,
     mode_context.globalQuery(),
     mode_context.outputFrame(),
-    mode_context.mode() == PlannerMode::PRIORMAP ? "Nav2 costmap" : "ROGMap",
+    "ROGMap",
     tolerance,
     cancel_checker,
     plan,
@@ -609,7 +561,7 @@ bool GlobalPathSearcher::makePlanOnQuery(const geometry_msgs::msg::Pose & start,
     "res=%.3f tolerance=%.3f allow_unknown=%s start_world=(%.3f,%.3f) start_cell=(%u,%u)->(%u,%u) "
     "start_cost=%u(%s) goal_world=(%.3f,%.3f) goal_cell=(%u,%u) goal_cost=%u(%s)",
     failure_source.c_str(),
-    (use_smac_ && smac_) ? "SMAC2D" : "Astar",
+    "Astar",
     output_frame.c_str(),
     nx,
     ny,
@@ -633,45 +585,7 @@ bool GlobalPathSearcher::makePlanOnQuery(const geometry_msgs::msg::Pose & start,
     static_cast<unsigned int>(goal_cost),
     cellCostLabel(goal_cost));
 
-  if (use_smac_ && smac_) {
-    smac::SmacPlanner2DSimple::CoordinateVector smac_path;
-    bool smac_success = smac_->createPath(mx_start, my_start, mx_goal, my_goal, smac_path, cancel_checker);
-
-    if (!smac_success || smac_path.size() < 2) {
-      RCLCPP_ERROR(logger_,
-        "SMAC 2D: Failed to find path (success=%s, path_size=%zu). See endpoint diagnostics below.",
-        smac_success ? "true" : "false",
-        smac_path.size());
-      if (raw_mx_start != mx_start || raw_my_start != my_start) {
-        logCellDiagnostics(
-          logger_, query, failure_source, "start(raw-before-projection)", raw_mx_start, raw_my_start, allow_unknown_);
-      }
-      logCellDiagnostics(logger_, query, failure_source, "start(used)", mx_start, my_start, allow_unknown_);
-      logCellDiagnostics(logger_, query, failure_source, "goal", mx_goal, my_goal, allow_unknown_);
-      return false;
-    }
-
-    latest_global_path.clear();
-    latest_global_path.reserve(smac_path.size());
-    plan.poses.reserve(smac_path.size());
-
-    for (auto it = smac_path.rbegin(); it != smac_path.rend(); ++it) {
-      geometry_msgs::msg::PoseStamped pose;
-      pose.header = plan.header;
-
-      double path_wx = 0.0;
-      double path_wy = 0.0;
-      query->mapToWorld(
-        static_cast<unsigned int>(it->x), static_cast<unsigned int>(it->y), path_wx, path_wy);
-
-      pose.pose.position.x = path_wx;
-      pose.pose.position.y = path_wy;
-      pose.pose.position.z = 0.0;
-      pose.pose.orientation.w = 1.0;
-      latest_global_path.push_back(pose);
-      plan.poses.push_back(pose);
-    }
-  } else {
+  {
     if (!astar_) {
       return false;
     }

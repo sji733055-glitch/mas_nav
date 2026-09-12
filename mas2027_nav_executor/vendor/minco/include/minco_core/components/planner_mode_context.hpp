@@ -7,20 +7,14 @@ namespace minco_planner {
 
 enum class PlannerMode
 {
-  PRIORMAP,
   EXPLORATION
 };
 
 struct PlannerModeParams
 {
-  std::string planner_mode{"PRIORMAP"};
+  std::string planner_mode{"EXPLORATION"};
   std::string map_frame{"map"};
   std::string rog_frame{"camera_init"};
-
-  bool priormap_use_nav2_global_search{true};
-  bool priormap_clip_seed_by_rog_boundary{true};
-  double priormap_rog_boundary_margin{0.8};
-  double priormap_rog_boundary_sample_step{0.1};
 
   double exploration_boundary_margin{0.8};
   double exploration_boundary_sample_step{0.1};
@@ -33,12 +27,10 @@ class PlannerModeContext
 public:
   void configure(const PlannerModeParams & params,
     const std::shared_ptr<rog_map::MapQueryInterface> & raw_rog_query,
-    nav2_costmap_2d::Costmap2DROS * costmap_ros,
     const std::shared_ptr<tf2_ros::Buffer> & tf,
     const rclcpp::Logger & logger);
 
   void rebuildQueries(const std::shared_ptr<rog_map::MapQueryInterface> & raw_rog_query,
-    nav2_costmap_2d::Costmap2DROS * costmap_ros,
     const std::shared_ptr<tf2_ros::Buffer> & tf,
     const rclcpp::Logger & logger);
 
@@ -49,10 +41,6 @@ public:
   const std::string & rogFrame() const { return rog_frame_; }
 
   bool directOdomPose() const { return direct_odom_pose_; }
-
-  bool clipSeedByRogBoundary() const { return params_.priormap_clip_seed_by_rog_boundary; }
-  double rogBoundaryMargin() const { return params_.priormap_rog_boundary_margin; }
-  double rogBoundarySampleStep() const { return params_.priormap_rog_boundary_sample_step; }
 
   double explorationBoundaryMargin() const { return params_.exploration_boundary_margin; }
   double explorationBoundarySampleStep() const { return params_.exploration_boundary_sample_step; }
@@ -65,7 +53,7 @@ public:
 
 private:
   PlannerModeParams params_{};
-  PlannerMode mode_{PlannerMode::PRIORMAP};
+  PlannerMode mode_{PlannerMode::EXPLORATION};
   std::string planning_frame_{"map"};
   std::string output_frame_{"map"};
   std::string map_frame_{"map"};
