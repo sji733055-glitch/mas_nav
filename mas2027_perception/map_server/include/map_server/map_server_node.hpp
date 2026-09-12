@@ -1,0 +1,39 @@
+#pragma once
+
+#include <rclcpp/rclcpp.hpp>
+
+#include <nav_msgs/msg/occupancy_grid.hpp>
+#include <sensor_msgs/msg/image.hpp>
+#include <interfaces/msg/cost_maps.hpp>
+
+#include <map_server/utils.hpp>
+
+namespace map_server {
+
+class MapServerNode final : public rclcpp::Node {
+public:
+    explicit MapServerNode(const rclcpp::NodeOptions& options = rclcpp::NodeOptions());
+
+private:
+    void publish_maps();
+    static nav_msgs::msg::OccupancyGrid to_occupancy_grid(
+        const cv::Mat& map, int width, int height, double resolution,
+        double origin_x, double origin_y, const std::string& frame_id);
+    static sensor_msgs::msg::Image to_image(
+        const cv::Mat& map, const std::string& encoding,
+        const std::string& frame_id, const rclcpp::Time& stamp);
+
+    map_utils::NavigationMapData maps_;
+    double origin_x_{};
+    double origin_y_{};
+    std::string frame_id_;
+    bool bypass_dynamic_obstacle_{};
+    nav_msgs::msg::OccupancyGrid cost_grid_;
+    sensor_msgs::msg::Image direction_image_;
+    rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr cost_pub_;
+    rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr direction_pub_;
+    rclcpp::Publisher<interfaces::msg::CostMaps>::SharedPtr cost_maps_pub_;
+    rclcpp::TimerBase::SharedPtr timer_;
+};
+
+}  // namespace map_server

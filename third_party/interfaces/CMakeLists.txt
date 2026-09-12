@@ -3,6 +3,7 @@ project(interfaces)
 
 set(MSG_DEPENDENCIES
   geometry_msgs
+  nav_msgs
   std_msgs
 )
 
