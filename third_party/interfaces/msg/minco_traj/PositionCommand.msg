@@ -1,4 +1,4 @@
-# MINCO 轨迹上单个采样点的期望状态，由 minco_planner 生成、minco_controller 跟踪。
+# MINCO 轨迹上单个采样点的期望状态，由 nav_executor 生成并跟踪。
 # 来源：navi_minco_bit 的 src/ros_interfaces/msg/minco_traj/PositionCommand.msg，逐行搬运。
 std_msgs/Header header
 geometry_msgs/Point position

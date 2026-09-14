@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert the repository's Nav2 PGM/YAML map to the HW terrain-map subset.
+"""Convert a PGM/YAML occupancy map to the HW terrain-map subset.
 
 The result deliberately contains only FLAT and OBSTACLE labels.  Directional
 terrain cannot be inferred from an occupancy image, so direction is zero.

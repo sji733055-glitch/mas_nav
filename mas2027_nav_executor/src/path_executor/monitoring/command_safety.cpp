@@ -1,0 +1,72 @@
+#include "mas2027_nav_executor/path_executor/monitoring/command_safety.hpp"
+
+#include <algorithm>
+#include <cmath>
+
+#include "tf2/utils.h"
+#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
+
+namespace mas2027_nav_executor {
+
+ExecutorStatus checkCommandSafety(
+  const std::shared_ptr<TerrainGrid> & grid,
+  const std::shared_ptr<rog_map::MapQueryInterface> & rog_query,
+  const std::shared_ptr<tf2_ros::Buffer> & tf,
+  const std::string & odom_frame,
+  double rog_map_clearance,
+  double dt,
+  const minco_controller::State & current,
+  const minco_controller::Control & control,
+  const std::vector<minco_controller::ReferencePoint> & reference,
+  const rclcpp::Time & stamp)
+{
+  const auto terrain = grid ? grid->snapshot() : nullptr;
+  const auto dynamic = grid ? grid->dynamicSnapshot() : nullptr;
+  if (!terrain || !dynamic || !tf || !rog_query ||
+    std::abs((stamp - rclcpp::Time(dynamic->grid.header.stamp)).seconds()) > 0.5) {
+    return ExecutorStatus::TERRAIN_BLOCKED;
+  }
+  try {
+    const auto transform = tf->lookupTransform(
+      terrain->cost.header.frame_id, odom_frame, tf2::TimePointZero);
+    const double map_yaw = tf2::getYaw(transform.transform.rotation);
+    const double mc = std::cos(map_yaw), ms = std::sin(map_yaw);
+    const Eigen::Vector2d position(
+      mc * current.x - ms * current.y + transform.transform.translation.x,
+      ms * current.x + mc * current.y + transform.transform.translation.y);
+    const Eigen::Vector2d velocity(
+      mc * control.vx - ms * control.vy,
+      ms * control.vx + mc * control.vy);
+    const double horizon = std::max(dt, 0.35);
+    if (!terrain->transition(position, position + horizon * velocity)) {
+      return ExecutorStatus::TERRAIN_BLOCKED;
+    }
+    const int command_steps = std::max(1, static_cast<int>(std::ceil(horizon / dt)));
+    for (int i = 0; i <= command_steps; ++i) {
+      const double t = horizon * i / command_steps;
+      if (!dynamic->freeAt(position + t * velocity)) {
+        return ExecutorStatus::DYNAMIC_BLOCKED;
+      }
+      const Eigen::Vector3d odom_point(current.x + t * control.vx,
+        current.y + t * control.vy, 0.0);
+      const auto clearance = rog_query->query(odom_point);
+      if (!clearance.ok || clearance.distance <= rog_map_clearance) {
+        return ExecutorStatus::DYNAMIC_BLOCKED;
+      }
+    }
+    for (const auto & point : reference) {
+      const Eigen::Vector2d & p = point.pos;
+      const Eigen::Vector2d map_point(
+        mc * p.x() - ms * p.y() + transform.transform.translation.x,
+        ms * p.x() + mc * p.y() + transform.transform.translation.y);
+      if (!dynamic->freeAt(map_point)) {
+        return ExecutorStatus::DYNAMIC_BLOCKED;
+      }
+    }
+  } catch (const tf2::TransformException &) {
+    return ExecutorStatus::TERRAIN_BLOCKED;
+  }
+  return ExecutorStatus::PUBLISHED;
+}
+
+}  // namespace mas2027_nav_executor

@@ -1,6 +1,7 @@
 # Python 缓存：colcon test / pytest 运行时生成
 __pycache__/
 *.pyc
+.cache/
 
 # colcon 构建产物。本仓库在宿主机 ROS 2 Jazzy 下直接 colcon，产物不要提交。
 build/

@@ -19,7 +19,6 @@
   <exec_depend>small_point_lio</exec_depend>
   <exec_depend>odom_localizer</exec_depend>
   <exec_depend>tf_maintainer</exec_depend>
-  <exec_depend>rog_map</exec_depend>
   <exec_depend>mas2027_nav_executor</exec_depend>
   <exec_depend>interfaces</exec_depend>
   <exec_depend>ros2_comm</exec_depend>

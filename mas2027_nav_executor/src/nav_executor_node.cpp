@@ -11,11 +11,13 @@
 #include "geometry_msgs/msg/twist.hpp"
 #include "example_interfaces/msg/float32.hpp"
 #include "interfaces/msg/mpc_position_command.hpp"
-#include "mpc/mpc_solver.hpp"
-#include "mas2027_nav_executor/path_planner.hpp"
-#include "mas2027_nav_executor/path_executor.hpp"
+#include "mas2027_nav_executor/path_executor/mpc/mpc_solver.hpp"
+#include "mas2027_nav_executor/path_planner/path_planner.hpp"
+#include "mas2027_nav_executor/path_executor/path_executor.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "nav_msgs/msg/path.hpp"
+#include "nav_msgs/msg/occupancy_grid.hpp"
+#include "sensor_msgs/msg/image.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/executors/multi_threaded_executor.hpp"
 #include "rclcpp_lifecycle/lifecycle_node.hpp"
@@ -45,7 +47,7 @@ std_msgs::msg::ColorRGBA velocity_color(
 }  // namespace
 
 // A deliberately small standalone navigation loop. The node only wires ROS up:
-// PathPlanner owns ROGMap and MINCO, PathExecutor owns the MPC tracking step,
+// PathPlanner owns the map-server distance query and MINCO; PathExecutor owns the MPC tracking step,
 // and this class subscribes, ticks the control loop and publishes.
 class NavExecutorNode final : public rclcpp::Node
 {
@@ -63,12 +65,23 @@ public:
     goal_topic_ = declare_parameter<std::string>("node.topics.goal_sub");
     global_path_topic_ = declare_parameter<std::string>("node.topics.global_path_pub");
     minco_trajectory_topic_ = declare_parameter<std::string>("node.topics.minco_trajectory_pub");
+    planning_constraints_topic_ = declare_parameter<std::string>(
+      "node.topics.planning_constraints_pub", "/planning_constraints");
+    planning_constraints_marker_topic_ = declare_parameter<std::string>(
+      "node.topics.planning_constraints_marker_pub", "/planning_constraints_markers");
+    dynamic_obstacle_marker_topic_ = declare_parameter<std::string>(
+      "node.topics.dynamic_obstacle_marker_pub", "/nav_executor/debug/dynamic_obstacles");
+    const auto cost_map_topic = declare_parameter<std::string>("node.topics.terrain_cost_sub", "/cost_map");
+    const auto direction_map_topic = declare_parameter<std::string>("node.topics.terrain_direction_sub", "/direction_map");
+    const auto dynamic_map_topic = declare_parameter<std::string>("node.topics.dynamic_cost_map_sub", "/dynamic_cost_map");
     velocity_color_min_ = declare_parameter<double>("node.visualization.velocity_color_min");
     velocity_color_max_ = declare_parameter<double>("node.visualization.velocity_color_max");
 
     PathExecutorParams executor_params;
     executor_params.planner_frequency = planner_frequency_;
     executor_params.trajectory_timeout_s = declare_parameter<double>("node.trajectory_timeout_s");
+    executor_params.odom_timeout_s = declare_parameter<double>("node.odom_timeout_s", 0.5);
+    executor_params.rog_map_clearance = declare_parameter<double>("node.rog_map_clearance", 0.30);
     executor_params.control_delay_s = declare_parameter<double>("mpc.control_delay_compensation");
     executor_params.deadzone_speed = declare_parameter<double>("mpc.deadzone_speed_threshold");
     executor_params.output_in_body_frame = declare_parameter<bool>("node.output_in_body_frame");
@@ -101,7 +114,9 @@ public:
     config.Q = Eigen::Vector3d(q[0], q[1], q[2]);
     config.R = Eigen::Vector3d(r[0], r[1], r[2]);
 
-    if (control_rate_hz_ <= 0.0 || planner_frequency_ <= 0.0 || config.dt <= 0.0) {
+    if (control_rate_hz_ <= 0.0 || planner_frequency_ <= 0.0 || config.dt <= 0.0 ||
+      !std::isfinite(executor_params.odom_timeout_s) || executor_params.odom_timeout_s <= 0.0 ||
+      !std::isfinite(executor_params.rog_map_clearance) || executor_params.rog_map_clearance < 0.0) {
       throw std::invalid_argument("control_rate_hz, planner_frequency and dt must be positive");
     }
     if (!std::isfinite(velocity_color_min_) || !std::isfinite(velocity_color_max_) ||
@@ -109,10 +124,31 @@ public:
       throw std::invalid_argument("visualization velocity color range must be finite and ordered");
     }
 
-    path_planner_ = std::make_shared<PathPlanner>();
+    terrain_grid_ = std::make_shared<TerrainGrid>();
+    path_planner_ = std::make_shared<PathPlanner>(
+      terrain_grid_, executor_params.odom_timeout_s, odom_frame_);
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
     tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
-    path_executor_ = std::make_unique<PathExecutor>(config, executor_params, tf_buffer_);
+    path_executor_ = std::make_unique<PathExecutor>(
+      config, executor_params, tf_buffer_, terrain_grid_, path_planner_->mapQuery());
+
+    const auto map_qos = rclcpp::QoS(1).reliable().transient_local();
+    terrain_cost_sub_ = create_subscription<nav_msgs::msg::OccupancyGrid>(
+      cost_map_topic, map_qos, [this](nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg) {
+        terrain_grid_->updateCost(*msg);
+        publish_planning_constraints();
+      });
+    terrain_direction_sub_ = create_subscription<sensor_msgs::msg::Image>(
+      direction_map_topic, map_qos, [this](sensor_msgs::msg::Image::ConstSharedPtr msg) {
+        terrain_grid_->updateDirection(*msg);
+        publish_planning_constraints();
+      });
+    dynamic_cost_map_sub_ = create_subscription<nav_msgs::msg::OccupancyGrid>(
+      dynamic_map_topic, map_qos, [this](nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg) {
+        terrain_grid_->updateDynamic(*msg);
+        publish_planning_constraints();
+        publish_dynamic_obstacles(*msg);
+      });
 
     trajectory_sub_ = create_subscription<interfaces::msg::MpcPositionCommand>(
       trajectory_topic_, rclcpp::QoS(1),
@@ -143,6 +179,12 @@ public:
       global_path_topic_, rclcpp::QoS(1).transient_local());
     minco_trajectory_pub_ = create_publisher<visualization_msgs::msg::Marker>(
       minco_trajectory_topic_, rclcpp::QoS(1).transient_local());
+    planning_constraints_pub_ = create_publisher<nav_msgs::msg::OccupancyGrid>(
+      planning_constraints_topic_, rclcpp::QoS(1).reliable().transient_local());
+    planning_constraints_marker_pub_ = create_publisher<visualization_msgs::msg::Marker>(
+      planning_constraints_marker_topic_, rclcpp::QoS(1).reliable().transient_local());
+    dynamic_obstacle_marker_pub_ = create_publisher<visualization_msgs::msg::Marker>(
+      dynamic_obstacle_marker_topic_, rclcpp::QoS(1).reliable().transient_local());
 
     timer_ = create_wall_timer(
       std::chrono::duration<double>(1.0 / control_rate_hz_),
@@ -160,6 +202,74 @@ public:
   }
 
 private:
+  void publish_dynamic_obstacles(const nav_msgs::msg::OccupancyGrid & grid)
+  {
+    if (grid.info.width == 0 || grid.info.resolution <= 0.0F ||
+      grid.data.size() != static_cast<size_t>(grid.info.width) * grid.info.height) return;
+    visualization_msgs::msg::Marker marker;
+    marker.header = grid.header;
+    marker.ns = "dynamic_obstacles";
+    marker.id = 0;
+    marker.type = visualization_msgs::msg::Marker::POINTS;
+    marker.action = visualization_msgs::msg::Marker::ADD;
+    marker.pose.orientation.w = 1.0;
+    marker.scale.x = std::max(0.06F, grid.info.resolution);
+    marker.scale.y = marker.scale.x;
+    marker.color.r = 0.0F;
+    marker.color.g = 1.0F;
+    marker.color.b = 1.0F;
+    marker.color.a = 1.0F;
+    for (size_t index = 0; index < grid.data.size(); ++index) {
+      if (grid.data[index] < 95) continue;
+      geometry_msgs::msg::Point point;
+      point.x = grid.info.origin.position.x +
+        (static_cast<double>(index % grid.info.width) + 0.5) * grid.info.resolution;
+      point.y = grid.info.origin.position.y +
+        (static_cast<double>(index / grid.info.width) + 0.5) * grid.info.resolution;
+      point.z = 0.12;
+      marker.points.push_back(point);
+    }
+    dynamic_obstacle_marker_pub_->publish(marker);
+  }
+
+  void publish_planning_constraints()
+  {
+    auto constraints = terrain_grid_->planningConstraints();
+    if (!constraints) return;
+    constraints->header.stamp = now();
+    planning_constraints_pub_->publish(*constraints);
+
+    visualization_msgs::msg::Marker markers;
+    markers.header = constraints->header;
+    markers.ns = "planning_constraints";
+    markers.id = 0;
+    markers.type = visualization_msgs::msg::Marker::POINTS;
+    markers.action = visualization_msgs::msg::Marker::ADD;
+    markers.pose.orientation.w = 1.0;
+    markers.scale.x = std::max(0.04F, constraints->info.resolution * 0.9F);
+    markers.scale.y = markers.scale.x;
+    for (size_t index = 0; index < constraints->data.size(); ++index) {
+      const int8_t value = constraints->data[index];
+      if (value <= 0) continue;
+      geometry_msgs::msg::Point point;
+      point.x = constraints->info.origin.position.x +
+        (static_cast<double>(index % constraints->info.width) + 0.5) * constraints->info.resolution;
+      point.y = constraints->info.origin.position.y +
+        (static_cast<double>(index / constraints->info.width) + 0.5) * constraints->info.resolution;
+      point.z = 0.06;
+      std_msgs::msg::ColorRGBA color;
+      color.a = 1.0F;
+      if (value >= 100) {
+        color.r = 1.0F; color.g = 0.05F; color.b = 0.05F;
+      } else {
+        color.r = 1.0F; color.g = 1.0F; color.b = 0.0F;
+      }
+      markers.points.push_back(point);
+      markers.colors.push_back(color);
+    }
+    planning_constraints_marker_pub_->publish(markers);
+  }
+
   void publish_trajectory_visualization(const interfaces::msg::MpcPositionCommand & trajectory)
   {
     if (trajectory.cmds.empty()) return;
@@ -195,6 +305,7 @@ private:
 
   void accept_goal(const geometry_msgs::msg::PoseStamped::SharedPtr & goal)
   {
+    RCLCPP_INFO(get_logger(), "Received goal on %s", goal_topic_.c_str());
     if (!goal || !std::isfinite(goal->pose.position.x) ||
       !std::isfinite(goal->pose.position.y) || !std::isfinite(goal->pose.position.z)) {
       RCLCPP_WARN(get_logger(), "Ignoring an invalid navigation goal");
@@ -202,7 +313,7 @@ private:
     }
     if (!path_planner_->acceptGoal(*goal)) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
-        "Ignoring goal until ROGMap and %s are ready", odom_topic_.c_str());
+        "Ignoring goal until odometry and terrain/dynamic maps are ready (%s)", odom_topic_.c_str());
     }
   }
 
@@ -216,6 +327,8 @@ private:
       input.spin_speed = spin_speed_;
     }
     input.stamp = now();
+    input.allow_motion = input.trajectory &&
+      path_planner_->acceptsTrajectory(rclcpp::Time(input.trajectory->header.stamp));
 
     const ExecutorOutput output = path_executor_->computeCommand(input);
     command_pub_->publish(output.command);
@@ -224,10 +337,20 @@ private:
         "Braking: trajectory cannot be expressed in %s", odom_frame_.c_str());
     } else if (output.status == ExecutorStatus::SOLVER_FAILED) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Braking: MPC solve failed");
+    } else if (output.status == ExecutorStatus::TERRAIN_BLOCKED) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+        "Braking: terrain layer or map transform unavailable, or next command violates terrain");
+    } else if (output.status == ExecutorStatus::DYNAMIC_BLOCKED) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+        "Braking: current dynamic obstacle intersects the MPC reference horizon");
     }
   }
 
   std::unique_ptr<PathExecutor> path_executor_;
+  std::shared_ptr<TerrainGrid> terrain_grid_;
+  rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr terrain_cost_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr terrain_direction_sub_;
+  rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr dynamic_cost_map_sub_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
   std::shared_ptr<PathPlanner> path_planner_;
@@ -241,6 +364,9 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr command_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr global_path_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr minco_trajectory_pub_;
+  rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr planning_constraints_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr planning_constraints_marker_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr dynamic_obstacle_marker_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
   double control_rate_hz_{};
   double planner_frequency_{};
@@ -251,6 +377,9 @@ private:
   std::string output_topic_;
   std::string global_path_topic_;
   std::string minco_trajectory_topic_;
+  std::string planning_constraints_topic_;
+  std::string planning_constraints_marker_topic_;
+  std::string dynamic_obstacle_marker_topic_;
   std::string cmd_spin_topic_;
   std::string goal_topic_;
   double velocity_color_min_{};

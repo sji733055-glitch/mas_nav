@@ -455,9 +455,9 @@ class ROGMapROS : public ROGMap
     if (vm_.mkr_arr_pub && vm_.mkr_arr_pub->get_subscription_count() >= 1) {
       visualization_msgs::msg::MarkerArray mkr_arr;
       visualizeBoundingBox(
-        mkr_arr, now().seconds(), box_min, box_max, "Visualization Range", Color::Purple());
+        mkr_arr, now(), box_min, box_max, "Visualization Range", Color::Purple());
       visualizeText(mkr_arr,
-        now().seconds(),
+        now(),
         "Visualization Range Text",
         "Visualization Range",
         box_max + Vec3f(0, 0, 0.5),
@@ -468,9 +468,9 @@ class ROGMapROS : public ROGMap
       Vec3f local_map_max(999, 999, 999), local_map_min(-999, -999, -999);
       boundBoxByLocalMap(local_map_min, local_map_max);
       visualizeBoundingBox(
-        mkr_arr, now().seconds(), local_map_min, local_map_max, "Local Map Range", Color::Orange());
+        mkr_arr, now(), local_map_min, local_map_max, "Local Map Range", Color::Orange());
       visualizeText(mkr_arr,
-        now().seconds(),
+        now(),
         "Local Map Range Text",
         "Local Map Range",
         local_map_max + Vec3f(0, 0, 1.0),
@@ -479,13 +479,13 @@ class ROGMapROS : public ROGMap
         0);
 
       visualizeBoundingBox(mkr_arr,
-        now().seconds(),
+        now(),
         raycast_data_.cache_box_min,
         raycast_data_.cache_box_max,
         "Updating Range",
         Color::Green());
       visualizeText(mkr_arr,
-        now().seconds(),
+        now(),
         "Updating Range Text",
         "Updating Range",
         raycast_data_.cache_box_max + Vec3f(0, 0, 0.5),
@@ -494,13 +494,13 @@ class ROGMapROS : public ROGMap
         0);
 
       visualizePoint(
-        mkr_arr, now().seconds(), local_map_origin_d_, Color::Red(), "Local Map Origin", 0.2, 0);
+        mkr_arr, now(), local_map_origin_d_, Color::Red(), "Local Map Origin", 0.2, 0);
 
       if (cfg_.esdf_en) {
         Vec3f esdf_box_max, esdf_box_min;
         esdf_map_->getUpdatedBbox(esdf_box_min, esdf_box_max);
         visualizeText(mkr_arr,
-          now().seconds(),
+          now(),
           "ESDF Map Text",
           "ESDF Map",
           esdf_box_max + Vec3f(0, 0, 1.0),
@@ -508,7 +508,7 @@ class ROGMapROS : public ROGMap
           0.6,
           0);
         visualizeBoundingBox(
-          mkr_arr, now().seconds(), esdf_box_min, esdf_box_max, "ESDF Updating Range", Color::Blue());
+          mkr_arr, now(), esdf_box_min, esdf_box_max, "ESDF Updating Range", Color::Blue());
       }
 
       for (auto & marker : mkr_arr.markers) {
@@ -901,7 +901,7 @@ public:
 
 private:
   static void visualizeBoundingBox(visualization_msgs::msg::MarkerArray & mkrarr,
-    const double & stamp,
+    const rclcpp::Time & stamp,
     const Vec3f & box_min,
     const Vec3f & box_max,
     const string & ns,
@@ -919,7 +919,7 @@ private:
     // Publish Bounding box
     int id = 0;
     visualization_msgs::msg::Marker line_strip;
-    line_strip.header.stamp = rclcpp::Time(stamp);
+    line_strip.header.stamp = stamp;
     line_strip.header.frame_id = "world";
     line_strip.action = visualization_msgs::msg::Marker::ADD;
     line_strip.ns = ns;
@@ -975,7 +975,7 @@ private:
   }
 
   static void visualizeText(visualization_msgs::msg::MarkerArray & mkr_arr,
-    const double & stamp,
+    const rclcpp::Time & stamp,
     const std::string & ns,
     const std::string & text,
     const Vec3f & position,
@@ -985,7 +985,7 @@ private:
   {
     visualization_msgs::msg::Marker marker;
     marker.header.frame_id = "world";
-    marker.header.stamp = rclcpp::Time(stamp);
+    marker.header.stamp = stamp;
     marker.action = visualization_msgs::msg::Marker::ADD;
     marker.pose.orientation.w = 1.0;
     marker.ns = ns.c_str();
@@ -1007,7 +1007,7 @@ private:
   };
 
   static void visualizePoint(visualization_msgs::msg::MarkerArray & mkr_arr,
-    const double & stamp,
+    const rclcpp::Time & stamp,
     const Vec3f & pt,
     Color color = Color::Pink(),
     std::string ns = "pt",
@@ -1022,7 +1022,7 @@ private:
       return;
     }
     marker_ball.header.frame_id = "world";
-    marker_ball.header.stamp = rclcpp::Time(stamp);
+    marker_ball.header.stamp = stamp;
     marker_ball.ns = ns.c_str();
     marker_ball.id = id >= 0 ? id : cnt++;
     marker_ball.action = visualization_msgs::msg::Marker::ADD;
@@ -1045,7 +1045,7 @@ private:
     if (print_ns) {
       visualization_msgs::msg::Marker marker;
       marker.header.frame_id = "world";
-      marker.header.stamp = rclcpp::Time(stamp);
+      marker.header.stamp = stamp;
       marker.action = visualization_msgs::msg::Marker::ADD;
       marker.pose.orientation.w = 1.0;
       marker.ns = ns + "_text";

@@ -77,7 +77,7 @@ Visualization Manager:
         Value: /odom_localizer/prior_cloud
       Use Fixed Frame: true
       Value: true
-    - Alpha: 0.7
+    - Alpha: 0.45
       Class: rviz_default_plugins/Map
       Color Scheme: costmap
       Draw Behind: true
@@ -98,6 +98,49 @@ Visualization Manager:
         Value: /cost_map_updates
       Use Timestamp: false
       Value: true
+    - Alpha: 0.65
+      Class: rviz_default_plugins/Map
+      Color Scheme: costmap
+      Draw Behind: true
+      Enabled: false
+      Name: Planning Constraints (raster diagnostic)
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /planning_constraints
+      Update Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /planning_constraints_updates
+      Use Timestamp: false
+      Value: false
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Name: Planning Constraints (red=blocked, yellow=directional)
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /planning_constraints_markers
+      Value: true
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Name: Dynamic Obstacles (cyan, current)
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /nav_executor/debug/dynamic_obstacles
+      Value: true
     - Class: rviz_default_plugins/Image
       Enabled: false
       Max Value: 1
@@ -113,82 +156,142 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /direction_map
       Value: false
-    - Alpha: 0.7
-      Class: rviz_default_plugins/Map
-      Color Scheme: costmap
-      Draw Behind: true
+    - Class: rviz_common/Group
+      Displays:
+        - Alpha: 0.55
+          Class: rviz_default_plugins/Map
+          Color Scheme: map
+          Draw Behind: true
+          Enabled: false
+          Name: Dynamic Layer Value
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /rog_map/layer_value_dynamic
+          Use Timestamp: false
+          Value: false
+        - Alpha: 0.55
+          Class: rviz_default_plugins/Map
+          Color Scheme: map
+          Draw Behind: true
+          Enabled: false
+          Name: Static Layer Value (prior disabled)
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /rog_map/layer_value_static
+          Use Timestamp: false
+          Value: false
+        - Alpha: 0.55
+          Class: rviz_default_plugins/Map
+          Color Scheme: costmap
+          Draw Behind: true
+          Enabled: false
+          Name: Layer Type
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /rog_map/layer_type
+          Use Timestamp: false
+          Value: false
+        - Alpha: 0.55
+          Class: rviz_default_plugins/Map
+          Color Scheme: map
+          Draw Behind: true
+          Enabled: false
+          Name: Layer Value
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /rog_map/layer_value
+          Use Timestamp: false
+          Value: false
+        - Alpha: 0.32
+          Autocompute Intensity Bounds: true
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz_default_plugins/PointCloud2
+          Color Transformer: Intensity
+          Decay Time: 0
+          Enabled: true
+          Max Color: 125; 220; 255
+          Min Color: 30; 30; 90
+          Name: 2D Distance Field
+          Position Transformer: XYZ
+          Selectable: false
+          Size (Pixels): 2
+          Size (m): 0.04
+          Style: Flat Squares
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /rog_map/field
+          Use Fixed Frame: true
+          Value: true
+        - Alpha: 0.8
+          Autocompute Intensity Bounds: true
+          Axis: Z
+          Channel Name: z
+          Class: rviz_default_plugins/PointCloud2
+          Color Transformer: Intensity
+          Decay Time: 0
+          Enabled: false
+          Name: Height Analysis
+          Position Transformer: XYZ
+          Selectable: false
+          Size (Pixels): 2
+          Size (m): 0.05
+          Style: Points
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /rog_map/layer_height_delta
+          Use Fixed Frame: true
+          Value: false
+        - Alpha: 0.85
+          Class: rviz_default_plugins/PointCloud2
+          Color: 170; 0; 255
+          Color Transformer: FlatColor
+          Decay Time: 0
+          Enabled: true
+          Name: Occupied (purple cubes)
+          Position Transformer: XYZ
+          Selectable: false
+          Size (Pixels): 3
+          Size (m): 0.05
+          Style: Boxes
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /rog_map/occupied
+          Use Fixed Frame: true
+          Value: true
+        - Class: rviz_default_plugins/MarkerArray
+          Enabled: true
+          Name: Map Bound
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /rog_map/map_bound
+          Value: true
       Enabled: true
-      Name: ROG Layer Type
-      Topic:
-        Depth: 1
-        Durability Policy: Volatile
-        Filter size: 10
-        History Policy: Keep Last
-        Reliability Policy: Best Effort
-        Value: /rog_map/layer_type
-      Update Topic:
-        Depth: 1
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Best Effort
-        Value: /rog_map/layer_type_updates
-      Use Timestamp: false
-      Value: true
-    - Alpha: 0.55
-      Class: rviz_default_plugins/Map
-      Color Scheme: map
-      Draw Behind: true
-      Enabled: false
-      Name: ROG Layer Value
-      Topic:
-        Depth: 1
-        Durability Policy: Volatile
-        Filter size: 10
-        History Policy: Keep Last
-        Reliability Policy: Best Effort
-        Value: /rog_map/layer_value
-      Update Topic:
-        Depth: 1
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Best Effort
-        Value: /rog_map/layer_value_updates
-      Use Timestamp: false
-      Value: false
-    - Alpha: 1
-      Autocompute Intensity Bounds: true
-      Axis: Z
-      Class: rviz_default_plugins/PointCloud2
-      Color Transformer: AxisColor
-      Decay Time: 0
-      Enabled: true
-      Invert Rainbow: false
-      Name: ROG Occupied
-      Selectable: false
-      Size (Pixels): 2
-      Size (m): 0.04
-      Style: Points
-      Topic:
-        Depth: 1
-        Durability Policy: Volatile
-        Filter size: 10
-        History Policy: Keep Last
-        Reliability Policy: Best Effort
-        Value: /rog_map/occupied
-      Use Fixed Frame: true
-      Use rainbow: true
-      Value: true
-    - Class: rviz_default_plugins/MarkerArray
-      Enabled: true
-      Name: ROG Map Bound
-      Topic:
-        Depth: 1
-        Durability Policy: Volatile
-        Filter size: 10
-        History Policy: Keep Last
-        Reliability Policy: Best Effort
-        Value: /rog_map/map_bound
-      Value: true
+      Name: ROGMAP
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Axis: Z

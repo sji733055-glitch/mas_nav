@@ -3,7 +3,7 @@
 <package format="3">
   <name>mas2027_nav_executor</name>
   <version>0.1.0</version>
-  <description>Unified ROGMap, MINCO and MPC navigation executor for MAS2027.</description>
+  <description>Terrain, ROGMap, MINCO and MPC navigation executor for MAS2027.</description>
   <maintainer email="mas@example.com">MAS</maintainer>
   <license>Apache-2.0</license>
 
@@ -12,9 +12,10 @@
   <depend>example_interfaces</depend>
   <depend>geometry_msgs</depend>
   <depend>interfaces</depend>
-  <depend>rcl_interfaces</depend>
   <depend>rog_map</depend>
+  <depend>rcl_interfaces</depend>
   <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
   <depend>rclcpp</depend>
   <depend>rclcpp_lifecycle</depend>
   <depend>tf2</depend>

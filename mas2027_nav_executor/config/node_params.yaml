@@ -4,6 +4,8 @@
       control_rate_hz: 20.0
       planner_frequency: 20.0
       trajectory_timeout_s: 0.6
+      odom_timeout_s: 0.5
+      rog_map_clearance: 0.30
       output_in_body_frame: true
       frames:
         odom: odom
@@ -14,8 +16,15 @@
         spin_cmd_sub: /cmd_spin
         global_path_pub: /nav_executor/global_path
         minco_trajectory_pub: /nav_executor/debug/minco_trajectory
+        # RViz 规划约束图：100 当前不可通行，50 仅限指定方向通过；不显示预测帧。
+        planning_constraints_pub: /planning_constraints
+        planning_constraints_marker_pub: /planning_constraints_markers
+        dynamic_obstacle_marker_pub: /nav_executor/debug/dynamic_obstacles
         # 独立执行器直接输出到底盘入口。
         cmd_vel_pub: /cmd_vel
+        terrain_cost_sub: /cost_map
+        terrain_direction_sub: /direction_map
+        dynamic_cost_map_sub: /dynamic_cost_map
       visualization:
         velocity_color_min: 0.0
         velocity_color_max: 3.0

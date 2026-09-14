@@ -87,7 +87,6 @@ private:
     RegistrationMetrics & metrics,
     std::string & reason) const;
   bool apply_registration_update(const Eigen::Isometry3d & transform);
-  Eigen::Isometry3d maybe_lock_z(const Eigen::Isometry3d & transform) const;
   void publish_transform();
   void maybe_publish_prior_cloud();
 
@@ -135,7 +134,6 @@ private:
   double ema_ratio_{0.6};
   double max_translation_step_{0.3};
   double max_rotation_step_{0.15};
-  bool lock_z_{true};
   bool publish_tf_direct_{true};
   std::string map_to_odom_topic_{"/tf_maintainer/map_to_odom"};
 

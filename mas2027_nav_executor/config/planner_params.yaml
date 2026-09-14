@@ -3,7 +3,7 @@
 /**:
   ros__parameters:
     planner:
-      # EXPLORATION directly plans against ROGMap in odom.
+      # Global terrain + current dynamic map; ROGMap supplies local occupancy and distance.
       planner_mode: EXPLORATION
       global_frame: odom
       frames:
@@ -66,8 +66,6 @@
         map_sliding:
           enable: true
           threshold: 0.2
-          center_offset_enable: false
-          center_offset: [0.0, 0.0, 0.0]
         ros_callback:
           enable: true
           cloud_topic: /cloud_registered
@@ -79,24 +77,17 @@
           batch_update_size: 1
           ray_range: [0.01, 10.0]
           local_update_box: [10.0, 10.0, 2.5]
-          unk_thresh: 0.70
           p_hit: 0.9
           p_miss: 0.45
-          p_min: 0.12
-          p_max: 0.97
           p_occ: 0.85
           p_free: 0.499
           parallel_enable: false
-          num_threads: 4
         decay:
           enable: true
           keep_time: 0.8
           clear_time: 1.2
-          active_list_enable: true
         projection:
           enable: true
-          prior_map:
-            enable: false
           scan_z_relative_to_robot: true
           scan_z_min_abs: -1.2
           scan_z_max_abs: 0.75
@@ -108,10 +99,8 @@
           tunnel_height_delta_min: 0.25
           tunnel_height_delta_max: 0.40
           tunnel_occupancy_ratio_max: 0.45
-          passable_cost: 50
           passable_as_free: true
           hysteresis_enable: false
-          hysteresis_count: 2
           obstacle_hold_time: 1.5
           mask_filter_en: true
           fill_occ_min: 4
@@ -121,16 +110,10 @@
           inflation_radius: 0.0
           max_distance: 6.0
           min_distance: -3.0
-          clamp_distance: true
           interpolation: quadratic
           update_rate: 20.0
         performance:
-          enable: true
-          print_enable: false
-          dirty_column_enable: true
-          dirty_full_ratio: 0.30
-          parallel_raycast_enable: false
-          raycast_num_threads: 4
+          enable: false
         visualization:
           enable: true
           frame_id: odom

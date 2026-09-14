@@ -12,7 +12,7 @@ mid360_driver:
     front_lidar_frame: lidar_link
     back_lidar_ip: "192.168.1.193"
     back_lidar_frame: lidar_back_link
-    enable_lidar_merge: true # 驱动内将两台雷达融合后发布到 lidar_topic
+    enable_lidar_merge: false # 驱动内将两台雷达融合后发布到 lidar_topic
     merge_front_ip: "192.168.1.136" # 参考雷达，点坐标保持不变
     merge_back_ip: "192.168.1.193" # 此雷达点转换到参考雷达坐标系
     merge_extrinsic_back_to_front: [0.0, 0.200484459, -0.223172538, -1.677800, 0.0, 0.0] # 左→右：T_lidar_link^{-1}*T_lidar_back；手性对称 R=Rx(-2α)，α=0.8389；[x,y,z,roll,pitch,yaw]
@@ -35,8 +35,8 @@ small_point_lio:
     imu_topic: /mid360_driver/imu                     # IMU 话题名
     lidar_type: custom_mid360_driver                  # 雷达适配器：轻量 MID360 驱动
     lidar_frame: lidar_link                           # 雷达坐标系
-    odom_frame: odom                                  # Nav2 里程计父坐标系；/Odometry pose 和 TF 均使用此坐标系
-    base_frame: base_link                             # Nav2 机器人坐标系；/Odometry twist 在此坐标轴表达
+    odom_frame: odom                                  # /Odometry pose 和 TF 使用的里程计父坐标系
+    base_frame: base_link                             # /Odometry twist 使用的机器人坐标轴
     # 独立 nav_executor + tf_maintainer 启动时设为 false，由 tf_maintainer 从 /Odometry
     # 唯一发布 odom→base_link；默认保留当前独立 LIO 启动行为。
     publish_odom_tf: true

@@ -1,4 +1,4 @@
-"""Standalone ROGMap + MINCO + MPC navigation, without Nav2 servers."""
+"""Standalone map_server + MINCO + MPC navigation bringup."""
 
 import glob
 import os
@@ -101,18 +101,20 @@ def generate_launch_description():
         executable="map_server_node",
         name="terrain_map_server",
         output="screen",
+        additional_env={"LD_LIBRARY_PATH": system_first_library_path},
         parameters=[{
             "use_sim_time": use_sim_time,
             "terrain_map_path": os.path.join(bringup_dir, "map", "lab3_terrain.msgpack"),
+            "global_cloud_path": map_pcd,
             "frame_id": "map",
             "origin_x": -4.6,
             "origin_y": -7.94,
-            "bypass_dynamic_obstacle": True,
+            "bypass_dynamic_obstacle": False,
         }],
         remappings=[
             ("cost_map", "/cost_map"),
             ("direction_map", "/direction_map"),
-            ("cost_maps", "/cost_maps"),
+            ("dynamic_cost_map", "/dynamic_cost_map"),
         ],
     )
     ros2_comm = Node(

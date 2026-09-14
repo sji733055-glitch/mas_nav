@@ -46,22 +46,20 @@
 
 // Project dependencies
 #include "data_structure/base/trajectory.h"
-#include "rog_map/map_query_interface.hpp"
+#include "minco_core/map_query_interface.hpp"
 #include "traj_opt/backup_traj_optimizer_s4.h"
-#include "traj_opt/minco_optimizer.hpp"
+#include "mas2027_nav_executor/path_planner/trajectory/minco_optimizer.hpp"
 #include "traj_opt/yaw_traj_opt.h"
 #include "utils/header/color_text.hpp"
 
 // Minco core headers
-#include "minco_core/astar.hpp"
-#include "minco_core/components/global_path_searcher.hpp"
-#include "minco_core/components/local_path_processor.hpp"
-#include "minco_core/components/map_query_adapters.hpp"
+#include "mas2027_nav_executor/path_planner/search/astar.hpp"
+#include "mas2027_nav_executor/path_planner/search/global_path_searcher.hpp"
+#include "mas2027_nav_executor/path_planner/trajectory/local_path_processor.hpp"
 #include "minco_core/components/planner_mode_context.hpp"
-#include "minco_core/components/recovery_behaivor.hpp"
-#include "minco_core/components/trajectory_safety_checker.hpp"
-#include "minco_core/corridor_generator.hpp"
-#include "minco_core/minco_fsm.hpp"
+#include "mas2027_nav_executor/task_manager/recovery/recovery_behaivor.hpp"
+#include "mas2027_nav_executor/path_planner/trajectory/trajectory_safety_checker.hpp"
+#include "mas2027_nav_executor/path_planner/trajectory/corridor_generator.hpp"
 #include "minco_core/minco_utils.hpp"
 #include "minco_core/visualizer.hpp"
 
