@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check map_server -> goal -> trajectory in an isolated ROS_DOMAIN_ID."""
 import argparse
+import math
 import os
 import subprocess
 import time
@@ -12,6 +13,7 @@ from nav_msgs.msg import OccupancyGrid, Odometry, Path
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Header
+from visualization_msgs.msg import Marker
 from tf2_ros import StaticTransformBroadcaster
 
 
@@ -57,10 +59,19 @@ def main():
     goal_pub = node.create_publisher(PoseStamped, "/goal_pose", 10)
     qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                      durability=DurabilityPolicy.TRANSIENT_LOCAL)
+    # 折线与终点球是同一 tick 背靠背发的两条 Marker；depth=1 的订阅队列会把先到的
+    # 折线覆盖掉，只剩终点球，所以这里必须用更大的队列。
+    marker_qos = QoSProfile(depth=50, reliability=ReliabilityPolicy.RELIABLE,
+                            durability=DurabilityPolicy.TRANSIENT_LOCAL)
     maps = []
     paths = []
+    global_plans = []
+    global_markers = []
     node.create_subscription(OccupancyGrid, "/dynamic_cost_map", maps.append, qos)
     node.create_subscription(Path, "/nav_executor/global_path", paths.append, qos)
+    node.create_subscription(Path, "/nav_executor/global_plan", global_plans.append, qos)
+    node.create_subscription(Marker, "/nav_executor/debug/global_plan",
+                             global_markers.append, marker_qos)
     goal_sent = False
     second_sent = False
     first_end_x = None
@@ -95,8 +106,13 @@ def main():
                 goal_sent = True
             if paths and goal_sent:
                 if not args.preempt:
-                    break
-                if not second_sent:
+                    # 全局折线走 5 Hz 定时器，比轨迹晚一拍；而且 spin_once 一次只处理一个
+                    # 回调，所以必须等到指定的那条 LINE_STRIP 到齐，不能见到任意 Marker 就走。
+                    if global_plans and any(
+                            m.ns == "global_plan" and m.type == Marker.LINE_STRIP
+                            for m in global_markers):
+                        break
+                elif not second_sent:
                     first_end_x = paths[-1].poses[-1].pose.position.x
                     goal = PoseStamped()
                     goal.header.stamp = node.get_clock().now().to_msg()
@@ -106,14 +122,70 @@ def main():
                     goal.pose.orientation.w = 1.0
                     goal_pub.publish(goal)
                     second_sent = True
-                elif paths[-1].poses[-1].pose.position.x > first_end_x + 0.25:
+                elif (paths[-1].poses[-1].pose.position.x > first_end_x + 0.25
+                      and any(len(p.poses) >= 2 and abs(p.poses[-1].pose.position.x - 3.0) < 1e-6
+                              for p in global_plans)
+                      and any(m.ns == "global_plan" and m.type == Marker.LINE_STRIP
+                              and m.points and abs(m.points[-1].x - 3.0) < 1e-6
+                              for m in global_markers)):
+                    # Path 与 Marker 同一 tick 背靠背发出，回调逐个处理；两条都要等到，
+                    # 否则断言会在 Marker 回调之前就跑完（表现为 global_markers 为空）。
                     break
         assert goal_sent, "dynamic map was not ready"
         assert paths and len(paths[-1].poses) >= 2, "goal produced no path"
         if args.preempt:
             assert second_sent and paths[-1].poses[-1].pose.position.x > first_end_x + 0.25, \
                 "newer goal did not replace the active path"
-        print(f"goal smoke passed: {len(paths[-1].poses)} trajectory poses")
+
+        # 全局搜索折线必须真的发出来，否则 RViz 里那条 "Global Plan" 是空的。
+        # 换目标时 invalidateGlobalPath 会先发一条空的 Path 去清 RViz，所以取最后一条非空的。
+        assert global_plans, "no message on /nav_executor/global_plan"
+        plan = next((p for p in reversed(global_plans) if len(p.poses) >= 2), None)
+        assert plan is not None, \
+            f"no non-empty global plan; got sizes {[len(p.poses) for p in global_plans]}"
+        expected_end_x = 3.0 if args.preempt else 2.56226
+        assert len(plan.poses) >= 2, f"global plan has {len(plan.poses)} poses"
+        assert plan.header.frame_id == "odom", f"global plan frame is {plan.header.frame_id!r}"
+        for pose in plan.poses:
+            for value in (pose.pose.position.x, pose.pose.position.y, pose.pose.position.z):
+                assert math.isfinite(value), "global plan contains a non-finite coordinate"
+        # 折线末端被 makePlanOnQuery 贴到精确目标上，所以应当与目标点重合。
+        end = plan.poses[-1].pose.position
+        assert abs(end.x - expected_end_x) < 1e-6 and abs(end.y - 0.437201) < 1e-6, \
+            f"global plan does not end at the goal: ({end.x}, {end.y})"
+        # 判别性检查：这条线必须是搜索输出的格点路径，而不是被重新接回 MINCO 轨迹。
+        # SMAC 直接在地图的 0.05 m 格上扩展，相邻点间距只有 0.05（直走）或
+        # 0.0707 m（斜走 = 0.05·√2），# 而 MINCO 轨迹按 dt 采样（0.02 s × 车速），
+        # 间距小一个量级。最后一段要排除：搜索在 tolerance(0.30 m) 内就停，
+        # makePlanOnQuery 随后把末尾一点直接改写成精确目标，最后一段是跳过去的。
+        steps = [math.dist((a.pose.position.x, a.pose.position.y),
+                           (b.pose.position.x, b.pose.position.y))
+                 for a, b in zip(plan.poses, plan.poses[1:])]
+        lattice_steps = steps[:-1]
+        assert lattice_steps, "global plan has no consecutive lattice pairs"
+        assert max(lattice_steps) <= 0.08, \
+            f"global plan looks resampled, not a lattice path (max step {max(lattice_steps):.3f} m)"
+        assert min(lattice_steps) >= 0.04, \
+            f"global plan points are too dense for a lattice path (min step {min(lattice_steps):.3f} m)"
+        assert steps[-1] <= 0.60, \
+            f"snap-to-goal segment is unexpectedly long ({steps[-1]:.3f} m)"
+
+        # 醒目样式：线宽来自 node.visualization.global_plan_line_width，必须明显粗于 MINCO 轨迹(0.07)。
+        lines = [m for m in global_markers
+                 if m.ns == "global_plan" and m.type == Marker.LINE_STRIP and m.action == Marker.ADD]
+        assert lines, ("no LINE_STRIP marker on /nav_executor/debug/global_plan; got "
+                       + repr([(m.ns, m.type, m.action, len(m.points)) for m in global_markers]))
+        line = lines[-1]
+        assert len(line.points) == len(plan.poses), \
+            f"marker has {len(line.points)} points but the path has {len(plan.poses)}"
+        assert line.scale.x >= 0.10, f"global plan line width {line.scale.x} is not prominent"
+        assert line.color.a >= 0.99, "global plan line is not fully opaque"
+        # 起点应贴着机器人（本烟测里机器人在 odom 原点）。
+        assert line.points[0].x < 0.5 and line.points[0].y < 0.5, \
+            f"global plan starts far from the robot: ({line.points[0].x}, {line.points[0].y})"
+
+        print(f"goal smoke passed: {len(paths[-1].poses)} trajectory poses, "
+              f"{len(plan.poses)} global plan poses, marker width {line.scale.x:.3f} m")
     finally:
         node.destroy_node()
         rclpy.shutdown()

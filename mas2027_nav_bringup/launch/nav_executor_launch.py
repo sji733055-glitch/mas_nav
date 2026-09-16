@@ -109,7 +109,14 @@ def generate_launch_description():
             "frame_id": "map",
             "origin_x": -4.6,
             "origin_y": -7.94,
-            "bypass_dynamic_obstacle": False,
+            # True = 不做动态障碍检测（map_server_node.cpp:67 起连点云都不订阅），
+            # /dynamic_cost_map 保持全空，/cost_map 与 /direction_map 照常发布。
+            # 理由：旧工程 /home/mas/mas_nav_2027 的 mas2027_perception 下根本没有 map_server，
+            # 动态物体靠 ROGMap 的时间衰减（keep_time 0.8 s / clear_time 1.2 s）处理；本工程多出的
+            # 这一层会按 full_cost 0.2 m / cutoff 0.4 m 膨胀，RViz 里明显比实物厚，并触发
+            # 「Braking: current dynamic obstacle intersects the MPC reference horizon」，
+            # 是实车「不丝滑」的一大来源。需要动态避障时改回 False。
+            "bypass_dynamic_obstacle": True,
         }],
         remappings=[
             ("cost_map", "/cost_map"),
@@ -137,8 +144,10 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="False"),
         DeclareLaunchArgument("use_rviz", default_value="True"),
-        # Keep hardware output opt-in for the first on-robot test.
-        DeclareLaunchArgument("use_ros2_comm", default_value="False"),
+        # 底盘转发桥默认开启：ros2_comm 是 /cmd_vel 的唯一消费者，不启动它就会出现
+        # 「cmd_vel 一直有值但车不动」。协议只发 vx/vy/nav_state，不含角速度。
+        # 上机前确认底盘上电与急停状态；只想看导航不发车时用 use_ros2_comm:=False 关掉。
+        DeclareLaunchArgument("use_ros2_comm", default_value="True"),
         DeclareLaunchArgument("use_odom_localizer", default_value="True"),
         DeclareLaunchArgument("output_topic", default_value="/cmd_vel"),
         DeclareLaunchArgument(

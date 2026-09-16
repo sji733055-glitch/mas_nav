@@ -44,6 +44,18 @@ public:
     double rho{0.01};
     double smooth_eps{0.01};
 
+    /// 速度感知净空（可选，默认关）。开启后位置罚项的目标净空不再是固定的 safe_dist，
+    /// 而是与发布前校验/运行时监视同一条口径：
+    ///   required(v) = clearance_collision_dist
+    ///                 + max(|v| * clearance_react_time, clearance_monitor_margin)
+    /// 关闭时行为与改动前完全一致。开启的意义见 constraintsFunctional 中的说明。
+    bool speed_aware_clearance{false};
+    double clearance_collision_dist{0.30};
+    double clearance_react_time{0.35};
+    double clearance_monitor_margin{0.0};
+    /// 优化器软目标相对硬判据的余量，见 ClearanceModel::optimizer_margin。
+    double clearance_optimizer_margin{0.05};
+
     VecDf magnitudeBounds, penaltyWeights;
     int time_allocation_iters{5};
     int integral_res{16};
@@ -51,6 +63,22 @@ public:
 
     bool print_optimizer_log{true};
   } cfg_;
+
+  /// 速度感知净空参数。开启后位置罚项的目标净空不再是固定的 safe_dist，而是
+  ///   required(v) = collision_dist + max(|v| * react_time, monitor_margin)
+  /// 与发布前校验/运行时监视同一条口径；关闭时行为与改动前完全一致。
+  /// 单独抽成结构体是因为罚函数是静态成员，只能靠传参拿到这些值。
+  struct ClearanceModel
+  {
+    bool enabled{false};
+    double collision_dist{0.30};
+    double react_time{0.35};
+    double monitor_margin{0.0};
+    /// 优化器软目标相对硬判据的余量。优化器只能渐近逼近软目标，若软目标恰好等于硬判据，
+    /// 解会稳定地差几毫米被 validateTrajectory 否掉（实测 0.002~0.010 m 的擦边失败，
+    /// 表现为窄道处「卡一下」）。留出该余量后软目标始终高于硬判据。
+    double optimizer_margin{0.05};
+  };
 
   // === Constructor & Lifecycle ===
   MincoOptimizer(const Config & cfg) : cfg_(cfg)
@@ -63,6 +91,9 @@ public:
     opt_vars_.rho = cfg_.rho;
     opt_vars_.smooth_eps = cfg_.smooth_eps;
     opt_vars_.integral_res = cfg_.integral_res;
+    opt_vars_.clearance = {cfg_.speed_aware_clearance, cfg_.clearance_collision_dist,
+      cfg_.clearance_react_time, cfg_.clearance_monitor_margin,
+      cfg_.clearance_optimizer_margin};
   }
 
   // === Core Planning Interfaces ===
@@ -77,6 +108,9 @@ public:
     opt_vars_.rho = cfg_.rho;
     opt_vars_.smooth_eps = cfg_.smooth_eps;
     opt_vars_.integral_res = cfg_.integral_res;
+    opt_vars_.clearance = {cfg_.speed_aware_clearance, cfg_.clearance_collision_dist,
+      cfg_.clearance_react_time, cfg_.clearance_monitor_margin,
+      cfg_.clearance_optimizer_margin};
   }
 
   void setInitPsAndTs(const vec_Vec3f & init_ps, const VecDf & init_ts);
@@ -111,6 +145,9 @@ private:
 
     // Environment map pointer.
     std::shared_ptr<rog_map::MapQueryInterface> map;
+
+    // 速度感知净空（由 Config 复制而来，见 Config::speed_aware_clearance）。
+    ClearanceModel clearance;
 
     VecDf magnitudeBounds;
     VecDf penaltyWeights;
@@ -164,6 +201,7 @@ private:
     const VecDf & magnitudeBounds,
     const VecDf & local_magnitudes,
     const VecDf & penaltyWeights,
+    const ClearanceModel & clearance,
     double & cost,
     VecDf & partialGradByTimes,
     MatD3f & partialGradByCoeffs,

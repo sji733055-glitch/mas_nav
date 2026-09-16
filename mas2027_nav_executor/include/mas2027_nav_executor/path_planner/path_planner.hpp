@@ -30,6 +30,8 @@ public:
   }
   rclcpp_lifecycle::LifecycleNode::SharedPtr node() const { return node_; }
   std::shared_ptr<rog_map::MapQueryInterface> mapQuery() const;
+  // 当前全局搜索输出的折线（odom 系），供 RViz 显示；无可用路径时返回 false。
+  bool copyLatestGlobalPath(std::vector<geometry_msgs::msg::PoseStamped> & out) const;
 
 private:
   rclcpp_lifecycle::LifecycleNode::SharedPtr node_;

@@ -1,6 +1,7 @@
 #include "mas2027_nav_executor/path_planner/trajectory/trajectory_safety_checker.hpp"
 
 #include "data_structure/base/trajectory.h"
+#include "mas2027_nav_executor/common/environment/clearance_gate.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -78,17 +79,32 @@ bool TrajectorySafetyChecker::checkPoint(const Eigen::Vector3d & pos, double che
 
 bool TrajectorySafetyChecker::checkTrajectory(const traj_opt::Trajectory & traj) const
 {
-  return checkTrajectory(traj, 0.0, safe_dist_, traj.getTotalDuration());
+  CheckOptions options;
+  options.check_dist = safe_dist_;
+  return checkTrajectory(traj, options);
 }
 
 bool TrajectorySafetyChecker::checkTrajectory(
   const traj_opt::Trajectory & traj, double t_start, double check_dist) const
 {
-  return checkTrajectory(traj, t_start, check_dist, traj.getTotalDuration());
+  CheckOptions options;
+  options.t_start = t_start;
+  options.check_dist = check_dist;
+  return checkTrajectory(traj, options);
 }
 
 bool TrajectorySafetyChecker::checkTrajectory(
   const traj_opt::Trajectory & traj, double t_start, double check_dist, double horizon) const
+{
+  CheckOptions options;
+  options.t_start = t_start;
+  options.check_dist = check_dist;
+  options.horizon = horizon;
+  return checkTrajectory(traj, options);
+}
+
+bool TrajectorySafetyChecker::checkTrajectory(
+  const traj_opt::Trajectory & traj, const CheckOptions & options) const
 {
   if (!ensureQueryAvailable()) {
     return false;
@@ -99,18 +115,64 @@ bool TrajectorySafetyChecker::checkTrajectory(
     return true;
   }
 
-  const double t0 = std::max(0.0, std::min(t_start, dur));
-  const double span = (horizon > 0.0 && std::isfinite(horizon)) ? horizon : dur;
+  const double t0 = std::max(0.0, std::min(options.t_start, dur));
+  const double span = (options.horizon > 0.0 && std::isfinite(options.horizon)) ?
+    options.horizon : dur;
   const double t1 = std::min(dur, t0 + span);
-  if (t1 <= t0 + 1e-9) {
-    return checkPoint(traj.getPos(std::min(dur, t0)), check_dist);
+
+  // 近场判据：t0 处的实测净空是「机器人现在到底有多近」的权威值。拿不到就不放宽。
+  const Eigen::Vector3d start_pos = traj.getPos(t0);
+  double start_clearance = 0.0;
+  bool start_clearance_ok = false;
+  if (options.near_field > 1e-6) {
+    const auto start_query = dynamic_query_->query(start_pos);
+    if (!start_query.ok) {
+      RCLCPP_WARN_THROTTLE(logger_,
+        *rclcpp::Clock::make_shared(),
+        1000,
+        "[MincoPlanner] Near-field clearance query failed: %s",
+        rog_map::queryStatusName(start_query.status));
+      return false;
+    }
+    start_clearance = start_query.distance;
+    start_clearance_ok = true;
   }
-  for (double t = t0; t <= t1; t += sample_dt_) {
-    if (!checkPoint(traj.getPos(t), check_dist)) {
+  const mas2027_nav_executor::ClearanceRequirement gate =
+    mas2027_nav_executor::makeClearanceRequirement(options.check_dist,
+      options.near_field,
+      start_clearance,
+      start_clearance_ok,
+      options.near_field_slack);
+  if (gate.nearFieldEnabled() && gate.near_required < gate.required) {
+    // 明确记录「起点净空不足但按近场放宽」：真车贴着墙停车时靠这条规则才能起步，
+    // 排查「车不动」时先看这里有没有刷，再看是不是连近场外的要求也满足不了。
+    RCLCPP_INFO_THROTTLE(logger_, *rclcpp::Clock::make_shared(), 2000,
+      "[MincoPlanner] Near-field exemption: start clearance %.3f m below required %.3f m; "
+      "inside %.2f m of the start only 'not worse than now' is enforced",
+      start_clearance, gate.required, gate.near_field);
+  }
+
+  if (t1 <= t0 + 1e-9) {
+    return checkPoint(start_pos, gate.requiredAt(0.0));
+  }
+
+  // 沿轨迹累积弧长：近场是按「离起点多远」划分的，不是按时间。
+  double arc = 0.0;
+  Eigen::Vector3d previous = start_pos;
+  if (!checkPoint(previous, gate.requiredAt(arc))) {
+    return false;
+  }
+  for (double t = t0 + sample_dt_; t <= t1; t += sample_dt_) {
+    const Eigen::Vector3d pos = traj.getPos(t);
+    arc += (pos - previous).norm();
+    previous = pos;
+    if (!checkPoint(pos, gate.requiredAt(arc))) {
       return false;
     }
   }
-  return checkPoint(traj.getPos(t1), check_dist);
+  const Eigen::Vector3d last = traj.getPos(t1);
+  arc += (last - previous).norm();
+  return checkPoint(last, gate.requiredAt(arc));
 }
 
 double TrajectorySafetyChecker::getDistance(const Eigen::Vector3d & pos) const

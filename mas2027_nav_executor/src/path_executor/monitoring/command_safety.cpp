@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "mas2027_nav_executor/common/environment/clearance_gate.hpp"
 #include "tf2/utils.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
@@ -41,6 +42,14 @@ ExecutorStatus checkCommandSafety(
     if (!terrain->transition(position, position + horizon * velocity)) {
       return ExecutorStatus::TERRAIN_BLOCKED;
     }
+    // 净空判据与规划侧的发布/监视门一致：机器人当前所在位置（近场，车体安全半径以内）
+    // 只要求不比现在的实测净空更差，离开近场后必须满足 rog_map_clearance。
+    // 否则「贴着墙停下」会让每一条速度指令都在 t=0 处被否决，cmd_vel 恒为 0。
+    const auto current_clearance =
+      rog_query->query(Eigen::Vector3d(current.x, current.y, 0.0));
+    const ClearanceRequirement clearance_gate = makeClearanceRequirement(
+      rog_map_clearance, rog_map_clearance, current_clearance.distance, current_clearance.ok);
+    const double travel_speed = velocity.norm();
     const int command_steps = std::max(1, static_cast<int>(std::ceil(horizon / dt)));
     for (int i = 0; i <= command_steps; ++i) {
       const double t = horizon * i / command_steps;
@@ -50,7 +59,7 @@ ExecutorStatus checkCommandSafety(
       const Eigen::Vector3d odom_point(current.x + t * control.vx,
         current.y + t * control.vy, 0.0);
       const auto clearance = rog_query->query(odom_point);
-      if (!clearance.ok || clearance.distance <= rog_map_clearance) {
+      if (!clearance.ok || clearance.distance <= clearance_gate.requiredAt(t * travel_speed)) {
         return ExecutorStatus::DYNAMIC_BLOCKED;
       }
     }

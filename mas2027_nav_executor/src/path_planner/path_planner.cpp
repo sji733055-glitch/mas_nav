@@ -50,6 +50,15 @@ std::shared_ptr<rog_map::MapQueryInterface> PathPlanner::mapQuery() const
   return rog_map_->queryInterface();
 }
 
+bool PathPlanner::copyLatestGlobalPath(std::vector<geometry_msgs::msg::PoseStamped> & out) const
+{
+  if (!planner_) {
+    out.clear();
+    return false;
+  }
+  return planner_->copyLatestGlobalPath(out);
+}
+
 bool PathPlanner::acceptGoal(const geometry_msgs::msg::PoseStamped & goal)
 {
   const auto terrain = terrain_->snapshot();

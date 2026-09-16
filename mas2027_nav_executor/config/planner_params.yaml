@@ -10,12 +10,30 @@
         map_frame: map
         rog_frame: odom
       allow_unknown: false
+      # 全局主搜索选择。true = SMAC 2D（移植自 mas_nav_2027 的 smac_search，含 ESDF 势场软代价），
+      # false = 退回 Astar（NavFn 波前）。两者都跑在地形图查询上；SMAC 失败时**直接失败**，
+      # 不会自动回退 Astar —— 与旧工程一致，避免同一次失败出现两条搜索与两套日志。
+      # 本项是结构开关（决定 smac_planner_ 是否存在），属 configure-time，运行时改会被拒绝。
+      use_smac: true
+      smac_2d:
+        # 取值与 mas_nav_2027 nav2_params.yaml 的 smac_2d 段一致（true / 1.0 / 0.8 / 0.5）。
+        # 代价增量 = step * min(weight * exp(-dist/decay), max_cost)，dist 取自 TerrainMapQuery
+        # 由规划约束图烘焙的二维有符号距离场（自由为正，上限 3.0 m）。
+        # 作用：让折线主动远离墙面、贴近走廊中线，减少 MINCO 后期被净空判据否掉的概率。
+        # 这四项可以在线调（现场标定 esdf_weight / esdf_decay 不必重启）。
+        use_esdf_cost: true
+        esdf_weight: 1.0
+        esdf_decay: 0.8
+        esdf_max_cost: 0.5
       odom_topic: /Odometry
       tolerance: 0.3
       exploration:
         boundary_margin: 0.2
         boundary_sample_step: 0.1
-        unknown_as_occupied: true
+        # 必须与 planner.rog_map.projection.unknown_as_occupied 一致：本项管全局搜索
+        # （smacTraversableCost / 目标可通行判定）是否把 UNKNOWN 当障碍，那一项管二维 ESDF。
+        # 两边不一致时，同一格会被搜索判为不可通行、被距离场判为自由，目标附近反复失败。
+        unknown_as_occupied: false
         prefer_goal_direction: true
       corridor:
         robot_radius: 0.30
@@ -26,12 +44,59 @@
         traj_goal_tolerance: 0.15
         enable_yaw_opt: true
         max_yaw_dot: 5.0
+        # 优化器位置罚项的软目标净空（只影响优化器，不影响任何硬判据：
+        # trajectory_safety_checker 的阈值来自 collision_dist，见 minco_planner.cpp:488）。
+        # 抬高它的理由：硬判据是 collision_dist + v * replan_react_time = 0.30 + 0.15v，
+        # 当 v > 0.67 m/s 时硬判据反超 0.40 的软目标，优化器只能渐近逼近软目标，
+        # 于是窄道处稳定地差几毫米被否掉（实测 0.396 vs 0.406、0.425 vs 0.427）→「卡一下」。
+        # 0.50 把交叉点推到 v = (0.50-0.30)/0.15 ≈ 1.33 m/s，覆盖当前实测约 0.8 m/s 的巡航速度。
+        # 该项不含速度项，不会产生「降速收益」，因此不会像 speed_aware_clearance 那样拖慢全局；
+        # 代价是在窄缝里优化器会去追一个够不到的目标（软惩罚，不会拒绝轨迹）。
+        # 【2026-09-15 实测回退】曾抬到 0.50 以把"软目标 vs 硬判据"的交叉点推到 1.33 m/s。
+        # 但降级 A* 给出的种子路径会穿过未观测区（日志 goal_cost=255(unknown)），那些地方几何紧，
+        # 0.50 成了够不到的软目标 → 罚项恒不满足 → L-BFGS 不收敛 → 实车出现 93 次
+        # "MINCO path generation failed; retrying"。硬判据只需 collision_dist(0.30)，
+        # 故回退到原值 0.40，先恢复可收敛性；交叉点问题留待全局搜索与地形层清理干净后再谈。
         safe_dist: 0.40
         collision_dist: 0.30
+        # 发布前校验与运行时监视现在共用同一条净空要求：
+        #   required = collision_dist + max(v * replan_react_time, monitor_margin)
+        # 两者曾经用不同阈值（发布 0.30 / 监视 0.30+monitor_margin=0.50），结果是轨迹刚发布
+        # 就被监视器判不安全 → 急停 + 重规划，cmd_vel 只有发布瞬间有值、车走不起来，
+        # RViz 里规划轨迹与急停轨迹来回闪。monitor_margin 设 0 表示静止时两者都是 collision_dist，
+        # 只有当机器人真的跑起来（v*replan_react_time）才追加制动距离余量。
+        # 想整体抬高安全余量请同时确认现场最窄通道净空 > collision_dist + monitor_margin。
+        monitor_margin: 0.0
+        # 机器人当前所在位置附近（弧长 collision_dist 以内）是它已经占住的地方，
+        # 贴着墙停车时那里不可能满足完整净空，因此该段只要求「不比当前实测净空更差」，
+        # 离开这段之后必须满足上面的 required。否则车停在墙边就再也发不出轨迹。
         replan_period_s: 0.2
-        replan_react_time: 0.35
+        # 制动距离预算：required = collision_dist + max(v * replan_react_time, monitor_margin)。
+        # 该项让净空要求随速度增长，作用在整条轨迹上，因此它同时是速度上限：
+        #   v < (可用净空 - collision_dist) / replan_react_time
+        # 只要规划速度略微超过这个上限，轨迹就在最窄处差几毫米被否掉 →
+        # 「加速 → 否决 → 急停 → 再加速」的极限环，现场表现就是一卡一卡
+        # （实测 0.414 vs 0.425、0.395 vs 0.403、0.414 vs 0.414 等毫米级否决）。
+        # 上游 navi_minco_bit 源码里**完全没有这一项**（无 replan_react_time / monitor_margin /
+        # requiredClearance），碰撞校验用的是固定 collision_dist，因此不会出现该极限环。
+        # 设 0 即对齐上游：required 退化为固定的 collision_dist（0.30），只保留静态安全余量。
+        # 代价：高速下不再预留制动距离，靠 20 Hz 重规划与固定余量兜底。
+        # 若实车出现高速制动不及，从 0.05 起逐步回调（0.05 s 时 1 m/s 对应 0.35 m 要求）。
+        replan_react_time: 0.0
+        # 速度感知净空：优化器的 ESDF 位置罚项不再用固定 safe_dist，而改用
+        #   collision_dist + v * replan_react_time + clearance_optimizer_margin
+        # 目的是让规划器在窄处主动减速，而不是规划完再被检查器否掉（避免「窄道卡一下」）。
+        # 但实测开启后**全程都变慢**，原因是两条叠加：
+        #   1) 目标净空在 v > 0.33 m/s 之后一律高于原来的固定 safe_dist 0.40
+        #      （0.35 + 0.15v：v=0.5 → 0.425，v=1.0 → 0.50），整体要求被抬高；
+        #   2) penalty_weight_pos(50000) 远大于 penalty_weight_time(100)，减速几乎不花代价，
+        #      优化器于是用「降速」而不是「绕开」来降低位置惩罚，变成全局刹车。
+        # 因此默认关闭，保持固定 safe_dist 的行为；要重新启用需先把 penalty_weight_time
+        # 提到与 position 同量级，否则仍会拖慢全局。
+        speed_aware_clearance: false
+        # 优化器软目标相对硬判据的余量（仅在 speed_aware_clearance 开启时生效）。
+        clearance_optimizer_margin: 0.05
         safety_lookahead_time: 1.2
-        monitor_margin: 0.20
         max_velocity: 3.0
         max_acceleration: 4.0
         turn_angle_deadzone: 0.1
@@ -59,8 +124,16 @@
         frame_id: odom
         resolution: 0.05
         inflation_resolution: 0.05
-        map_size: [10.0, 10.0, 1.5]
+        # Z 方向是容器上限：局部地图边界 = 地图中心 ± map_size/2，
+        # local_update_box 与 visualization.range 都会被 updateLocalBox()/boundBoxByLocalMap() 夹到这里。
+        # 2.5 -> ±1.25 m，扣除 map_sliding.threshold 0.2 的跟随滞后后约 ±1.05 m。
+        map_size: [10.0, 10.0, 2.5]
         fix_map_origin: [0.0, 0.0, 0.0]
+        # prob_map.cpp 的 getGridType() 会把 z <= 本值 的体素一律判为 OCCUPIED。本值必须低于
+        # projection.scan_z_min_abs（当前 -1.2，相对雷达），否则投影窗口会探到"地面以下"，
+        # 每个柱子凭空多出 4 个体素（0.2/0.05）的虚假占据，污染 occupied_count / 高度差 /
+        # 占据率等分类统计。旧工程 /home/mas/mas_nav_2027 取 -1.5 正是为了让 -1.2 的窗口
+        # 稳稳落在其上；此处对齐。
         virtual_ground_height: -1.5
         virtual_ceil_height: 3.0
         map_sliding:
@@ -75,8 +148,13 @@
         raycasting:
           enable: true
           batch_update_size: 1
-          ray_range: [0.01, 10.0]
-          local_update_box: [10.0, 10.0, 2.5]
+          # 近距下限必须盖住车体半径，否则车身点云会写入 ROGMap，
+          # 轨迹安全检查在原点附近报 clearance≈0.28 m < 0.30 m 并持续 COLLISION/急停。
+          # 默认与 rog_map 核心一致为 0.3；勿再降到接近 0。
+          ray_range: [0.3, 10.0]
+          # Z 半高 = 4.0/2 = ±2.0 m。超出该盒子的点云会被投影到盒壁并记为 miss，
+          # 不会成为占据体素。注意它最终还会被夹到 map_size/2 的局部地图边界内。
+          local_update_box: [10.0, 10.0, 2.0]
           p_hit: 0.9
           p_miss: 0.45
           p_occ: 0.85
@@ -89,13 +167,40 @@
         projection:
           enable: true
           scan_z_relative_to_robot: true
+          # 先验图融合（对齐 docker 内 navi_minco_bit 的 rog_map.projection.prior_map：
+          # enable/yaml_path/pgm_path/frame_id 四个键完全一致）。
+          # 目的：让 ROGMap 的二维投影/ESDF 在滑窗内带上静态先验障碍，为后续把全局搜索
+          # 从"HW 地形图 + 自研 Kino"切到"ROGMAP 图 + A*"做准备。
+          # 第 1 步只验对齐：map_size 暂不改，仍只在 10×10 m 窗口内融合。
+          # 先在 RViz 确认 /rog_map/layer_value_static 与实测墙体吻合；对不上就不要继续放大窗口，
+          # 否则后面两步都是白做（map↔odom 由 odom_localizer + tf_maintainer 提供）。
+          prior_map:
+            # 【2026-09-15 实测结论】先验图与现场**未对齐**：在 (3.2, -0.03) 附近
+            # /rog_map/layer_value_static 显示有墙、而 layer_value_dynamic 那里是空的。
+            # fusePriorMapProjection() 把先验图的占据格当硬障碍叠加，于是该处二维净空
+            # 由约 0.4 m 掉到 0.272~0.285 m，低于 collision_dist 0.30：
+            # 返程 26 秒中有 20 秒耗在该点（4 次 COLLISION + 10 次急停），去程无此现象。
+            # 因此按"第 1 步只验对齐、对不上不继续"的约定先关闭，等对齐问题解决后再开。
+            enable: false
+            yaml_path: "/home/mas/mas_nav_2027_native/src/mas2027_nav_bringup/map/lab3.yaml"
+            # 留空时使用 YAML 的 image 字段，并相对 YAML 所在目录解析。
+            pgm_path: ""
+            frame_id: map
+          # 地面是否落进窗口决定地面柱子会不会被当成"未观测"。雷达装得越高，地面 z 越负：
+          # -0.5 时若雷达离地 0.5 m 以上，地面就掉出窗口 → 整片地面成为 UNKNOWN/障碍，
+          # 二维距离场到处只剩 0.3~0.45 m，速度被 required=0.30+0.15v 压死（实车日志实测值）。
+          # 旧工程 /home/mas/mas_nav_2027 取 -1.2，这里对齐。
           scan_z_min_abs: -1.2
-          scan_z_max_abs: 0.75
+          scan_z_max_abs: 2.75
+          # UNKNOWN 是否作为二维 ESDF 障碍。false = 未知按自由处理，与旧工程一致，
+          # 是"能跑快"的主要来源；代价是规划可能穿过尚未观测的区域，靠地形先验图兜底。
+          # 与 planner.exploration.unknown_as_occupied 必须同时改，两者不一致会让全局搜索
+          # 与距离场对同一格给出相反结论。
           unknown_as_occupied: false
           min_observed_voxels: 1
           surface_height_delta_max: 0.1
-          wall_height_delta_min: 0.40
-          wall_occupancy_ratio_min: 0.80
+          wall_height_delta_min: 0.80
+          wall_occupancy_ratio_min: 0.90
           tunnel_height_delta_min: 0.25
           tunnel_height_delta_max: 0.40
           tunnel_occupancy_ratio_max: 0.45
@@ -118,4 +223,6 @@
           enable: true
           frame_id: odom
           rate: 5.0
+          # Z 半高 = 4.0/2 = ±2.0 m，决定 /rog_map/occupied 的上下边界（紫色块）。
+          # 实际发布范围会被 boundBoxByLocalMap 夹到 min(map_size/2, virtual_ceil)。
           range: [10.0, 10.0, 1.5]

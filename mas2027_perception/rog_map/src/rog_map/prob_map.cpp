@@ -399,16 +399,26 @@ void ProbMap::updateProbMap(
     esdf_map_->updateESDF3D(map_center_pos);
   }
 
-  /* For the first frame, clear all unknown around the robot */
-  static bool first = true;
-  if (first) {
-    first = false;
+  /* 车体近距盲区清空：raycast_range_min 以内的体素既不会被命中（近距点在上面被 continue
+     跳过），也不会被射线扫到（射线从 raycast_range_min 处才开始推进），因此永远不会变成
+     KNOWN_FREE。unknown_as_occupied 打开时，投影层把这些「未观测」列判成 UNKNOWN→障碍，
+     二维距离场在车体自身位置变成 0 甚至负值，规划与执行层于是持续判 COLLISION、cmd_vel 恒 0。
+     原实现用 static bool 只在首帧清一次，机器人一移动或旋转就会重新落进未观测区；
+     改为「传感器每移动超过半个体素就重清一次」，使车体所在的一圈始终是自由空间。
+     注意 getLocalIndexHash 不做边界检查，越界写入会踩内存，故先用 insideLocalMap 过滤。 */
+  if (!near_field_cleared_ ||
+    (sensor_pos - last_near_field_clear_pos_).norm() > 0.5 * cfg_.resolution) {
+    near_field_cleared_ = true;
+    last_near_field_clear_pos_ = sensor_pos;
     for (double dx = -cfg_.raycast_range_min; dx <= cfg_.raycast_range_min; dx += cfg_.resolution) {
       for (double dy = -cfg_.raycast_range_min; dy <= cfg_.raycast_range_min; dy += cfg_.resolution) {
         for (double dz = -cfg_.raycast_range_min; dz <= cfg_.raycast_range_min; dz += cfg_.resolution) {
           Vec3f p(dx, dy, dz);
           if (p.norm() <= cfg_.raycast_range_min) {
             Vec3f pp = sensor_pos + p;
+            if (!insideLocalMap(pp)) {
+              continue;
+            }
             int hash_id = getHashIndexFromPos(pp);
             missPointUpdate(pp, hash_id, 999);
           }
@@ -1272,4 +1282,6 @@ void ProbMap::resetLocalMap()
   raycast_data_.batch_update_counter = 0;
   std::fill(raycast_data_.operation_cnt.begin(), raycast_data_.operation_cnt.end(), 0);
   std::fill(raycast_data_.hit_cnt.begin(), raycast_data_.hit_cnt.end(), 0);
+  // 局部地图被清空后近距盲区也回到 UNKNOWN，必须让下一次更新重新清一遍。
+  near_field_cleared_ = false;
 }

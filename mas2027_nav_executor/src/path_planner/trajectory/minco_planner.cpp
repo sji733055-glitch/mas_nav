@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <iostream>
 #include <optional>
 #include "tf2/utils.h"
@@ -12,6 +13,12 @@
 namespace minco_planner {
 
 namespace {
+
+/// 运行时监视相对发布前校验的容差，等于一个 ROGMap 体素（0.05 m）。
+/// 监视器与发布门用同一个 requiredClearance()，这里只是留出 ESDF 逐帧更新带来的抖动余量，
+/// 方向是让监视器略宽：否则刚通过校验的轨迹会在几十毫秒后的监视周期里因为几毫米的差异被否决，
+/// 触发「急停 + 重规划」循环，车只会抽动而走不起来。大于该容差的净空恶化仍会被拦下。
+constexpr double kMonitorClearanceTolerance = 0.05;
 
 void declareParameterIfMissing(
   const rclcpp_lifecycle::LifecycleNode::SharedPtr & node,
@@ -131,6 +138,10 @@ void MincoPlanner::rebuildModeDependentQueries()
   if (astar_planner_) {
     astar_planner_->setMap(mode_context_->globalQuery());
   }
+  if (smac_planner_) {
+    smac_planner_->setMap(mode_context_->globalQuery());
+    smac_planner_->setESDFQuery(mode_context_->dynamicQuery());
+  }
   if (minco_optimizer_) {
     minco_optimizer_->setMap(mode_context_->dynamicQuery());
   }
@@ -248,6 +259,26 @@ void MincoPlanner::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & pa
     node, prefix + "allow_unknown", rclcpp::ParameterValue(true));
   node->get_parameter(prefix + "allow_unknown", allow_unknown_);
 
+  // 全局主搜索选择。mas_nav_2027 的 sentry1.yaml 取 use_smac: true，本工程对齐该默认值。
+  // use_smac=false 时退回 Astar（NavFn 波前），与旧工程同一开关语义。
+  declareParameterIfMissing(node, prefix + "use_smac", rclcpp::ParameterValue(true));
+  node->get_parameter(prefix + "use_smac", use_smac_);
+
+  // SMAC 的 ESDF 势场软代价。四项默认值与 mas_nav_2027 nav2_params.yaml 的 smac_2d 段一致。
+  // 本工程的 ESDF 来自 TerrainMapQuery 烘焙的二维距离场（上限 3.0 m），量纲与旧工程 ROGMap 一致。
+  declareParameterIfMissing(
+    node, prefix + "smac_2d.use_esdf_cost", rclcpp::ParameterValue(true));
+  declareParameterIfMissing(
+    node, prefix + "smac_2d.esdf_weight", rclcpp::ParameterValue(1.0));
+  declareParameterIfMissing(
+    node, prefix + "smac_2d.esdf_decay", rclcpp::ParameterValue(0.8));
+  declareParameterIfMissing(
+    node, prefix + "smac_2d.esdf_max_cost", rclcpp::ParameterValue(0.5));
+  node->get_parameter(prefix + "smac_2d.use_esdf_cost", smac_use_esdf_cost_);
+  node->get_parameter(prefix + "smac_2d.esdf_weight", smac_esdf_weight_);
+  node->get_parameter(prefix + "smac_2d.esdf_decay", smac_esdf_decay_);
+  node->get_parameter(prefix + "smac_2d.esdf_max_cost", smac_esdf_max_cost_);
+
   declareParameterIfMissing(
     node, prefix + "lidar_offset_x", rclcpp::ParameterValue(0.0));
   declareParameterIfMissing(
@@ -297,6 +328,22 @@ void MincoPlanner::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & pa
   node->get_parameter(prefix + "minco_optimizer.replan_react_time", replan_react_time_);
   if (!(std::isfinite(replan_react_time_) && replan_react_time_ >= 0.0)) {
     replan_react_time_ = 0.35;
+  }
+
+  // 速度感知净空：把发布前校验/运行时监视用的 required(v) 口径同步进优化器的位置罚项，
+  // 让规划器在窄处主动减速，而不是规划完再被检查器否掉（表现为走走停停）。默认关闭。
+  declareParameterIfMissing(
+    node, prefix + "minco_optimizer.speed_aware_clearance", rclcpp::ParameterValue(false));
+  node->get_parameter(prefix + "minco_optimizer.speed_aware_clearance", speed_aware_clearance_);
+
+  // 优化器软目标相对硬判据的余量。优化器只能渐近逼近软目标，若两者相等，解会稳定地差
+  // 几毫米被 validateTrajectory 否掉（实测 0.002~0.010 m 擦边），现场表现为窄道「卡一下」。
+  declareParameterIfMissing(
+    node, prefix + "minco_optimizer.clearance_optimizer_margin", rclcpp::ParameterValue(0.05));
+  node->get_parameter(
+    prefix + "minco_optimizer.clearance_optimizer_margin", clearance_optimizer_margin_);
+  if (!(std::isfinite(clearance_optimizer_margin_) && clearance_optimizer_margin_ >= 0.0)) {
+    clearance_optimizer_margin_ = 0.05;
   }
 
   declareParameterIfMissing(
@@ -406,6 +453,11 @@ void MincoPlanner::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & pa
   minco_config.magnitudeBounds(0) = minco_config.safe_dist;
   minco_config.magnitudeBounds(1) = minco_config.max_vel;
   minco_config.magnitudeBounds(2) = minco_config.max_acc;
+  minco_config.speed_aware_clearance = speed_aware_clearance_;
+  minco_config.clearance_collision_dist = collision_dist_;
+  minco_config.clearance_react_time = replan_react_time_;
+  minco_config.clearance_monitor_margin = monitor_margin_;
+  minco_config.clearance_optimizer_margin = clearance_optimizer_margin_;
 
   // --- Corridor config -------------------------------------------------------
 
@@ -447,9 +499,38 @@ void MincoPlanner::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & pa
   astar_planner_ = std::make_unique<Astar>(init_size_x, init_size_y);
   astar_planner_->setMap(global_query);
 
+  // SMAC 2D，对齐 mas_nav_2027 minco_planner.cpp:543-548 的构造与 setParameters 取值
+  // （allow_unknown 传同一个值、max_iterations 同为 1000000、tolerance 同为 tolerance_）。
+  if (use_smac_) {
+    smac_planner_ = std::make_unique<mas2027_nav_executor::smac::SmacPlanner2DSimple>();
+    smac_planner_->configure(logger_);
+    smac_planner_->setParameters(allow_unknown_, 1000000, static_cast<float>(tolerance_));
+    smac_planner_->setESDFParameters(
+      smac_use_esdf_cost_, smac_esdf_weight_, smac_esdf_decay_, smac_esdf_max_cost_);
+    smac_planner_->setMap(global_query);
+    smac_planner_->setESDFQuery(dynamic_query);
+    RCLCPP_INFO(logger_,
+      "[MincoPlanner] SMAC 2D global search enabled: use_esdf_cost=%s weight=%.3f decay=%.3f "
+      "max_cost=%.3f tolerance=%.3f",
+      smac_use_esdf_cost_ ? "true" : "false",
+      smac_esdf_weight_,
+      smac_esdf_decay_,
+      smac_esdf_max_cost_,
+      tolerance_);
+  } else {
+    smac_planner_.reset();
+    RCLCPP_INFO(logger_, "[MincoPlanner] SMAC 2D disabled (use_smac=false); using Astar global search.");
+  }
+
   global_path_searcher_ = std::make_unique<GlobalPathSearcher>();
+  // allow_unknown 必须与 mode context 的 exploration.unknown_as_occupied 同源，否则口径打架：
+  // 外层用 smacTraversableCost()/goal_traversable 认定"未知格可通行"并放行降级规划，
+  // 而搜索内部（astar.cpp:196,259 / smac is_traversable() 只在 allow_unknown 为真时才接受
+  // cost==255）仍把未知格当障碍，于是目标落在未观测区域时必然报 "... failed to find path"
+  // （现场日志：start cost=0(free)、goal cost=255(unknown)，两次降级均失败）。
   global_path_searcher_->configure(
-    tf_, astar_planner_.get(), allow_unknown_, tolerance_, logger_);
+    tf_, astar_planner_.get(), smac_planner_.get(), use_smac_,
+    !exploration_unknown_as_occupied_, tolerance_, logger_);
   global_path_searcher_->setQuery(global_query);
 
   local_path_processor_ = std::make_unique<LocalPathProcessor>();
@@ -465,6 +546,11 @@ void MincoPlanner::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & pa
 
   backup_path_pub_ = node->create_publisher<interfaces::msg::MpcPositionCommand>(
     "/backup_path", rclcpp::QoS(rclcpp::KeepLast(1)));
+
+  // 调试可视化：备份安全盒（SFC）。QoS 与 /nav_executor/debug/minco_trajectory 保持一致，
+  // 用 transient_local 让中途启动的 RViz 也能收到最后一帧。
+  safe_corridor_pub_ = node->create_publisher<visualization_msgs::msg::MarkerArray>(
+    "/nav_executor/debug/safe_corridor", rclcpp::QoS(1).transient_local());
 
   auto odom_qos = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
   odom_sub_ = node->create_subscription<nav_msgs::msg::Odometry>(
@@ -532,6 +618,7 @@ void MincoPlanner::cleanup()
   }
 
   astar_planner_.reset();
+  smac_planner_.reset();
   global_path_searcher_.reset();
   local_path_processor_.reset();
   safety_checker_.reset();
@@ -542,6 +629,7 @@ void MincoPlanner::cleanup()
   yaw_opt_.reset();
   opt_path_pub_.reset();
   backup_path_pub_.reset();
+  safe_corridor_pub_.reset();
   odom_sub_.reset();
   map_.reset();
   rog_query_raw_.reset();
@@ -557,6 +645,7 @@ rcl_interfaces::msg::SetParametersResult MincoPlanner::onSetParameters(
   const auto is_configure_time_mode_param = [this, &planner_mode_param](const std::string & param_name) {
     return param_name == planner_mode_param || param_name == name_ + ".frames.map_frame" ||
            param_name == name_ + ".frames.rog_frame" ||
+           param_name == name_ + ".use_smac" ||
            param_name == name_ + ".exploration.boundary_margin" ||
            param_name == name_ + ".exploration.boundary_sample_step" ||
            param_name == name_ + ".exploration.unknown_as_occupied" ||
@@ -583,6 +672,12 @@ rcl_interfaces::msg::SetParametersResult MincoPlanner::onSetParameters(
   double next_penalty_time_barrier =
     (minco_config.penaltyWeights.size() > 4) ? minco_config.penaltyWeights(4) : 100.0;
   bool optimizer_config_changed = false;
+
+  bool next_smac_use_esdf_cost = smac_use_esdf_cost_;
+  double next_smac_esdf_weight = smac_esdf_weight_;
+  double next_smac_esdf_decay = smac_esdf_decay_;
+  double next_smac_esdf_max_cost = smac_esdf_max_cost_;
+  bool smac_config_changed = false;
 
   for (const auto & param : parameters) {
     const auto & param_name = param.get_name();
@@ -659,6 +754,69 @@ rcl_interfaces::msg::SetParametersResult MincoPlanner::onSetParameters(
       optimizer_config_changed = true;
       continue;
     }
+
+    // SMAC 的 ESDF 势场软代价可以在线调（现场标定 esdf_weight / esdf_decay 时不必重启）。
+    // use_smac 是结构开关（决定 smac_planner_ 是否存在），上面已按 configure-time 拒绝。
+    if (param_name == name_ + ".smac_2d.use_esdf_cost" ||
+        param_name == name_ + ".smac_2d.esdf_weight" ||
+        param_name == name_ + ".smac_2d.esdf_decay" ||
+        param_name == name_ + ".smac_2d.esdf_max_cost") {
+      if (param_name == name_ + ".smac_2d.use_esdf_cost") {
+        if (param.get_type() != rclcpp::ParameterType::PARAMETER_BOOL) {
+          result.successful = false;
+          result.reason = "Parameter must be a bool: " + param_name;
+          RCLCPP_ERROR(logger_, "[MincoPlanner] %s", result.reason.c_str());
+          return result;
+        }
+        next_smac_use_esdf_cost = param.as_bool();
+      } else {
+        double candidate = 0.0;
+        if (!parse_numeric(candidate) || !std::isfinite(candidate)) {
+          result.successful = false;
+          result.reason = "Parameter must be a finite number: " + param_name;
+          RCLCPP_ERROR(logger_, "[MincoPlanner] %s", result.reason.c_str());
+          return result;
+        }
+        // decay 是 exp(-d/decay) 的尺度，必须为正；weight 与 max_cost 允许 0（等于关闭该偏置）。
+        if (param_name == name_ + ".smac_2d.esdf_decay") {
+          if (candidate <= 0.0) {
+            result.successful = false;
+            result.reason = "smac_2d.esdf_decay must be positive: " + param_name;
+            RCLCPP_ERROR(logger_, "[MincoPlanner] %s", result.reason.c_str());
+            return result;
+          }
+          next_smac_esdf_decay = candidate;
+        } else if (candidate < 0.0) {
+          result.successful = false;
+          result.reason = "Parameter must be non-negative: " + param_name;
+          RCLCPP_ERROR(logger_, "[MincoPlanner] %s", result.reason.c_str());
+          return result;
+        } else if (param_name == name_ + ".smac_2d.esdf_weight") {
+          next_smac_esdf_weight = candidate;
+        } else {
+          next_smac_esdf_max_cost = candidate;
+        }
+      }
+      smac_config_changed = true;
+      continue;
+    }
+  }
+
+  if (smac_config_changed) {
+    smac_use_esdf_cost_ = next_smac_use_esdf_cost;
+    smac_esdf_weight_ = next_smac_esdf_weight;
+    smac_esdf_decay_ = next_smac_esdf_decay;
+    smac_esdf_max_cost_ = next_smac_esdf_max_cost;
+    if (smac_planner_) {
+      smac_planner_->setESDFParameters(
+        smac_use_esdf_cost_, smac_esdf_weight_, smac_esdf_decay_, smac_esdf_max_cost_);
+    }
+    RCLCPP_INFO(logger_,
+      "[MincoPlanner] SMAC 2D ESDF bias updated: use_esdf_cost=%s weight=%.3f decay=%.3f max_cost=%.3f",
+      smac_use_esdf_cost_ ? "true" : "false",
+      smac_esdf_weight_,
+      smac_esdf_decay_,
+      smac_esdf_max_cost_);
   }
 
   if (optimizer_config_changed) {
@@ -676,6 +834,11 @@ rcl_interfaces::msg::SetParametersResult MincoPlanner::onSetParameters(
     minco_config.magnitudeBounds(0) = minco_config.safe_dist;
     minco_config.magnitudeBounds(1) = minco_config.max_vel;
     minco_config.magnitudeBounds(2) = minco_config.max_acc;
+    minco_config.speed_aware_clearance = speed_aware_clearance_;
+    minco_config.clearance_collision_dist = collision_dist_;
+    minco_config.clearance_react_time = replan_react_time_;
+    minco_config.clearance_monitor_margin = monitor_margin_;
+    minco_config.clearance_optimizer_margin = clearance_optimizer_margin_;
 
     if (minco_optimizer_) {
       minco_optimizer_->setConfig(minco_config);
@@ -722,9 +885,8 @@ bool MincoPlanner::PlanGlobalPath(
     return false;
   }
   std::vector<geometry_msgs::msg::PoseStamped> planned_path;
-  if (!global_path_searcher_->plan(
-      start, goal, getCurrentSpeed().head<2>(), minco_config.max_vel,
-      minco_config.max_acc, *mode_context_, planned_path)) {
+  // 全局搜索不再需要实测速度 / max_vel / max_acc：主搜索是地形图纯栅格 A*（对齐 SMAC2D）。
+  if (!global_path_searcher_->plan(start, goal, *mode_context_, planned_path)) {
     record_search_time();
     return false;
   }
@@ -1569,6 +1731,12 @@ bool MincoPlanner::validateTrajectory(
   return true;
 }
 
+double MincoPlanner::requiredClearance(double speed) const
+{
+  const double v = (std::isfinite(speed) && speed > 0.0) ? speed : 0.0;
+  return collision_dist_ + std::max(v * replan_react_time_, monitor_margin_);
+}
+
 bool MincoPlanner::checkCollision()
 {
   if (!safety_checker_) {
@@ -1593,10 +1761,15 @@ bool MincoPlanner::checkCollision()
   const double t_start = nowSeconds() - traj_snapshot.start_WT;
   const double speed = getCurrentSpeed().head<2>().norm();
   const double v = std::isfinite(speed) ? std::max(0.0, speed) : 0.0;
-  const double monitor_dist =
-    collision_dist_ + std::max(v * replan_react_time_, monitor_margin_);
-  return safety_checker_->checkTrajectory(
-    traj_snapshot, t_start, monitor_dist, safety_lookahead_time_);
+  // 监视器与发布前校验共用 requiredClearance()，只在最后减掉一个地图格量级的容差：
+  // ESDF 每帧都在更新，刚发布的安全轨迹不应该因为几毫米的抖动就被判不安全而急停。
+  const double monitor_dist = std::max(0.0, requiredClearance(v) - kMonitorClearanceTolerance);
+  TrajectorySafetyChecker::CheckOptions options;
+  options.t_start = t_start;
+  options.horizon = safety_lookahead_time_;
+  options.check_dist = monitor_dist;
+  options.near_field = collision_dist_;
+  return safety_checker_->checkTrajectory(traj_snapshot, options);
 }
 
 bool MincoPlanner::checkCollision(const traj_opt::Trajectory & traj)
@@ -1610,7 +1783,24 @@ bool MincoPlanner::checkCollision(const traj_opt::Trajectory & traj)
     return true;
   }
 
-  return safety_checker_->checkTrajectory(traj);
+  // 发布前校验：阈值必须与运行时监视一致（见 requiredClearance 注释），否则刚发布的轨迹
+  // 会被监视器立刻否决。近场（车体半径以内）按“不比当前净空更差”判，让贴着墙停下的车
+  // 仍然能规划出离开障碍的轨迹。
+  // 【2026-09-15 已回退的尝试】曾把此处改为 requiredClearance(v) - kMonitorClearanceTolerance
+  // 以消除"过某个特定点必卡"（当时日志出现 clearance 0.300/0.299/0.298 below required 0.300
+  // 的毫米级否决）。改动后该条日志确实消失，但随后出现"完全无法规划"，日志显示瓶颈在更上游
+  // （31 次 Global path search failed → MINCO 无种子 → 46 次 path generation failed），
+  // 与本处阈值无关，故按用户要求回退。监视器确实用减容差的阈值、此处不减，两者不一致这一
+  // 事实仍然成立（与其上方注释矛盾），后续若要再动，需先拿到"全局搜索与 odom 卡顿"修好后的
+  // 现场数据，避免再次误判因果。
+  const double speed = getCurrentSpeed().head<2>().norm();
+  const double v = std::isfinite(speed) ? std::max(0.0, speed) : 0.0;
+  TrajectorySafetyChecker::CheckOptions options;
+  options.t_start = 0.0;
+  options.horizon = 0.0;
+  options.check_dist = requiredClearance(v);
+  options.near_field = collision_dist_;
+  return safety_checker_->checkTrajectory(traj, options);
 }
 
 void MincoPlanner::safetyTimerCallback()
@@ -1670,6 +1860,82 @@ void MincoPlanner::publishEmergencyStop(const geometry_msgs::msg::PoseStamped & 
   // still inherit the committed velocity so the chassis does not drop into a crawl.
 }
 
+void MincoPlanner::publishSafeCorridorBox(const PolyhedronH & poly)
+{
+  if (!safe_corridor_pub_ || poly.rows() < 6 || poly.cols() < 4) {
+    return;
+  }
+
+  // generateSafeBox() 生成的是轴对齐盒子，6 行依次是 x/y/z 的上下界，形式为 n·p < d：
+  // 负法向的行给出下界（d = -min），正法向的行给出上界（d = max）。
+  const double x_min = -poly(0, 3);
+  const double x_max = poly(1, 3);
+  const double y_min = -poly(2, 3);
+  const double y_max = poly(3, 3);
+  const double z_min = -poly(4, 3);
+  const double z_max = poly(5, 3);
+  if (!(x_min <= x_max && y_min <= y_max && z_min <= z_max)) {
+    return;
+  }
+
+  visualization_msgs::msg::MarkerArray arr;
+
+  visualization_msgs::msg::Marker box;
+  box.header.stamp = rclcpp::Clock().now();
+  box.header.frame_id = output_frame_;
+  box.ns = "safe_corridor";
+  box.id = 0;
+  box.type = visualization_msgs::msg::Marker::LINE_LIST;
+  box.action = visualization_msgs::msg::Marker::ADD;
+  box.pose.orientation.w = 1.0;
+  box.scale.x = 0.03;  // 线宽
+  box.color.r = 0.0f;
+  box.color.g = 1.0f;
+  box.color.b = 1.0f;
+  box.color.a = 0.9f;
+
+  const Eigen::Vector3d corner[8] = {
+    {x_min, y_min, z_min}, {x_max, y_min, z_min}, {x_max, y_max, z_min}, {x_min, y_max, z_min},
+    {x_min, y_min, z_max}, {x_max, y_min, z_max}, {x_max, y_max, z_max}, {x_min, y_max, z_max}};
+  static const int kEdges[12][2] = {
+    {0, 1}, {1, 2}, {2, 3}, {3, 0},  // 底面
+    {4, 5}, {5, 6}, {6, 7}, {7, 4},  // 顶面
+    {0, 4}, {1, 5}, {2, 6}, {3, 7}}; // 竖棱
+  box.points.reserve(24);
+  for (const auto & edge : kEdges) {
+    for (const int index : edge) {
+      geometry_msgs::msg::Point p;
+      p.x = corner[index].x();
+      p.y = corner[index].y();
+      p.z = corner[index].z();
+      box.points.push_back(p);
+    }
+  }
+  arr.markers.push_back(box);
+
+  // 半边长标注：和 corridor.robot_radius / corridor.extra_margin 一起看，便于判断盒子为什么这么大。
+  visualization_msgs::msg::Marker label;
+  label.header = box.header;
+  label.ns = "safe_corridor";
+  label.id = 1;
+  label.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+  label.action = visualization_msgs::msg::Marker::ADD;
+  label.pose.orientation.w = 1.0;
+  label.pose.position.x = 0.5 * (x_min + x_max);
+  label.pose.position.y = 0.5 * (y_min + y_max);
+  label.pose.position.z = z_max + 0.3;
+  label.scale.z = 0.35;
+  label.color = box.color;
+  const double half_size =
+    0.5 * std::max({x_max - x_min, y_max - y_min, z_max - z_min});
+  char text[64] = {};
+  std::snprintf(text, sizeof(text), "SFC half=%.2f m", half_size);
+  label.text = text;
+  arr.markers.push_back(label);
+
+  safe_corridor_pub_->publish(arr);
+}
+
 traj_opt::Trajectory MincoPlanner::generateBackupTraj(const Eigen::Matrix3d & start_state)
 {
   auto make_stop_traj = [&start_state]() -> traj_opt::Trajectory {
@@ -1694,6 +1960,9 @@ traj_opt::Trajectory MincoPlanner::generateBackupTraj(const Eigen::Matrix3d & st
   // Step 1: Generate SFC (safe box).
   auto safe_poly = corridor_gen_->generateSafeBox(start_state.col(0), 1.0);
 
+  // 调试可视化：把本次生成的安全盒发到 RViz。纯发布，不影响下面喂给备份优化器的约束。
+  publishSafeCorridorBox(safe_poly);
+
   // Step 2: Setup backup optimizer.
   backup_opt_->setInitState(start_state);
   backup_opt_->setStopConstraints();
@@ -1717,6 +1986,13 @@ bool MincoPlanner::hasGlobalPath() const
 {
   std::lock_guard<std::mutex> lock(path_mutex_);
   return latest_global_path_.size() >= 2U;
+}
+
+bool MincoPlanner::copyLatestGlobalPath(std::vector<geometry_msgs::msg::PoseStamped> & out) const
+{
+  std::lock_guard<std::mutex> lock(path_mutex_);
+  out = latest_global_path_;
+  return out.size() >= 2U;
 }
 
 void MincoPlanner::invalidateGlobalPath()

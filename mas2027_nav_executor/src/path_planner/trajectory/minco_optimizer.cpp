@@ -169,6 +169,7 @@ double MincoOptimizer::costFunctional(void * ptr, const VecDf & x, VecDf & g)
     magnitudeBounds,
     local_magnitudes,
     penaltyWeights,
+    opt_vars_.clearance,
     cost,
     partialGradByTimes,
     partialGradByCoeffs,
@@ -254,6 +255,7 @@ void MincoOptimizer::constraintsFunctional(const VecDf & T,
   const VecDf & magnitudeBounds,
   const VecDf & local_magnitudes,
   const VecDf & penaltyWeights,
+  const ClearanceModel & clearance,
   // outputs
   double & cost,
   VecDf & partialGradByTimes,
@@ -310,7 +312,25 @@ void MincoOptimizer::constraintsFunctional(const VecDf & T,
 
       // For position cost
       if (weightPos > 0.0 && map) {
-        double esdf_dist = -safe_dist;
+        // 目标净空：默认固定 safe_dist；开启速度感知后改用与发布前校验/运行时监视同一条口径
+        //   required(v) = collision_dist + max(|v| * replan_react_time, monitor_margin) + 余量
+        // 不开这一项时，优化器按固定 safe_dist 规划出的轨迹会被检查器按 required(v) 否掉，
+        // 表现为「规划 → COLLISION → 急停 → 重规划」，车只能走走停停；开启后优化器会在窄处
+        // 自行减速，一次规划出可执行的轨迹。默认关闭，行为与改动前一致。
+        double required_dist = safe_dist;
+        const double speed = vel.norm();
+        const bool speed_term_active = clearance.enabled &&
+          std::isfinite(speed) && clearance.react_time > 0.0;
+        if (speed_term_active) {
+          // 必须加余量：优化器只能渐近逼近软目标，软目标恰好等于硬判据时，解会稳定地差
+          // 几毫米被 validateTrajectory 否掉（实测净空 0.396 vs 要求 0.406、0.425 vs 0.427），
+          // 现场表现就是窄道处「卡一下」。留出余量后软目标始终高于硬判据。
+          required_dist = clearance.collision_dist +
+            std::max(speed * clearance.react_time, clearance.monitor_margin) +
+            clearance.optimizer_margin;
+        }
+
+        double esdf_dist = -required_dist;
         Eigen::Vector3d esdf_grad = Eigen::Vector3d::Zero();
         const auto query = map->query(pos.cast<double>());
         if (query.ok) {
@@ -320,12 +340,19 @@ void MincoOptimizer::constraintsFunctional(const VecDf & T,
           ++query_failure_count;
         }
 
-        const double violaPos = safe_dist - esdf_dist;
+        const double violaPos = required_dist - esdf_dist;
         double violaPosPena, violaPosPenaD;
         if (gcopter::smoothedL1(violaPos, smooth_eps, violaPosPena, violaPosPenaD)) {
           // d(violaPos)/dpos = -grad(dist)
           gradPos += (-weightPos * violaPosPenaD) * esdf_grad.cast<double>();
           tmp_cost += weightPos * violaPosPena;
+          // required(v) 随速度增长，故该项对速度也存在梯度 d(cost)/dv = w * pena' * t * v̂；
+          // 只在速度项真正起作用且速度非零时加入，避免给低速段引入无意义的梯度。
+          if (speed_term_active && speed > 1e-6) {
+            const float speed_f = static_cast<float>(speed);
+            gradVel += (weightPos * violaPosPenaD * clearance.react_time) *
+              (vel / speed_f);
+          }
           if (violaPos > max_pena(POS_IDX))
             max_pena(POS_IDX) = violaPos;
         }

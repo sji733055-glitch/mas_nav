@@ -55,6 +55,7 @@ add_library(${PROJECT_NAME}_planner STATIC
   src/path_planner/search/astar.cpp
   src/path_planner/search/global_path_searcher.cpp
   src/path_planner/search/omni_kino_astar.cpp
+  src/path_planner/search/smac/smac_planner_2d_simple.cpp
   src/path_planner/trajectory/corridor_generator.cpp
   src/path_planner/trajectory/arc_length_speed_profile.cpp
   src/path_planner/trajectory/local_path_processor.cpp
@@ -79,7 +80,11 @@ add_executable(${PROJECT_NAME}_node src/nav_executor_node.cpp
   src/path_planner/path_planner.cpp src/path_executor/path_executor.cpp
   src/path_executor/monitoring/command_safety.cpp
   src/task_manager/task_manager.cpp
-  src/common/environment/terrain_grid.cpp)
+  src/common/environment/terrain_grid.cpp
+  # 降级全局搜索改用 TerrainMapQuery（见 global_path_searcher.cpp 的 fallback 分支），
+  # 实现必须编进本目标；此前它只出现在 test_terrain_map_query 里，故不加会报
+  # undefined reference to TerrainMapQuery::TerrainMapQuery / vtable。
+  src/common/environment/terrain_map_query.cpp)
 target_include_directories(${PROJECT_NAME}_node PRIVATE
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   "${minco_source_dir}/include")
@@ -126,6 +131,14 @@ if(BUILD_TESTING)
   target_link_libraries(test_omni_kino_astar Eigen3::Eigen)
   ament_target_dependencies(test_omni_kino_astar nav_msgs sensor_msgs)
   add_test(NAME omni_kino_astar COMMAND test_omni_kino_astar)
+  add_executable(test_smac_planner_2d_simple test/test_smac_planner_2d_simple.cpp
+    src/path_planner/search/smac/smac_planner_2d_simple.cpp
+    src/common/environment/terrain_grid.cpp src/common/environment/terrain_map_query.cpp)
+  target_include_directories(test_smac_planner_2d_simple PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include" "${minco_source_dir}/include")
+  target_link_libraries(test_smac_planner_2d_simple Eigen3::Eigen ${OpenCV_LIBS})
+  ament_target_dependencies(test_smac_planner_2d_simple nav_msgs rclcpp rog_map sensor_msgs)
+  add_test(NAME smac_planner_2d_simple COMMAND test_smac_planner_2d_simple)
   add_executable(test_arc_length_speed_profile test/test_arc_length_speed_profile.cpp
     src/path_planner/trajectory/arc_length_speed_profile.cpp)
   target_include_directories(test_arc_length_speed_profile PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
@@ -136,6 +149,11 @@ if(BUILD_TESTING)
   ament_target_dependencies(test_rog_map_command_safety
     geometry_msgs interfaces nav_msgs rclcpp rog_map sensor_msgs tf2 tf2_geometry_msgs tf2_ros)
   add_test(NAME rog_map_command_safety COMMAND test_rog_map_command_safety)
+  add_executable(test_trajectory_safety_checker test/test_trajectory_safety_checker.cpp)
+  # 复用 planner 静态库：geometry_utils::Trajectory / Piece 都在其中。
+  target_link_libraries(test_trajectory_safety_checker ${PROJECT_NAME}_planner)
+  ament_target_dependencies(test_trajectory_safety_checker rclcpp)
+  add_test(NAME trajectory_safety_checker COMMAND test_trajectory_safety_checker)
 endif()
 
 ament_package()

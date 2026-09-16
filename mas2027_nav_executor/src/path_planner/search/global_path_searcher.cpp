@@ -1,5 +1,5 @@
 #include "mas2027_nav_executor/path_planner/search/global_path_searcher.hpp"
-#include "mas2027_nav_executor/path_planner/search/omni_kino_astar.hpp"
+#include "mas2027_nav_executor/common/environment/terrain_map_query.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -165,12 +165,16 @@ void logCellDiagnostics(const rclcpp::Logger & logger,
 
 void GlobalPathSearcher::configure(std::shared_ptr<tf2_ros::Buffer> tf,
   Astar * astar,
+  mas2027_nav_executor::smac::SmacPlanner2DSimple * smac,
+  bool use_smac,
   bool allow_unknown,
   double tolerance,
   rclcpp::Logger logger)
 {
   tf_ = std::move(tf);
   astar_ = astar;
+  smac_ = smac;
+  use_smac_ = use_smac;
   allow_unknown_ = allow_unknown;
   tolerance_ = tolerance;
   logger_ = logger;
@@ -230,19 +234,14 @@ bool GlobalPathSearcher::normalizePoseToFrame(const geometry_msgs::msg::PoseStam
 
 bool GlobalPathSearcher::plan(const geometry_msgs::msg::PoseStamped & start,
   const geometry_msgs::msg::PoseStamped & goal,
-  const Eigen::Vector2d & start_velocity,
-  double max_speed, double max_acceleration,
   const PlannerModeContext & mode_context,
   std::vector<geometry_msgs::msg::PoseStamped> & latest_global_path)
 {
-  return planExploration(start, goal, start_velocity, max_speed, max_acceleration,
-    mode_context, latest_global_path);
+  return planExploration(start, goal, mode_context, latest_global_path);
 }
 
 bool GlobalPathSearcher::planExploration(const geometry_msgs::msg::PoseStamped & start,
   const geometry_msgs::msg::PoseStamped & goal,
-  const Eigen::Vector2d & start_velocity,
-  double max_speed, double max_acceleration,
   const PlannerModeContext & mode_context,
   std::vector<geometry_msgs::msg::PoseStamped> & latest_global_path)
 {
@@ -261,6 +260,10 @@ bool GlobalPathSearcher::planExploration(const geometry_msgs::msg::PoseStamped &
     return false;
   }
 
+  std::function<bool()> cancel_checker = []() {
+    return !rclcpp::ok();
+  };
+
   // Static terrain owns global topology; map_server supplies the current dynamic layer.
   // Fail closed if either static layer or its frame transform is unavailable.
   if (terrain_) {
@@ -277,47 +280,46 @@ bool GlobalPathSearcher::planExploration(const geometry_msgs::msg::PoseStamped &
       geometry_msgs::msg::PoseStamped start_map, goal_map;
       tf2::doTransform(start_rog, start_map, rog_to_map);
       tf2::doTransform(goal_rog, goal_map, rog_to_map);
-      const Eigen::Vector2d source(start_map.pose.position.x, start_map.pose.position.y);
-      const Eigen::Vector2d target(goal_map.pose.position.x, goal_map.pose.position.y);
-      const double yaw = tf2::getYaw(rog_to_map.transform.rotation);
-      const Eigen::Vector2d velocity_map(
-        std::cos(yaw) * start_velocity.x() - std::sin(yaw) * start_velocity.y(),
-        std::sin(yaw) * start_velocity.x() + std::cos(yaw) * start_velocity.y());
-      const auto dynamic = terrain_->dynamicSnapshot();
-      if (!dynamic) {
+      // 动态层必须先就绪：TerrainMapQuery 的取值来自 terrain_->planningConstraints()，
+      // 而它只在 dynamic_snapshot_ 存在时才把当前动态障碍并进地形图。
+      if (!terrain_->dynamicSnapshot()) {
         RCLCPP_WARN(logger_, "Current dynamic cost map is not ready");
         return false;
       }
-      const double rog_yaw = tf2::getYaw(map_to_rog.transform.rotation);
-      const double rc = std::cos(rog_yaw), rs = std::sin(rog_yaw);
-      const double rx = map_to_rog.transform.translation.x;
-      const double ry = map_to_rog.transform.translation.y;
-      const auto dynamic_free = [dynamic, query, rc, rs, rx, ry](const Eigen::Vector2d & p) {
-        if (!dynamic->freeAt(p)) return false;
-        const double x = rc * p.x() - rs * p.y() + rx;
-        const double y = rs * p.x() + rc * p.y() + ry;
-        unsigned int mx = 0, my = 0;
-        // ROGMap is a local sliding map; static terrain still owns the global route.
-        return !query->worldToMap(x, y, mx, my) || query->isFree(mx, my);
-      };
-      std::vector<Eigen::Vector2d> map_path;
-      if (!mas2027_nav_executor::searchOmniKinoPath(
-          *terrain, source, target, velocity_map, max_speed, max_acceleration,
-          dynamic_free, map_path)) {
-        RCLCPP_WARN(logger_, "No acceleration-feasible route satisfies terrain and current dynamic obstacles");
+
+      // 【2026-09-15 现场改为主搜索】地形图（静态地形 + 当前动态层）上的纯栅格 A*。
+      // 这与 mas_nav_2027 的 SMAC2D/PRIORMAP 同口径：不含速度/加速度可行性约束、没有扩展
+      // 预算，只要目标可通行就能给出路径，远处目标毫秒级出解。
+      // 旧的全向 Kino 状态格点搜索（searchOmniKinoPath）已移出关键路径，原因（现场实测）：
+      // 它以「实测速度种子 + 速度/加速度可行性」扩展状态格点，
+      // speed 维 3.0/0.1 = 30 档 × 8 朝向 → 单节点最多 248 个后继，在有障碍的真实图上
+      // 3 m 起大量方向无解、5 m 后几乎全灭，且每次失败都烧光 50 000 次扩展预算、耗时
+      // 0.76~1.03 s（日志里"点目标→WARN"相隔 1.08 s 即此）；同一批目标空图上 8 m 也只要
+      // 45 ms，说明瓶颈是状态空间爆炸而非无解。该模块与 test_omni_kino_astar 保留备用。
+      // 另外本部署的 HW 方向层（lab3_terrain.msgpack 的 direction）实测全 0，因此 Kino 的
+      // 逐边方向约束（transition()）当前不产生任何收益。
+      auto terrain_query = std::make_shared<mas2027_nav_executor::TerrainMapQuery>(terrain_);
+      nav_msgs::msg::Path terrain_plan;
+      terrain_plan.header.stamp = rclcpp::Clock().now();
+      terrain_plan.header.frame_id = mode_context.outputFrame();
+      if (!makePlanOnQuery(start_map.pose, goal_map.pose, terrain_query,
+            mode_context.outputFrame(), "Terrain", tolerance_, cancel_checker, terrain_plan,
+            latest_global_path)) {
         return false;
       }
-      latest_global_path.clear();
-      latest_global_path.reserve(map_path.size());
-      for (const auto & point : map_path) {
-        geometry_msgs::msg::PoseStamped in, out;
+
+      // makePlanOnQuery 的 output_frame 只用来写 header.frame_id，不做坐标变换：点位来自
+      // query->mapToWorld()，是【地形图查询坐标系】（map）。不换算就等于把种子路径整体平移
+      // (0.316, 0.403) 并少转 0.10 rad（现场 odom_localizer 实测的 map->odom），起点离车
+      // 0.5 m、终点离目标 0.5 m——MINCO 只能沿错位参考线优化，表现为"路径生成成功、
+      // 日志里没有 Astar failed，但车一动不动"。这里换算到 outputFrame。
+      for (auto & pose : latest_global_path) {
+        geometry_msgs::msg::PoseStamped in = pose;
         in.header.frame_id = terrain->cost.header.frame_id;
-        in.pose.position.x = point.x();
-        in.pose.position.y = point.y();
-        in.pose.orientation.w = 1.0;
+        geometry_msgs::msg::PoseStamped out;
         tf2::doTransform(in, out, map_to_rog);
         out.header.frame_id = mode_context.outputFrame();
-        latest_global_path.push_back(out);
+        pose = out;
       }
       return latest_global_path.size() >= 2U;
     } catch (const tf2::TransformException & ex) {
@@ -326,10 +328,8 @@ bool GlobalPathSearcher::planExploration(const geometry_msgs::msg::PoseStamped &
     }
   }
 
-  std::function<bool()> cancel_checker = []() {
-    return !rclcpp::ok();
-  };
-
+  // 走到这里说明没有地形图（terrain_ 为空）：退回旧行为，只在 ROGMap 局部窗口内搜索。
+  // cancel_checker 已在函数开头定义，供地形主搜索与这里共用。
   unsigned int sx = 0;
   unsigned int sy = 0;
   if (!query->worldToMap(start_rog.pose.position.x, start_rog.pose.position.y, sx, sy)) {
@@ -633,7 +633,7 @@ bool GlobalPathSearcher::makePlanOnQuery(const geometry_msgs::msg::Pose & start,
     "res=%.3f tolerance=%.3f allow_unknown=%s start_world=(%.3f,%.3f) start_cell=(%u,%u)->(%u,%u) "
     "start_cost=%u(%s) goal_world=(%.3f,%.3f) goal_cell=(%u,%u) goal_cost=%u(%s)",
     failure_source.c_str(),
-    "Astar",
+    (use_smac_ && smac_) ? "SMAC2D" : "Astar",
     output_frame.c_str(),
     nx,
     ny,
@@ -657,7 +657,60 @@ bool GlobalPathSearcher::makePlanOnQuery(const geometry_msgs::msg::Pose & start,
     static_cast<unsigned int>(goal_cost),
     cellCostLabel(goal_cost));
 
-  {
+  if (use_smac_ && smac_) {
+    // SMAC 2D 主搜索，与 mas_nav_2027 的 PRIORMAP 分支同构
+    // （旧工程 minco_planner/src/minco_core/components/global_path_searcher.cpp:636-672）。
+    // 本工程的 ESDF 查询就是同一张地形图查询：TerrainMapQuery 的 query() 返回由
+    // planningConstraints() 烘焙的二维有符号距离场，量纲与旧工程 ROGMap 的 ESDF 一致，
+    // 因此 smac_2d.use_esdf_cost 的势场偏置可以直接复用。旧工程的 map/esdf 一个是 Nav2
+    // costmap（map 系）、一个是 ROG 查询（odom 系），中间靠 FrameAwareRogQuery 换算；
+    // 本工程两者同系，不需要换算层。
+    smac_->setMap(query);
+    smac_->setESDFQuery(query);
+
+    mas2027_nav_executor::smac::SmacPlanner2DSimple::CoordinateVector smac_path;
+    const bool smac_success =
+      smac_->createPath(mx_start, my_start, mx_goal, my_goal, smac_path, cancel_checker);
+
+    if (!smac_success || smac_path.size() < 2) {
+      // 与旧工程一致：SMAC 失败直接失败，不退回 Astar。退回会让同一次失败产生两条不同的
+      // 搜索路径与两套日志，现场无法判断到底是哪条搜索给出的结果。
+      RCLCPP_ERROR(logger_,
+        "%s SMAC 2D failed to find path (success=%s, path_size=%zu). See endpoint diagnostics below.",
+        failure_source.c_str(),
+        smac_success ? "true" : "false",
+        smac_path.size());
+      if (raw_mx_start != mx_start || raw_my_start != my_start) {
+        logCellDiagnostics(
+          logger_, query, failure_source, "start(raw-before-projection)", raw_mx_start, raw_my_start, allow_unknown_);
+      }
+      logCellDiagnostics(logger_, query, failure_source, "start(used)", mx_start, my_start, allow_unknown_);
+      logCellDiagnostics(logger_, query, failure_source, "goal", mx_goal, my_goal, allow_unknown_);
+      return false;
+    }
+
+    latest_global_path.clear();
+    latest_global_path.reserve(smac_path.size());
+    plan.poses.reserve(smac_path.size());
+
+    // SMAC 输出是 goal -> start，调用方要求 start -> goal。
+    for (auto it = smac_path.rbegin(); it != smac_path.rend(); ++it) {
+      geometry_msgs::msg::PoseStamped pose;
+      pose.header = plan.header;
+
+      double path_wx = 0.0;
+      double path_wy = 0.0;
+      query->mapToWorld(
+        static_cast<unsigned int>(it->x), static_cast<unsigned int>(it->y), path_wx, path_wy);
+
+      pose.pose.position.x = path_wx;
+      pose.pose.position.y = path_wy;
+      pose.pose.position.z = 0.0;
+      pose.pose.orientation.w = 1.0;
+      latest_global_path.push_back(pose);
+      plan.poses.push_back(pose);
+    }
+  } else {
     if (!astar_) {
       return false;
     }

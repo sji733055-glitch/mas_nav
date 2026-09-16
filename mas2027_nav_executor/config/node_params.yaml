@@ -5,6 +5,9 @@
       planner_frequency: 20.0
       trajectory_timeout_s: 0.6
       odom_timeout_s: 0.5
+      # MPC 下一段指令（未来 0.35 s）在 ROGMap ESDF 上要求的最小净空，应与
+      # planner.minco_optimizer.collision_dist 保持一致。机器人当前所在位置附近
+      # （弧长等于该值以内）只要求不比当前实测净空更差，避免贴墙停车后 cmd_vel 恒为 0。
       rog_map_clearance: 0.30
       output_in_body_frame: true
       frames:
@@ -15,6 +18,10 @@
         trajectory_sub: /opt_path
         spin_cmd_sub: /cmd_spin
         global_path_pub: /nav_executor/global_path
+        # 注意上面这条发的是 MINCO 轨迹（名字是历史遗留，smoke_goal.py 靠它数轨迹点数），
+        # 下面两条才是全局搜索（SMAC 2D / Astar）真正的折线，专门给 RViz 看。
+        global_plan_pub: /nav_executor/global_plan
+        global_plan_marker_pub: /nav_executor/debug/global_plan
         minco_trajectory_pub: /nav_executor/debug/minco_trajectory
         # RViz 规划约束图：100 当前不可通行，50 仅限指定方向通过；不显示预测帧。
         planning_constraints_pub: /planning_constraints
@@ -28,3 +35,10 @@
       visualization:
         velocity_color_min: 0.0
         velocity_color_max: 3.0
+        # 全局搜索折线的 RViz 样式。线宽是给「一眼看清全局拓扑」用的：MINCO 轨迹默认 0.07 m
+        # 且按速度染色，两者叠在一起时全局折线必须更粗、颜色更跳，否则分不出来。
+        global_plan_publish_hz: 5.0
+        global_plan_line_width: 0.15
+        global_plan_color_r: 0.0
+        global_plan_color_g: 1.0
+        global_plan_color_b: 1.0

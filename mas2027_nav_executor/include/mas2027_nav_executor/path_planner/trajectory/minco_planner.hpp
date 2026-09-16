@@ -3,6 +3,7 @@
 
 #include "minco_core/header.hpp"
 #include "minco_core/performance/planner_performance_monitor.hpp"
+#include "visualization_msgs/msg/marker_array.hpp"
 
 #include <limits>
 
@@ -45,6 +46,12 @@ public:
   bool checkCollision();
   bool checkCollision(const geometry_utils::Trajectory & traj);
 
+  /// 净空要求（发布前校验与运行时监视共用同一个公式）。
+  /// 只要两处用不同阈值，就会出现「发布前 0.30 通过、监视器 0.50 立刻否决」的死循环：
+  /// cmd_vel 只在发布的瞬间有值，RViz 轨迹在规划轨迹与急停轨迹之间来回闪。
+  /// required = collision_dist + max(v * replan_react_time, monitor_margin)
+  double requiredClearance(double speed) const;
+
   // Accessors for FSM
   bool isTrajSafe() const { return is_traj_safe_.load(); }
   RecoverServer::Ptr recoveryServer() const { return recovery_server_; }
@@ -60,6 +67,10 @@ public:
     const geometry_msgs::msg::PoseStamped & goal) const;
   bool hasGlobalPath() const;
   void invalidateGlobalPath();
+  // 拷贝一份当前全局搜索（SMAC 2D / Astar）输出的折线，供 RViz 显示。
+  // 返回 false 表示目前没有可用的全局路径（尚未搜索或已被 invalidateGlobalPath 清掉）。
+  // 与 hasGlobalPath() 的区别：这里连数据一起取出，避免调用方分两次加锁看到不同的快照。
+  bool copyLatestGlobalPath(std::vector<geometry_msgs::msg::PoseStamped> & out) const;
   Eigen::Vector3d getCurrentSpeed() const;
   double getCurrentYawFromOdom() const;
 
@@ -109,6 +120,10 @@ private:
 
   bool validateTrajectory(const traj_opt::Trajectory & traj, const Eigen::Vector3d & expected_end_pos);
 
+  /// 把备份（急停）优化器实际使用的安全盒（SFC）发布成 RViz 调试 marker。
+  /// 纯可视化，不参与任何约束构造或规划决策。
+  void publishSafeCorridorBox(const PolyhedronH & poly);
+
   bool optimizeYaw(const Eigen::Matrix3d & start_state,
     const traj_opt::Trajectory & pos_traj,
     traj_opt::Trajectory & out_yaw_traj,
@@ -128,6 +143,8 @@ private:
   // === ROS 2 Interfaces (Publishers, Subscribers, Timers) ===
   rclcpp::Publisher<interfaces::msg::MpcPositionCommand>::SharedPtr opt_path_pub_;
   rclcpp::Publisher<interfaces::msg::MpcPositionCommand>::SharedPtr backup_path_pub_;
+  /// 备份安全盒调试可视化，由 generateBackupTraj() 在每次重规划时刷新。
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr safe_corridor_pub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::TimerBase::SharedPtr safety_timer_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr on_set_parameters_callback_handle_;
@@ -143,6 +160,13 @@ private:
   // === Configurations & Parameters ===
   double tolerance_;
   bool allow_unknown_;
+  // 全局主搜索：true 走 SMAC 2D（对齐 mas_nav_2027），false 退回 Astar。
+  bool use_smac_{true};
+  // SMAC 的 ESDF 势场软代价，默认值对齐 mas_nav_2027 的 smac_2d 段。
+  bool smac_use_esdf_cost_{true};
+  double smac_esdf_weight_{1.0};
+  double smac_esdf_decay_{0.8};
+  double smac_esdf_max_cost_{0.5};
   bool use_yaw_opt_{true};
   bool exploration_unknown_as_occupied_{true};
   bool exploration_prefer_goal_direction_{true};
@@ -156,6 +180,10 @@ private:
   double collision_dist_{0.30};
   double force_replan_period_sec_{0.2};
   double replan_react_time_{0.35};
+  /// 速度感知净空开关：开启后优化器的位置罚项改用 required(v) 口径（见 MincoOptimizer::Config）。
+  bool speed_aware_clearance_{false};
+  /// 优化器软目标相对硬判据的余量（优化器只能渐近逼近，避免毫米级擦边被否）。
+  double clearance_optimizer_margin_{0.05};
   double safety_lookahead_time_{1.2};
   double monitor_margin_{0.20};
   double last_estop_s_{-1.0};
@@ -165,6 +193,9 @@ private:
 
   // === Core Modules (Pointers to FSM, Optimizers, etc.) ===
   std::unique_ptr<Astar> astar_planner_;
+  // SMAC 2D 主搜索（对齐 mas_nav_2027 的 PRIORMAP）。use_smac 为真时 GlobalPathSearcher
+  // 走它，astar_planner_ 退为 use_smac:=false 时的备用分支。
+  std::unique_ptr<mas2027_nav_executor::smac::SmacPlanner2DSimple> smac_planner_;
   std::unique_ptr<MincoOptimizer> minco_optimizer_;
   std::unique_ptr<traj_opt::BackupTrajOpt> backup_opt_;
   std::unique_ptr<traj_opt::YawTrajOpt> yaw_opt_;

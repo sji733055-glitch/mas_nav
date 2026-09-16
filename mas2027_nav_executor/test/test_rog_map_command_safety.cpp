@@ -12,6 +12,8 @@ class FakeQuery final : public rog_map::MapQueryInterface
 {
 public:
   double distance{1.0};
+  /// 净空随 +x 的线性变化量，用来模拟「朝障碍走 / 离开障碍」两种预测轨迹。
+  double slope_x{0.0};
   bool worldToMap(double, double, unsigned int &, unsigned int &) const override { return false; }
   void mapToWorld(unsigned int, unsigned int, double &, double &) const override {}
   unsigned int sizeX() const override { return 0; }
@@ -23,15 +25,15 @@ public:
   const unsigned char * values() const override { return nullptr; }
   bool isValid(unsigned int, unsigned int) const override { return false; }
   bool isFree(unsigned int, unsigned int) const override { return false; }
-  rog_map::QueryResult query(const Eigen::Vector3d &) const override {
+  rog_map::QueryResult query(const Eigen::Vector3d & pos) const override {
     rog_map::QueryResult result;
     result.ok = true;
     result.status = rog_map::QueryStatus::OK;
-    result.distance = distance;
+    result.distance = distance + slope_x * (pos.x() - 5.5);
     return result;
   }
-  bool evaluate(const Eigen::Vector3d &, double & dist, Eigen::Vector3d & grad) const override {
-    dist = distance;
+  bool evaluate(const Eigen::Vector3d & pos, double & dist, Eigen::Vector3d & grad) const override {
+    dist = distance + slope_x * (pos.x() - 5.5);
     grad.setZero();
     return true;
   }
@@ -78,7 +80,27 @@ int main(int argc, char ** argv)
       terrain, query, tf, "odom", 0.30, 0.05, current, command, reference, stamp);
   };
   assert(check() == ExecutorStatus::PUBLISHED);
+
+  // 近场（车体安全半径以内）判据：机器人当前所在位置只要求「不比现在更差」。
+  // 1) 静止指令不改变净空：贴着障碍（0.20 < 0.30）也放行，否则贴墙停下的车永远发不出指令。
   query->distance = 0.20;
-  assert(check() == ExecutorStatus::DYNAMIC_BLOCKED);
+  assert(check() == ExecutorStatus::PUBLISHED);
+
+  // 2) 但朝障碍方向运动的预测轨迹会持续压缩净空，必须拦下。
+  minco_controller::Control forward;
+  forward.vx = 1.0;
+  const auto check_forward = [&]() {
+    return mas2027_nav_executor::checkCommandSafety(
+      terrain, query, tf, "odom", 0.30, 0.05, current, forward, reference, stamp);
+  };
+  query->distance = 0.28;
+  query->slope_x = -0.6;
+  assert(check_forward() == ExecutorStatus::DYNAMIC_BLOCKED);
+
+  // 3) 起点贴障碍但一路远离（真车「停在离墙 0.28 m 处发目标点」）必须放行。
+  query->distance = 0.28;
+  query->slope_x = 0.6;
+  assert(check_forward() == ExecutorStatus::PUBLISHED);
+
   rclcpp::shutdown();
 }

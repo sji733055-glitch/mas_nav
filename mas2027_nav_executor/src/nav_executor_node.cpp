@@ -76,6 +76,24 @@ public:
     const auto dynamic_map_topic = declare_parameter<std::string>("node.topics.dynamic_cost_map_sub", "/dynamic_cost_map");
     velocity_color_min_ = declare_parameter<double>("node.visualization.velocity_color_min");
     velocity_color_max_ = declare_parameter<double>("node.visualization.velocity_color_max");
+    // 全局搜索折线（SMAC 2D / Astar 的输出）。注意这与上面 global_path_pub 的语义不同：
+    // global_path_pub 发的是 MINCO 轨迹（名字是历史遗留，smoke_goal.py 依赖它数点数），
+    // 下面这两个话题才是真正的全局折线，专门给 RViz 看。默认发布周期 5 Hz。
+    global_plan_topic_ = declare_parameter<std::string>(
+      "node.topics.global_plan_pub", "/nav_executor/global_plan");
+    global_plan_marker_topic_ = declare_parameter<std::string>(
+      "node.topics.global_plan_marker_pub", "/nav_executor/debug/global_plan");
+    global_plan_publish_hz_ = declare_parameter<double>("node.visualization.global_plan_publish_hz", 5.0);
+    global_plan_line_width_ = declare_parameter<double>("node.visualization.global_plan_line_width", 0.15);
+    global_plan_color_r_ = declare_parameter<double>("node.visualization.global_plan_color_r", 0.0);
+    global_plan_color_g_ = declare_parameter<double>("node.visualization.global_plan_color_g", 1.0);
+    global_plan_color_b_ = declare_parameter<double>("node.visualization.global_plan_color_b", 1.0);
+    if (!(std::isfinite(global_plan_publish_hz_) && global_plan_publish_hz_ > 0.0)) {
+      global_plan_publish_hz_ = 5.0;
+    }
+    if (!(std::isfinite(global_plan_line_width_) && global_plan_line_width_ > 0.0)) {
+      global_plan_line_width_ = 0.15;
+    }
 
     PathExecutorParams executor_params;
     executor_params.planner_frequency = planner_frequency_;
@@ -177,6 +195,12 @@ public:
     command_pub_ = create_publisher<geometry_msgs::msg::Twist>(output_topic_, rclcpp::QoS(1));
     global_path_pub_ = create_publisher<nav_msgs::msg::Path>(
       global_path_topic_, rclcpp::QoS(1).transient_local());
+    global_plan_pub_ = create_publisher<nav_msgs::msg::Path>(
+      global_plan_topic_, rclcpp::QoS(1).transient_local());
+    global_plan_marker_pub_ = create_publisher<visualization_msgs::msg::Marker>(
+      // depth 要 > 1：transient_local 的 durability 缓存只保留最后 depth 条，而折线与
+      // 终点球是两条独立消息，depth=1 时后打开 RViz 只能拿到终点球、看不到折线。
+      global_plan_marker_topic_, rclcpp::QoS(10).transient_local());
     minco_trajectory_pub_ = create_publisher<visualization_msgs::msg::Marker>(
       minco_trajectory_topic_, rclcpp::QoS(1).transient_local());
     planning_constraints_pub_ = create_publisher<nav_msgs::msg::OccupancyGrid>(
@@ -189,6 +213,9 @@ public:
     timer_ = create_wall_timer(
       std::chrono::duration<double>(1.0 / control_rate_hz_),
       std::bind(&NavExecutorNode::control_tick, this));
+    global_plan_timer_ = create_wall_timer(
+      std::chrono::duration<double>(1.0 / global_plan_publish_hz_),
+      std::bind(&NavExecutorNode::publish_global_plan, this));
   }
 
   rclcpp_lifecycle::LifecycleNode::SharedPtr planner_node() const
@@ -303,6 +330,83 @@ private:
     minco_trajectory_pub_->publish(marker);
   }
 
+  // 全局搜索折线（SMAC 2D / Astar 的输出，odom 系）。与上面的 MINCO 轨迹分开显示：
+  // 轨迹是「车准备怎么走」，这条线是「搜索给出的拓扑引导」，两者对不上时一眼就能看出来。
+  // 按定时器周期重发（见函数末尾说明），这样 RViz 后开也能拿到完整折线。
+  void publish_global_plan()
+  {
+    if (!path_planner_ || !global_plan_pub_ || !global_plan_marker_pub_) return;
+
+    std::vector<geometry_msgs::msg::PoseStamped> plan;
+    const bool has_plan = path_planner_->copyLatestGlobalPath(plan) && plan.size() >= 2U;
+
+    if (!has_plan) {
+      // 目标被 invalidate / 搜索失败时清掉 RViz 上的旧线，否则会看着像还有一条可用路径。
+      if (!global_plan_published_) return;
+      global_plan_published_ = false;
+      nav_msgs::msg::Path empty;
+      empty.header.frame_id = odom_frame_;
+      empty.header.stamp = now();
+      global_plan_pub_->publish(empty);
+      for (int id = 0; id <= 1; ++id) {
+        visualization_msgs::msg::Marker clear;
+        clear.header = empty.header;
+        clear.ns = "global_plan";
+        clear.id = id;
+        clear.action = visualization_msgs::msg::Marker::DELETE;
+        global_plan_marker_pub_->publish(clear);
+      }
+      return;
+    }
+
+    const auto & last = plan.back();
+
+    nav_msgs::msg::Path path;
+    path.header.frame_id = plan.front().header.frame_id.empty()
+      ? odom_frame_ : plan.front().header.frame_id;
+    path.header.stamp = now();
+    path.poses = plan;
+
+    // 抬高 3 cm，避免与 z=0 的代价图/规划约束栅格打架闪面。
+    const double z_offset = 0.03;
+    visualization_msgs::msg::Marker line;
+    line.header = path.header;
+    line.ns = "global_plan";
+    line.id = 0;
+    line.type = visualization_msgs::msg::Marker::LINE_STRIP;
+    line.action = visualization_msgs::msg::Marker::ADD;
+    line.pose.orientation.w = 1.0;
+    line.pose.position.z = z_offset;
+    line.scale.x = global_plan_line_width_;
+    line.color.r = static_cast<float>(std::clamp(global_plan_color_r_, 0.0, 1.0));
+    line.color.g = static_cast<float>(std::clamp(global_plan_color_g_, 0.0, 1.0));
+    line.color.b = static_cast<float>(std::clamp(global_plan_color_b_, 0.0, 1.0));
+    line.color.a = 1.0F;
+    line.points.reserve(plan.size());
+    for (const auto & pose : plan) {
+      line.points.push_back(pose.pose.position);
+    }
+
+    // 终点球：让「全局搜索最后停在哪」也一目了然（到点容差内可能不是精确目标点）。
+    visualization_msgs::msg::Marker goal_dot = line;
+    goal_dot.id = 1;
+    goal_dot.type = visualization_msgs::msg::Marker::SPHERE;
+    goal_dot.points.clear();
+    goal_dot.pose.position = last.pose.position;
+    goal_dot.pose.position.z += z_offset;
+    goal_dot.scale.x = global_plan_line_width_ * 2.5;
+    goal_dot.scale.y = global_plan_line_width_ * 2.5;
+    goal_dot.scale.z = global_plan_line_width_ * 2.5;
+
+    global_plan_pub_->publish(path);
+    global_plan_marker_pub_->publish(line);
+    global_plan_marker_pub_->publish(goal_dot);
+    // 每个 tick 都重发（不是只在变化时发）：RViz 常常在本节点之后才打开，靠的是
+    // transient_local 的 durability 缓存，定期重发才能保证它一打开就看到完整折线，
+    // 也避免 Marker 因缓存被后续消息挤出而消失。5 Hz × 一条折线，开销可以忽略。
+    global_plan_published_ = true;
+  }
+
   void accept_goal(const geometry_msgs::msg::PoseStamped::SharedPtr & goal)
   {
     RCLCPP_INFO(get_logger(), "Received goal on %s", goal_topic_.c_str());
@@ -363,6 +467,16 @@ private:
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr command_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr global_path_pub_;
+  // 真正的全局搜索折线（global_path_pub_ 发的是 MINCO 轨迹，名字是历史遗留）。
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr global_plan_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr global_plan_marker_pub_;
+  rclcpp::TimerBase::SharedPtr global_plan_timer_;
+  bool global_plan_published_{false};
+  double global_plan_publish_hz_{5.0};
+  double global_plan_line_width_{0.15};
+  double global_plan_color_r_{0.0};
+  double global_plan_color_g_{1.0};
+  double global_plan_color_b_{1.0};
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr minco_trajectory_pub_;
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr planning_constraints_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr planning_constraints_marker_pub_;
@@ -376,6 +490,8 @@ private:
   std::string odom_frame_;
   std::string output_topic_;
   std::string global_path_topic_;
+  std::string global_plan_topic_;
+  std::string global_plan_marker_topic_;
   std::string minco_trajectory_topic_;
   std::string planning_constraints_topic_;
   std::string planning_constraints_marker_topic_;

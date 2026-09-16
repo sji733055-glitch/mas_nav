@@ -186,11 +186,11 @@ Visualization Manager:
             Value: /rog_map/layer_value_static
           Use Timestamp: false
           Value: false
-        - Alpha: 0.55
+        - Alpha: 0.45
           Class: rviz_default_plugins/Map
           Color Scheme: costmap
           Draw Behind: true
-          Enabled: false
+          Enabled: true
           Name: Layer Type
           Topic:
             Depth: 1
@@ -199,7 +199,7 @@ Visualization Manager:
             Reliability Policy: Best Effort
             Value: /rog_map/layer_type
           Use Timestamp: false
-          Value: false
+          Value: true
         - Alpha: 0.55
           Class: rviz_default_plugins/Map
           Color Scheme: map
@@ -238,14 +238,14 @@ Visualization Manager:
             Value: /rog_map/field
           Use Fixed Frame: true
           Value: true
-        - Alpha: 0.8
+        - Alpha: 0.6
           Autocompute Intensity Bounds: true
           Axis: Z
           Channel Name: z
           Class: rviz_default_plugins/PointCloud2
           Color Transformer: Intensity
           Decay Time: 0
-          Enabled: false
+          Enabled: true
           Name: Height Analysis
           Position Transformer: XYZ
           Selectable: false
@@ -259,7 +259,7 @@ Visualization Manager:
             Reliability Policy: Best Effort
             Value: /rog_map/layer_height_delta
           Use Fixed Frame: true
-          Value: false
+          Value: true
         - Alpha: 0.85
           Class: rviz_default_plugins/PointCloud2
           Color: 170; 0; 255
@@ -335,14 +335,14 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /goal_pose
       Value: true
-    - Alpha: 1
+    - Alpha: 0.6
       Buffer Length: 1
       Class: rviz_default_plugins/Path
-      Color: 0; 255; 0
+      Color: 0; 200; 0
       Enabled: true
       Line Style: Billboards
-      Line Width: 0.06
-      Name: Global Path
+      Line Width: 0.04
+      Name: MINCO Trajectory (Path)
       Topic:
         Depth: 1
         Durability Policy: Transient Local
@@ -361,6 +361,48 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /nav_executor/debug/minco_trajectory
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Safe Corridor (backup SFC)
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /nav_executor/debug/safe_corridor
+      Value: true
+    # 全局搜索（SMAC 2D / Astar）输出的折线。放在显示列表最后 = 最后渲染 = 画在最上层。
+    # 线宽/颜色由消息里的 Marker 决定（node.visualization.global_plan_*），默认 0.15 m 青色，
+    # 比 MINCO 轨迹（0.07 m、按速度染色）粗一倍以上，用来一眼看清「搜索想让它怎么绕」。
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Name: Global Plan (SMAC search, thick)
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /nav_executor/debug/global_plan
+      Value: true
+    # 同一条折线的 nav_msgs/Path 版本，给需要量坐标/取点数的工具用（虚线细一点，不抢视线）。
+    - Alpha: 0.9
+      Buffer Length: 1
+      Class: rviz_default_plugins/Path
+      Color: 0; 255; 255
+      Enabled: true
+      Line Style: Billboards
+      Line Width: 0.12
+      Name: Global Plan (Path)
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /nav_executor/global_plan
       Value: true
   Enabled: true
   Global Options:

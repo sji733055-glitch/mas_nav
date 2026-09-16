@@ -133,6 +133,12 @@ namespace rog_map {
         double current_update_time_{0.0};
 
         bool map_empty_{true};
+        /// 近距盲区清理记账：上次执行「车体周围清空」时的传感器位置。
+        /// raycast_range_min 以内的体素既不会被命中（近距点被跳过）也不会被射线扫到
+        /// （射线从 raycast_range_min 处才开始推进），若不主动清空就永远是 UNKNOWN，
+        /// 在 unknown_as_occupied 下会被判成障碍，把车体自己关进幻影障碍里。
+        Vec3f last_near_field_clear_pos_{Vec3f::Zero()};
+        bool near_field_cleared_{false};
         struct RaycastData {
             raycaster::RayCaster raycaster;
             std::queue<Vec3i> update_cache_id_g;
