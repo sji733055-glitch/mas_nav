@@ -380,6 +380,11 @@ void ProbMap::updateProbMap(
   const auto raycast_start = std::chrono::steady_clock::now();
   raycastProcess(cloud, sensor_pos);
   runtime_stats_.raycast_time = elapsedMs(raycast_start);
+  // raycastProcess 把细分耗时写进 runtime_stats_，但紧随其后的 probabilisticMapFromCache()
+  // 开头会整表重置 runtime_stats_（见本函数开头），细分列会变成 0。这里先落地副本，
+  // 等本次更新全部结束后再写回，CSV 才能看到「并行段 / 合并段」各占多少。
+  const double raycast_parallel_ms = runtime_stats_.raycast_parallel_time;
+  const double raycast_merge_ms = runtime_stats_.raycast_merge_time;
   raycast_data_.batch_update_counter++;
   if (raycast_data_.batch_update_counter >= cfg_.batch_update_size) {
     raycast_data_.batch_update_counter = 0;
@@ -389,6 +394,8 @@ void ProbMap::updateProbMap(
     runtime_stats_.prob_update_time = elapsedMs(update_start);
     map_empty_ = false;
   }
+  runtime_stats_.raycast_parallel_time = raycast_parallel_ms;
+  runtime_stats_.raycast_merge_time = raycast_merge_ms;
   runtime_stats_.dirty_column_count_from_probmap = static_cast<double>(dirtyColumnIds().size());
   runtime_stats_.active_cell_count = static_cast<double>(active_ids_.size());
   inf_map_->getInflationNumAndTime(runtime_stats_.inflation_count, runtime_stats_.inflation_time);
@@ -1192,10 +1199,12 @@ void ProbMap::insertUpdateCandidate(const Vec3i & id_g, bool is_hit)
 void ProbMap::markDirtyColumn(const Vec3i & id_g)
 {
   if (dirty_column_flags_.empty()) {
+    runtime_stats_.mark_dirty_invalid_count += 1.0;
     full_layer_refresh_required_ = true;
     return;
   }
   if (!insideLocalMap(id_g)) {
+    runtime_stats_.mark_dirty_out_of_map_count += 1.0;
     full_layer_refresh_required_ = true;
     return;
   }
@@ -1203,11 +1212,13 @@ void ProbMap::markDirtyColumn(const Vec3i & id_g)
   const int lx = id_g.x() - min_id.x();
   const int ly = id_g.y() - min_id.y();
   if (lx < 0 || ly < 0 || lx >= sc_.map_size_i.x() || ly >= sc_.map_size_i.y()) {
+    runtime_stats_.mark_dirty_invalid_count += 1.0;
     full_layer_refresh_required_ = true;
     return;
   }
   const int column_id = ly * sc_.map_size_i.x() + lx;
   if (column_id < 0 || column_id >= static_cast<int>(dirty_column_flags_.size())) {
+    runtime_stats_.mark_dirty_invalid_count += 1.0;
     full_layer_refresh_required_ = true;
     return;
   }
@@ -1215,6 +1226,7 @@ void ProbMap::markDirtyColumn(const Vec3i & id_g)
     dirty_column_flags_[column_id] = 1U;
     dirty_column_ids_.push_back(column_id);
   }
+  runtime_stats_.mark_dirty_ok_count += 1.0;
 }
 
 void ProbMap::clearDirtyColumns()

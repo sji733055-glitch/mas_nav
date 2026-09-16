@@ -105,9 +105,11 @@ ExecutorOutput PathExecutor::computeCommand(const ExecutorInput & input)
     return output;
   }
 
+  CommandSafetyDetail safety_detail;
   output.status = checkCommandSafety(
     terrain_, rog_query_, tf_buffer_, params_.odom_frame, params_.rog_map_clearance,
-    config_.dt, current, control, reference, input.stamp);
+    config_.dt, current, control, reference, input.stamp, &safety_detail);
+  last_safety_detail_ = safety_detail;
   if (output.status != ExecutorStatus::PUBLISHED) {
     solver_->resetLastControl();
     return output;

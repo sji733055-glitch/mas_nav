@@ -96,6 +96,26 @@ struct RuntimeStats
   double decayed_count{0.0};
   double dirty_column_count{0.0};
   double dirty_expanded_column_count{0.0};
+  /// 本次更新走到 force_full_refresh 的原因（互斥，按 rog_map.cpp 的判断顺序）：
+  /// geometry_changed（滑动窗口自身要求全量）/ explicit_full / dirty_disabled / dirty_over_ratio。
+  double full_reason_geometry{0.0};
+  double full_reason_explicit{0.0};
+  double full_reason_dirty_disabled{0.0};
+  double full_reason_dirty_over_ratio{0.0};
+  /// 周期性兜底触发的全量（cfg_.dirty_full_period_s 到期）。
+  double full_reason_periodic{0.0};
+  /// 取走全量标记时它是否为真。若为真而本次没走全量分支（窗口内移动），说明标记被推迟，
+  /// 下一帧会强制全量——排查「偶尔一台帧突然变慢」时看这一列。
+  double full_layer_flag_at_consume{0.0};
+  /// markDirtyColumn 的三个出口计数：正常入列 / 越界置全量标记 / 表未初始化或列号非法置全量标记。
+  /// 越界计数持续 >0 说明「射线打到滑动窗口外」在每帧把整张二维图打成全量。
+  double mark_dirty_ok_count{0.0};
+  double mark_dirty_out_of_map_count{0.0};
+  double mark_dirty_invalid_count{0.0};
+  /// refreshLayers 的细分：配置/滑窗同步、脏列合并排序、掩码重建、逐格统计。
+  double layer_config_sync_time{0.0};
+  double layer_dirty_merge_time{0.0};
+  double fused_projection_time{0.0};
   double full_layer_refresh_count{0.0};
   double dirty_layer_update_count{0.0};
   double field_enabled{0.0};
@@ -118,6 +138,22 @@ struct RuntimeStats
   double field_skip_disabled_count{0.0};
   double field_update_interval_ms{0.0};
   double field_update_hz_window{0.0};
+  /// 相邻两次 updateMapInternal 返回之间的真实墙钟间隔（ms）。
+  /// 与 total_update_time 的差 = 这段循环里没被 total_update_time 覆盖的部分：
+  /// 主要是 updateWorkerLoop 里更新之后的可视化快照构建（captureVizFrame，RViz 订阅了
+  /// /rog_map/layer_* 时每轮要遍历整张 200×200 投影层）、以及掉帧造成的空档。
+  /// 只盯 total_update_time 会低估「地图多久更新一次」，这一列是补上那个差值用的。
+  double update_period_ms{0.0};
+  /// update_period_ms - total_update_time，即上面那段不可见开销。
+  double update_unaccounted_ms{0.0};
+  /// 最近一次可视化快照构建耗时（ms）。这段发生在 updateMapInternal() 之后，
+  /// 是 update_unaccounted_ms 的主要成分之一；RViz 订阅了 /rog_map/layer_* 时每轮要遍历
+  /// 整张 200×200 投影层，正是 updateWorkerLoop 里按发布频率限频要省掉的东西。
+  double last_viz_time_ms{0.0};
+  /// 本统计窗口内：可视化快照实际构建次数 / 因限频跳过的次数（窗口累计，写进 CSV）。
+  /// 两者之比即是限频省下来的比例：点云 20 Hz、发布 5 Hz 时约为 1:3。
+  double viz_built_count{0.0};
+  double viz_skipped_count{0.0};
   double query_snapshot_alloc_time{0.0};
   double query_copy_values_time{0.0};
   double query_copy_types_height_delta_confidence_time{0.0};
@@ -175,6 +211,19 @@ public:
   void recordCloudDropOdomTimeout();
   void recordValidCloud(double odom_age_ms);
   void recordOdom(double stamp);
+  /// 可视化快照：本次构建了几次、因限频跳过几次。限频跳过的次数远多于构建次数说明
+  /// visualization.rate 明显低于点云频率，省下来的正是重复构建的开销。
+  void recordVizFrameBuilt();
+  void recordVizFrameSkipped();
+  /// 记录最近一次可视化快照构建耗时（ms）。写入 updateWorkerLoop 所在线程，
+  /// 由下一次 fillInputStats() 带进 CSV，因此 CSV 里该列可能落后一行，按 1 s 窗口看无影响。
+  void recordVizFrameTime(double ms)
+  {
+    if (!enabled()) {
+      return;
+    }
+    last_viz_time_ms_ = ms;
+  }
   void fillInputStats(RuntimeStats & stats);
   void observeUpdate(const RuntimeStats & stats);
   void close();
@@ -223,6 +272,15 @@ private:
   double last_odom_age_ms_{0.0};
   double first_valid_update_stamp_{0.0};
   double last_valid_update_stamp_{0.0};
+  /// 上一次 observeUpdate 的 steady_clock 纳秒值，用于算 update_period_ms。
+  long long last_observe_ns_{0};
+  /// 最近一次可视化快照构建耗时（ms，见 recordVizFrameTime）与窗口内计数。
+  double last_viz_time_ms_{0.0};
+  /// 窗口累计（不清零）与「自上次取走后新增」（取走即清零）两份计数。
+  double viz_built_total_{0.0};
+  double viz_skipped_total_{0.0};
+  double viz_built_since_take_{0.0};
+  double viz_skipped_since_take_{0.0};
   WindowAccumulator window_{};
   std::mutex mutex_;
 };

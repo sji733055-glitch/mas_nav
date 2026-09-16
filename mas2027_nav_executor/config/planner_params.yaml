@@ -57,8 +57,56 @@
         # 0.50 成了够不到的软目标 → 罚项恒不满足 → L-BFGS 不收敛 → 实车出现 93 次
         # "MINCO path generation failed; retrying"。硬判据只需 collision_dist(0.30)，
         # 故回退到原值 0.40，先恢复可收敛性；交叉点问题留待全局搜索与地形层清理干净后再谈。
-        safe_dist: 0.40
-        collision_dist: 0.30
+        # 【2026-09-16 实测：抬到 0.35】现场摆入障碍物后窄段卡顿严重、且特别慢。日志
+        # （mas2027_nav_executor_node_63424，730 行）显示：145 次 ROGMap 绕行修复 +
+        # 101 次 MINCO path generation failed + 38 次净空否决(0.288~0.318 vs 0.300)。
+        # 软目标 0.40 的几何含义是"通道宽度需 ≥0.80 m 才够得到"；窄于此的通道里罚项恒不满足，
+        # L-BFGS 收敛困难 → 反复重算 → 走走停停。硬判据只要 collision_dist(0.30)，
+        # 故降到 0.35（对应通道宽度 ≥0.70 m），在不触碰安全底线的前提下恢复窄段可收敛性。
+        # 注意方向：0.50 太高（93 次不收敛），0.40 在窄段仍偏高，本次 0.35 是单变量实验。
+        # 【2026-09-16 二次实测：0.33 → 0.30】依据最新一次实车运行
+        # （mas2027_nav_executor_node_7425_1789559440199.log，19:50:40–20:03:04，634 行）：
+        # 27 目标 / 22 到达；250 次 MINCO 失败
+        # [COLLISION=88 LOCAL_SEED_INVALID=30 TERRAIN_COLLISION_OR_DIRECTION=132]；
+        # 103 次 "MINCO path generation failed; retrying"。
+        # 卡死处的实测净空为 0.262~0.275，即该窄道的几何上限约 0.28 m。软目标 0.33 的几何
+        # 含义是"通道宽度 ≥0.66 m 才够得到"，而现场窄道只有约 0.56 m —— 罚项在那里恒不满足，
+        # 一直在满格状态，L-BFGS 只能空转。当时据此把 0.33 降到 0.30。
+        # ⚠️ 注意：collision_dist 若未出现在配置里，会以 safe_dist 作为 declare 的默认值
+        #    （minco_planner.cpp:317）。本文件两者都在，故改 safe_dist 不会连带改 collision_dist。
+        # 【2026-09-16 三次实测后**回退到 0.33**】用户反馈 0.30 上线后"起步更卡"。三次运行
+        # 拉平口径（急停 "Publishing emergency stop" 与 "Braking:" 的每分钟频率）：
+        #   19:50（safe_dist 0.33，743 s）急停 1.2/min、Braking 2.5/min、COLLISION 占 88/250=35%
+        #   20:13（0.30，103 s）        急停 2.3/min、Braking 5.8/min、COLLISION 22/50=44%
+        #   20:28（0.30， 80 s）        急停 5.2/min、Braking 9.0/min、COLLISION 49/50=98%
+        # 频率随 0.33→0.30 成倍上升。机制与 minco_optimizer.cpp:320 附近的注释一致：软目标是
+        # "优化器只能渐近逼近"的目标，**必须比硬判据高出余量**——降到 0.30 后余量只剩
+        # 0.26→0.30 这 4 cm，窄处罚项梯度变小（净空 0.27 处推力只有 0.33 时的一半），
+        # 轨迹不再被推回通道中心，于是更频繁地差几毫米撞上检查器的 0.26，表现为"起步/前进一顿一顿"。
+        # 而当初降 0.30 想换的"窄段空转"收益**从未被证明**：两次 0.30 运行的 OPTIMIZER_FAILED
+        # 分别只有 1/50 与 0/50。因此回退，恢复 0.07 的余量。
+        # ⚠️ 归因强度：三条样本路线不同、时长差 9 倍，属**强嫌疑而非已证实**；回退的另一个理由是
+        #    它是尚未验证收益的实验，不该同时占用"安全余量"与"排障变量"两个位置。
+        # 若今后要再动这一项：单变量，并同时看急停频率与 MINCO failure summary 的 COLLISION 占比。
+        safe_dist: 0.33
+        # 【2026-09-16 撞墙后回调】0.30 → 0.28。前一轮降到 0.25 后虽大幅改善了规划成功率
+        # （优化失败 78→9、卡死判定 18→2、到达 10/16），但实车**发生撞墙**。
+        # 根因是"collision_dist 0.25 − kMonitorClearanceTolerance 0.05"把**有效硬阈值压到 0.20 m**，
+        # 小于车体半宽，等于允许车体与障碍重叠约 10 cm。本次同时把容差收到 0.02
+        # （minco_planner.cpp 的 kMonitorClearanceTolerance），故有效硬阈值 = 0.28 − 0.02 = **0.26 m**。
+        # 该值仍低于按"直径 60 cm"推得的 0.30，但高于 0.20；实测约 0.59 m 的窄道给出净空约 0.295 > 0.26，
+        # 仍可通过。若要彻底安全应回到 0.30（代价：窄道重新不可过），请按实车表现决定。
+        # 必须与 node.rog_map_clearance 保持一致（本次一并改为 0.28）。
+        # 【2026-09-16 实测车体尺寸：旋转直径 612 mm】即外接圆半径 **0.306 m**，比有效硬阈值
+        # 0.26 m 大 46 mm。两者之所以仍能对上，是因为 ROGMap 的净空读数本身是**偏保守**的：
+        # 障碍格是 0.05 m 的格子（点落在格内整格即判占据），读数通常比真实几何净空小约 2~5 cm，
+        # 所以"读数 0.26"≈"真实 0.29~0.31"，正好贴着车体外接圆。结论：
+        #   ⚠️ **不要再下调 collision_dist**（此前讨论过的 0.28→0.27 建议就此撤回）：
+        #      0.27 会把有效硬阈值压到 0.25，比"读数偏保守"能补回来的量还低，等于重新允许蹭墙
+        #      （9-16 那次撞墙就是有效阈值 0.20 时发生的）。
+        #   窄道通过性的进一步收益，应来自降低**感知延迟**（ROGMap 积压/丢帧）与统一两处判据口径，
+        #   而不是继续压阈值。若确实要动，必须先量"读数偏保守多少"（同一位置用 50 cm 卷尺对墙量）。
+        collision_dist: 0.28
         # 发布前校验与运行时监视现在共用同一条净空要求：
         #   required = collision_dist + max(v * replan_react_time, monitor_margin)
         # 两者曾经用不同阈值（发布 0.30 / 监视 0.30+monitor_margin=0.50），结果是轨迹刚发布
@@ -67,6 +115,37 @@
         # 只有当机器人真的跑起来（v*replan_react_time）才追加制动距离余量。
         # 想整体抬高安全余量请同时确认现场最窄通道净空 > collision_dist + monitor_margin。
         monitor_margin: 0.0
+        # 失败原因日志策略（排障用，不影响规划行为）：
+        # 失败原因原来整条 2 s 节流，2026-09-16 13:44 那次实车运行 350 次
+        # "MINCO path generation failed" 只留下 139 条原因，其中 76 次「局部绕行修复成功后
+        # 0.3 ms 立即失败」的现场里有 60 次连原因都没打出来，导致无法判断瓶颈在种子还是在
+        # 轨迹校验。现在每种原因前 failure_log_first_n 次逐条打印（带 reason #n / total n），
+        # 之后每 failure_log_every_n 次采样一条；每 failure_summary_every 次失败打一条汇总。
+        #
+        # 【2026-09-16 二次修正】"之后退回 2 s 节流"这一设计在长运行中会骗人：14:55 那次
+        # 158 次失败只留下 54 条原因，COLLISION 109 次被压成 31 条，因为 COLLISION 以约
+        # 0.5 次/s 持续发生，比 2 s 节流窗口更密，窗口内的现场整片丢失。现改为**按计数采样**：
+        # 无论失败多密都保证每 N 次留下一条，样本量可预期，不随现场节奏退化。
+        # failure_log_first_n: 0 表示不逐条打（只按 every_n 采样）；
+        # failure_log_every_n: 1 表示每次都打（排障用），0 表示退回旧的 2 s 节流行为；
+        # failure_summary_every: 0 表示不打汇总。
+        failure_log_first_n: 10
+        failure_log_every_n: 25
+        failure_summary_every: 50
+        # 第四层兜底：短距离脱困前缀（creep）。2026-09-16 13:40 那次实车运行里，车停在
+        # 净空 0.12~0.13 m 的地方，三层兜底（正常路径 → ROGMap 局部绕行 → 障碍前完整停车
+        # 前缀）全部失败：后者的安全段要求 0.30(最小前缀) + 0.15(收尾余量) = 0.45 m，
+        # 而车前方根本没有这么长的安全段，于是 104 s 内 122 次 "MINCO path generation failed"、
+        # 车原地不动。开启本项后，三层都失败时退化成一个"不比当前实测净空更差"（减 0.02 m
+        # ESDF 抖动余量）、末速度为零的短前缀，把车挪出贴死状态。
+        # 长度上限固定为一个车体半径 collision_dist：整段都落在既有的近场豁免半径以内，
+        # 因此**没有改动任何安全阈值**，也不需要放宽轨迹校验。enable: false 即恢复三层行为。
+        stuck_escape:
+          enable: true
+          # 安全段短于此值就不脱困（挪动太小没有意义）；实际可用长度 = 安全段 - buffer。
+          min_length: 0.08
+          # 收尾余量：前缀在第一个净空不足的采样点之前这么多米处结束。
+          buffer: 0.05
         # 机器人当前所在位置附近（弧长 collision_dist 以内）是它已经占住的地方，
         # 贴着墙停车时那里不可能满足完整净空，因此该段只要求「不比当前实测净空更差」，
         # 离开这段之后必须满足上面的 required。否则车停在墙边就再也发不出轨迹。
@@ -208,7 +287,16 @@
           hysteresis_enable: false
           obstacle_hold_time: 1.5
           mask_filter_en: true
-          fill_occ_min: 4
+          # 【2026-09-16】fill_occ_min 4 → 8：把"补洞"削弱到只填真正被包围的格子。
+          # 依据：车体直径 60 cm（半径 0.30）与 collision_dist 0.30 相等，通道宽度只要严格大于
+          # 0.60 m 车就能过；而 fillMask() 会把周围 ≥fill_occ_min 个占据邻格的自由格填成障碍
+          # （projection_layer.cpp，8 邻域最多 8），每侧最多加粗 1 格 = 5 cm。实测卡住处净空
+          # 0.288~0.318（真实通道可过），正是这 5 cm 造成的"假性过不去"（verdict=GEOMETRY）。
+          # 取 8 表示仅当 8 个邻格全为占据时才填——那属于障碍物内部的空洞，不会改变外轮廓、
+          # 也就不会把通道补窄；同时满足 denoise_occ_max(0) < fill_occ_min 的校验。
+          # ⚠️ 切勿取 9 及以上：config.hpp:299 会抛 std::invalid_argument（合法区间 [1,8]），
+          #    节点启动即死、日志为空、ROGMap 可视化全部消失（已踩过一次）。
+          fill_occ_min: 8
           denoise_occ_max: 0
         field:
           enable: true
@@ -218,7 +306,62 @@
           interpolation: quadratic
           update_rate: 20.0
         performance:
-          enable: false
+          # 【2026-09-16 开启诊断】现场可见 `[ROG WARN] Unfinished frame cnt > 1 (dropped N),
+          # the map may not work in real-time`——建图跟不上点云频率时会**直接丢弃中间帧**
+          # （updateWorkerLoop 只取最新一帧，见 rog_map_ros2.hpp:379-412），于是"突然出现的
+          # 障碍"进图变慢，与现场观察（提前观测到就没事、突然冒出来就反应差）吻合。
+          # 打开本项后 ROGMap 会把每秒统计写成 CSV（默认 1 Hz，开销极小），用来**坐实**积压：
+          #   cloud_callback_hz  点云回调频率（输入）
+          #   valid_update_hz    实际完成的地图更新频率 ← 明显低于输入即积压
+          #   total_update_time  单次更新总耗时（ms）
+          #   raycast_time / projection_time / field_time / inflation_time / decay_time /
+          #   query_refresh_time  ← 各阶段耗时，用来看瓶颈在哪一段
+          # 注意 print_enable 是打到 stdout（不进 ROS 日志文件），排障优先用 CSV。
+          # detailed_csv_enable 是**每次更新**写一行，开销大，只在需要逐帧时序时打开。
+          enable: true
+          summary_csv_enable: true
+          # ⚠️ 路径必须落在工作区内。写到 /tmp 时**排障侧读不到**：agent 的 shell 每次调用
+          # 都是独立的临时 /tmp（写过 dsh_probe.txt 验证：下一次调用就没了），而实车运行是在
+          # 用户自己的 shell 里，写到真实 /tmp。2026-09-16 20:45 那次运行因此白跑一趟。
+          # 该目录已存在；若换机器请确认路径可写。
+          summary_csv_path: "/home/mas/mas_nav_2027_native/.scratch/rog_map_perf_summary.csv"
+          summary_rate: 1.0
+          # 【2026-09-16 开启一次】用来定位「单次更新中位 43 ms、真实周期却是 52 ms」之间
+          # 那 8.7 ms 的构成：prob_update / decay / query_refresh / update_unaccounted_ms
+          # （真实周期 − 自报耗时）/ last_viz_time_ms / full_reason_*（是否静默退回全量）。
+          # 每次更新一行、约 20 行/s，实测开销可忽略；跑完一次后改回 false 即可。
+          # summary 每行也已带上同样的关键分阶段列，不开 detailed 也能看个大概。
+          detailed_csv_enable: true
+          print_enable: false
+          # 【2026-09-16 实测后开启：脏列增量投影】默认 false（config.hpp:374/557），
+          # 本仓库此前也没设 ⇒ 投影层每帧都走 updateFull()，把整张二维窗口（10×10 m ÷0.05
+          # = 200×200 格）全部重算一遍。实车 CSV（.scratch/rog_map_perf_summary.csv，142 s）实测：
+          #   点云输入 19.96 Hz → 建图只有 12.83 Hz（比值 0.65，约 35% 的帧被丢）
+          #   单次更新中位 73.4 ms（最大 128.8），其中**二维投影 43.5 ms（59%）**、
+          #   raycast 8.7 ms、ESDF 1.3 ms
+          # 即瓶颈就是"每帧全量重投影"，也正是终端那条 `[ROG WARN] Unfinished frame cnt > 1`
+          # 的来源：更新耗时 73 ms > 帧周期 50 ms，物理上不可能跟上。
+          # 打开后只处理脏列（新出现的命中/未命中列），脏列超过 dirty_full_ratio 时
+          # 自动回退全量，因此不会漏更新；预期把投影耗时压到几毫秒、建图回到 20 Hz。
+          #
+          # 【2026-09-16 22:00 关键更正：上面这条在稠密点云下从未生效】
+          # 基准（.scratch/rog_bench.py，与实车同一份 rog_map 参数、96k 点/帧）实测：
+          #   dirty_column_count 中位 ~19740 / 共 40401 列 = 49%，**恒大于 0.30 阈值**，
+          #   77/77 次更新全部 full_reason_dirty_over_ratio=1 ⇒ 增量分支一次都没走到，
+          #   投影仍然是每帧重算整张 200×200（实测全量 42.9 ms / 增量 0.0 ms）。
+          # 原因：raycasting.ray_range 是 [0.3, 10.0]，而地图窗口只有 10×10 m —— 每帧的
+          # 射线几乎扫过窗口里所有柱子，脏列自然逼近全图，"脏列超比例就回退全量"这个保护
+          # 于是变成了"永远走全量"。
+          # 因此把阈值放到只在脏列几乎铺满时才回退（0.30 → 0.95），并引入**周期性全量兜底**
+          # dirty_full_period_s=0.5：每 0.5 s 无条件走一次全量。这样增量路径真正生效，同时
+          # 保留一个与"脏列多少"无关的安全网（万一某列因未预期原因长期没被标脏，最多旧 0.5 s）。
+          # ⚠️ 仍是行为改动：上车先在 RViz 看 /rog_map/occupied 有无残留幽灵障碍、移动障碍能否
+          #    消失，并对比 CSV 的 last_projection_time_ms / last_update_period_ms / map_update_hz
+          #    与 `last_full_reason_*`（应当出现大量 0，而不是每帧都是 dirty_over_ratio）。
+          #    要一键回退：dirty_column_enable 改回 false（无需重编）。
+          dirty_column_enable: true
+          dirty_full_ratio: 0.95
+          dirty_full_period_s: 0.5
         visualization:
           enable: true
           frame_id: odom

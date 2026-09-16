@@ -29,9 +29,11 @@ tf_maintainer                                → odom → base_link
 **不会自动回退**，直接失败并打端点诊断，与旧工程一致。
 MINCO 的走廊、优化器和轨迹碰撞检查使用 ROGMap 的在线二维占据与距离场；
 静态地形方向约束和 `map_server` 的当前动态代价图仍用于全局搜索、轨迹验收与
-MPC 制动。ROGMap 也检查全局搜索落在其局部滑窗内的部分以及 MPC 下一段指令；
-滑窗外仍由地形图和当前动态代价图负责。地图、ROGMap 距离场或 `map→odom`
-TF 缺失时不接受目标或不输出运动命令。
+MPC 制动。全局折线进入 ROGMap 局部滑窗后，会先按与轨迹发布门相同的车体净空逐段检查：
+若实时占据截断折线，则在滑窗内做 8 邻域栅格搜索并重新接回局部终点，再交给 MINCO
+平滑；若障碍完全封死、无路可绕，则只生成障碍前的安全停车前缀，并强制零末速度，
+不会把穿障种子交给优化器。滑窗外仍由地形图和当前动态代价图负责。地图、ROGMap
+距离场或 `map→odom` TF 缺失时不接受目标或不输出运动命令。
 
 目标接纳、重规划及轨迹执行许可现在由 `task_manager/TaskManager` 管理，
 `MincoPlanner` 内置的 `MincoFsm` 已移除。新目标抢占时，旧轨迹即使晚到也不能
@@ -40,6 +42,15 @@ TF 缺失时不接受目标或不输出运动命令。
 执行器源码按职责放在 `path_planner/search`、`path_planner/trajectory`、
 `path_executor/mpc`、`path_executor/monitoring`、`path_executor/state` 和
 `common/environment`；第三方数值算法及 qpOASES 仍在 `vendor/`。
+
+雷达由 `mid360_driver` 在驱动内融合：后雷达的点按标定外参变到前雷达（参考）系后，
+与前雷达合成一帧发布到 `/mid360_driver/lidar`，IMU 发布 `/mid360_driver/imu`。
+**任一雷达掉线时驱动进入单雷达模式**：仍用在线那台继续发帧（后雷达的点已在前雷达系），
+参考雷达 IMU 掉线时 IMU 自动切到另一台并换算到参考雷达系，所以 LIO 与导航不会断流；
+掉线雷达回来后自动恢复双雷达配对。超时与判据见
+`mas2027_perception/mid360_driver/config/params.yaml` 的 `merge_stale_timeout_s`、
+`merge_recover_hold_s`、`merge_imu_stale_timeout_s`、`packet_resync_silence`
+（后者的作用是让掉线/重启过的雷达能重新锚定时间戳、不至于永久收不到数据）。
 
 ### 净空判据（发布前校验 / 运行时监视 / MPC 指令检查）
 
@@ -59,11 +70,50 @@ required(v) = collision_dist + max(v * replan_react_time, monitor_margin)
   地方，那里不可能满足完整净空。该段只要求「不比当前实测净空更差」（留 0.02 m 抖动余量），
   离开近场后必须满足 `required(v)`。没有这条规则时，只要车停在离墙比 `collision_dist`
   更近的地方，任何轨迹都会在起点被拒，表现为「发目标点后车不动」。
-  日志出现 `Near-field exemption: start clearance ...` 说明正在使用该规则。
+  日志出现 `Near-field exemption active: start clearance X m, near requirement lowered to Y m
+  (full requirement Z m); ...` 说明正在使用该规则，三个数字分别是实测净空、**下调后**的
+  近场要求、以及完整要求。该分支在 `X ∈ [Z, Z + slack)` 时**同样成立**（X 略高于 Z 也会
+  触发下调），所以 `X > Z` 是正常的，不是矛盾。
+  早期措辞是 `start clearance X m below required Z m`，在 X > Z 时读起来自相矛盾，
+  已两次导致把「近场规则正常工作」误判成日志 bug 或阈值不一致，故改为直接打印三个量。
+- **第四层兜底（短距离脱困前缀）**：正常路径 → ROGMap 局部绕行 → 障碍前完整停车前缀
+  三层都失败时（后者的安全段要求 `min_length + buffer = 0.30 + 0.15 = 0.45 m`），
+  退化成一个「不比当前实测净空更差」、末速度为零的短前缀，把车从贴死状态挪出来。
+  长度上限固定为一个车体半径 `collision_dist`，整段都落在既有的近场放宽半径以内，
+  因此没有改动任何安全阈值。日志出现
+  `Live obstacle leaves no full stopping prefix; escaping with a X.XX m creep prefix.`
+  说明正在使用；`planner.minco_optimizer.stuck_escape.enable: false` 可关闭它，
+  关闭后回到「三层兜底、车原地不动」的旧行为。
 - MPC 下一段指令检查（`node.rog_map_clearance`）用同一判据，起点同样按近场处理。
 
-排查「车不动」的顺序：先看 `/cmd_vel` 是否持续非零，再看终端里
-`MINCO trajectory not published: <原因>` 与 `Committed path became unsafe` 是否在刷。
+排查「车不动」的顺序：先看 `/cmd_vel` 是否持续非零，再看 `MINCO trajectory not published:
+<原因>` 与 `Committed path became unsafe` 是否在刷。失败原因默认每种前
+`planner.minco_optimizer.failure_log_first_n`（10）次逐条打印（带 `reason #n / total n`），
+之后每 `failure_log_every_n`（25）次采样一条（**按计数采样，不按时间节流**；时间节流在失败
+比 2 s 窗口更密时会整片丢现场——2026-09-16 一次运行 158 次失败只留下 54 条原因，COLLISION
+109 次被压成 31 条），并每 `failure_summary_every`（50）次失败打一条按原因分类的
+`MINCO failure summary: total=... [原因=次数 ...]`。看原因即可判定瓶颈在哪一步：
+`LOCAL_SEED_INVALID` / `LOCAL_SEED_REJECTED_AFTER_REPAIR` 表示还没进优化器；
+`OPTIMIZER_FAILED` 表示优化器不收敛；`COLLISION` / `TERRAIN_COLLISION_OR_DIRECTION`
+表示候选轨迹硬校验被否。出现 `Repair rejected: seed invalid after repair` 说明局部绕行
+或停车前缀已经生成、但最终种子仍不可用。
+`Live obstacle blocks the local route and leaves no safe stopping prefix.` 现在会带上四层兜底
+各自的否决现场（`dense_reject=` / `detour_reject=` / `prefix_reject=` / `escape_reject=`，
+每项是 `(x,y) clear=.. req=.. arc=[nearfield] [len-limited]`）**以及一条自动判读 `verdict=`**，
+用来区分几种完全不同的成因、避免现场手算两套判据（种子门 vs 近场规则）：
+
+| `verdict=` | 含义 | 该怎么做 |
+| --- | --- | --- |
+| `GEOMETRY` | 该点连"近场规则"都过不了 | **拒绝是正确行为**，不要动阈值 |
+| `SEED_GATE_STRICTER` | 该点靠近场规则能过、靠种子门更严的要求过不了，且起点没贴死 | **判据不一致**，该改判据 |
+| `PREFIX_TOO_SHORT` | 该点其实合格，否决来自安全段太短凑不够前缀 | 是"前方可用距离"问题，不是净空问题 |
+| `TERRAIN` | 死在 terrain/动态层 | 与净空无关 |
+| `NONE` | 没捕获到否决点 | — |
+
+`arc=` 是该点离规划起点的距离，`nearfield` 表示该点确实走了放宽规则、`len-limited` 表示该类
+否决的定义是长度而非净空。判读逻辑就是 `classifySeedReject()`，有直接单元测试锁住。
+`repair_rejected` 为假时该消息与随后的 `LOCAL_SEED_INVALID` 是**同一事件的两条日志**，不要分
+别计数。
 反复急停说明发布门与监视门又不一致；只有 `not published` 说明近场外的
 `required(v)` 满足不了，此时应核实车体与地图配准、ROGMap 在线占据是否把车体自身
 （雷达盲区、云台/枪管）算成了障碍，而不是直接减小 `collision_dist`。
@@ -169,7 +219,8 @@ ros2 launch mas2027_nav_bringup nav_executor_launch.py \
 - `mas2027_nav_executor/config/planner_params.yaml`：全局搜索（`use_smac`、
   `smac_2d.*`、`allow_unknown`、`tolerance`）、MINCO 与恢复参数。
 - `mas2027_nav_executor/config/mpc_params.yaml`：MPC 约束和权重。
-- `mas2027_nav_bringup/config/small_point_lio_params.yaml`：雷达与 LIO 参数。
+- `mas2027_nav_bringup/config/small_point_lio_params.yaml`：雷达与 LIO 参数
+  （含双雷达融合与单雷达降级超时，见上节）。
 - `mas2027_perception/Localization/odom_localizer/config/params.yaml`：先验 PCD 定位。
 - `mas2027_nav_bringup/map/lab3_terrain.msgpack`：静态地形规划地图。
 

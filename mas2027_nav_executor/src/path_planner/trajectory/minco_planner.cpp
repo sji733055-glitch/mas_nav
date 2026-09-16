@@ -18,7 +18,17 @@ namespace {
 /// 监视器与发布门用同一个 requiredClearance()，这里只是留出 ESDF 逐帧更新带来的抖动余量，
 /// 方向是让监视器略宽：否则刚通过校验的轨迹会在几十毫秒后的监视周期里因为几毫米的差异被否决，
 /// 触发「急停 + 重规划」循环，车只会抽动而走不起来。大于该容差的净空恶化仍会被拦下。
-constexpr double kMonitorClearanceTolerance = 0.05;
+/// 【2026-09-16 0.05 → 0.02】0.05 太大：有效硬阈值 = collision_dist − 该容差。当 collision_dist
+/// 为 0.25 时有效阈值被压到 0.20 m，小于车体半宽，**实车发生了撞墙**。收到 0.02 后，
+/// 配合 collision_dist 0.28，有效硬阈值 = 0.26 m，既远大于 0.20，又仍允许通过实测约 0.59 m 的窄道
+/// （净空约 0.295 > 0.26）。抖动余量的量级应保持"几毫米~2 cm"，不要用 5 cm 这种接近车体半径的量。
+constexpr double kMonitorClearanceTolerance = 0.02;
+
+// 地形门否决点的日志节流（只影响日志，不影响判据）。前 N 次逐条打印，之后每 M 次采样一条。
+// 与 failure_log_first_n / failure_log_every_n 同一思路：**不要按时间节流**，否则
+// "失败比节流窗口更密"时会把现场整片丢光（2026-09-16 14:55 那次已踩过）。
+constexpr uint64_t kTerrainRejectLogFirstN = 10;
+constexpr uint64_t kTerrainRejectLogEveryN = 50;
 
 void declareParameterIfMissing(
   const rclcpp_lifecycle::LifecycleNode::SharedPtr & node,
@@ -360,6 +370,43 @@ void MincoPlanner::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & pa
     monitor_margin_ = 0.20;
   }
 
+  // 失败原因日志策略（见 minco_planner.hpp 的失败原因统计）：每种原因前 N 次逐条打印，
+  // 每 M 次失败打一条分类汇总。N<=0 表示完全按 2 s 节流（旧行为），M<=0 表示不打汇总。
+  declareParameterIfMissing(
+    node, prefix + "minco_optimizer.failure_log_first_n",
+    rclcpp::ParameterValue(static_cast<int64_t>(10)));
+  node->get_parameter(prefix + "minco_optimizer.failure_log_first_n", failure_log_first_n_);
+  // 第 N 次之后的采样间隔：每 failure_log_every_n_ 次该原因打印一条。
+  // 1 表示每次都打（排障时用），<=0 表示退回旧的 2 s 节流行为。
+  declareParameterIfMissing(
+    node, prefix + "minco_optimizer.failure_log_every_n",
+    rclcpp::ParameterValue(static_cast<int64_t>(25)));
+  node->get_parameter(prefix + "minco_optimizer.failure_log_every_n", failure_log_every_n_);
+  declareParameterIfMissing(
+    node, prefix + "minco_optimizer.failure_summary_every",
+    rclcpp::ParameterValue(static_cast<int64_t>(50)));
+  node->get_parameter(prefix + "minco_optimizer.failure_summary_every", failure_summary_every_);
+
+  // 第四层兜底：正常路径 / 局部绕行 / 完整停车前缀三层都失败时，退化成一个"不比当前净空
+  // 更差"的短前缀（creep），把车从贴死状态挪出来。长度上限固定为一个车体半径
+  // （collision_dist），因此不需要改动任何安全阈值。enable=false 即恢复 2026-09-16 之前
+  // 的三层行为（车原地不动）。
+  declareParameterIfMissing(
+    node, prefix + "minco_optimizer.stuck_escape.enable", rclcpp::ParameterValue(true));
+  node->get_parameter(prefix + "minco_optimizer.stuck_escape.enable", escape_enable_);
+  declareParameterIfMissing(
+    node, prefix + "minco_optimizer.stuck_escape.min_length", rclcpp::ParameterValue(0.08));
+  node->get_parameter(prefix + "minco_optimizer.stuck_escape.min_length", escape_min_length_);
+  if (!(std::isfinite(escape_min_length_) && escape_min_length_ > 0.0)) {
+    escape_min_length_ = 0.08;
+  }
+  declareParameterIfMissing(
+    node, prefix + "minco_optimizer.stuck_escape.buffer", rclcpp::ParameterValue(0.05));
+  node->get_parameter(prefix + "minco_optimizer.stuck_escape.buffer", escape_buffer_);
+  if (!(std::isfinite(escape_buffer_) && escape_buffer_ >= 0.0)) {
+    escape_buffer_ = 0.05;
+  }
+
   declareParameterIfMissing(
     node, prefix + "minco_optimizer.max_velocity", rclcpp::ParameterValue(2.0));
   node->get_parameter(prefix + "minco_optimizer.max_velocity", minco_config.max_vel);
@@ -535,7 +582,12 @@ void MincoPlanner::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & pa
 
   local_path_processor_ = std::make_unique<LocalPathProcessor>();
   local_path_processor_->configure(
-    lookahead_dist_, minco_config.max_vel, minco_config.max_acc, traj_goal_tolerance_, logger_);
+    lookahead_dist_, minco_config.max_vel, minco_config.max_acc, traj_goal_tolerance_,
+    collision_dist_, logger_);
+  // 第四层兜底（短距离脱困前缀）参数在这里注入；minco_config 已在上面读取完
+  // stuck_escape.* 参数（见 configureMincoOptimizer 段）。
+  local_path_processor_->setEscapeOptions(
+    escape_enable_, escape_min_length_, escape_buffer_);
 
   safety_checker_ = std::make_unique<TrajectorySafetyChecker>();
   safety_checker_->configure(collision_dist, 0.05, logger_);
@@ -921,8 +973,38 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
   }
   auto finish = [&](bool success, const std::string & reason) {
     if (!success) {
-      RCLCPP_WARN_THROTTLE(logger_, *rclcpp::Clock::make_shared(), 2000,
-        "MINCO trajectory not published: %s", reason.c_str());
+      // 失败原因必须能在实车上直接读到，否则"规划一直失败"就只能靠猜。
+      // 原实现整条日志 2 s 节流：实测 350 次失败只留下 139 条原因，其中 76 次
+      // "修复后 0.3 ms 立即失败"的现场里 60 次连原因都没有。
+      // 现改为：每种原因前 failure_log_first_n 次逐条打出（含累计计数）；
+      // 之后每 failure_log_every_n 次采样一条。**刻意不用 RCLCPP_WARN_THROTTLE**：
+      // 按时间节流在"失败比 2 s 窗口更密"时会整片丢掉现场——2026-09-16 14:55 那次
+      // 158 次失败只留下 54 条，COLLISION 109 次被压成 31 条。按计数采样则失败再密
+      // 也保证留下等间隔样本，且样本量可预期（每 N 次一条）。
+      ++replan_failure_total_;
+      uint64_t & reason_count = replan_failure_counts_[reason];
+      ++reason_count;
+      const bool log_this =
+        reason_count <= static_cast<uint64_t>(std::max<int64_t>(0, failure_log_first_n_)) ||
+        (failure_log_every_n_ > 0 &&
+         reason_count % static_cast<uint64_t>(failure_log_every_n_) == 0);
+      if (log_this) {
+        RCLCPP_WARN(logger_,
+          "MINCO trajectory not published: %s (reason #%llu, total %llu)",
+          reason.c_str(),
+          static_cast<unsigned long long>(reason_count),
+          static_cast<unsigned long long>(replan_failure_total_));
+      }
+      if (failure_summary_every_ > 0 &&
+          replan_failure_total_ % failure_summary_every_ == 0) {
+        std::string breakdown;
+        for (const auto & entry : replan_failure_counts_) {
+          if (!breakdown.empty()) breakdown += " ";
+          breakdown += entry.first + "=" + std::to_string(entry.second);
+        }
+        RCLCPP_WARN(logger_, "MINCO failure summary: total=%llu [%s]",
+          static_cast<unsigned long long>(replan_failure_total_), breakdown.c_str());
+      }
     }
     if (perf) {
       perf->success = success;
@@ -1006,10 +1088,15 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
     }
   }
   if (!seed.valid) {
-    return finish(false, "COLLISION");
+    // 局部种子无效 = "还没进优化器就失败"，与后面 validateTrajectory 的 COLLISION 是两回事。
+    // 实车排障时这两者混在同一个原因字符串里，无法判断瓶颈在种子还是在校验，故分开命名。
+    return finish(false,
+                  seed.repair_rejected ? "LOCAL_SEED_REJECTED_AFTER_REPAIR"
+                                       : "LOCAL_SEED_INVALID");
   }
   std::vector<Eigen::Vector3d> sparse_path = seed.sparse_waypoints;
   const bool local_end_is_goal = seed.local_end_is_goal;
+  const bool stop_at_local_end = seed.stop_at_local_end;
 
   std_msgs::msg::Header header_msg;
   header_msg.frame_id = output_frame_;
@@ -1082,15 +1169,12 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
   end_state.setZero();
   end_state.col(0) = sparse_path.back();
 
-  // Zero terminal velocity only when this window actually ends on the
-  // mission goal. dist_to_goal here is (clipped window end → global goal).
-  // After ROG-boundary clip that gap is often 0.5–1.0 m even though the
-  // seed is not the goal; treating it as a stop made the robot brake at the
-  // ROG edge (in-window goals never clip, so they were fine).
+  // 正常滑窗末端不是任务终点，不能设为零末速度，否则机器人会在 ROGMap 边缘反复刹停。
+  // 只有到达任务终点，或前方被动态障碍封死而生成安全停车前缀时，才要求零末速度。
   const double dist_to_goal = (end_state.col(0) - global_goal).head<2>().norm();
   const double v_curr = std::max(0.0, start_state.col(1).head<2>().norm());
   const double amax = std::max(0.0, minco_config.max_acc);
-  const bool command_stop = local_end_is_goal;
+  const bool command_stop = local_end_is_goal || stop_at_local_end;
   if (!command_stop) {
     Eigen::Vector3d tangent(1.0, 0.0, 0.0);
     if (sparse_path.size() >= 2) {
@@ -1141,7 +1225,7 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
     VecDf init_ts(N);
     PTAllocation(sparse_path,
       start_state,
-      local_end_is_goal,
+      command_stop,
       state,
       has_shifted_seed,
       shifted_waypoints,
@@ -1215,7 +1299,8 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
 
   if (!validation_ok) {
     std::cout << RED << "[MincoPlanner] Trajectory validation failed! Rejecting." << RESET << std::endl;
-    is_traj_safe_.store(false);
+    // 被拒绝的只是候选轨迹，不能污染已提交轨迹的安全状态：TaskManager 可以在旧轨迹
+    // 到期前继续执行它，而已提交轨迹是否安全仍以 20 Hz 安全监视器的结果为准。
     return finish(false, last_validation_failure_reason_);
   }
 
@@ -1693,18 +1778,88 @@ bool MincoPlanner::validateTrajectory(
         return Eigen::Vector2d(c * p.x() - s * p.y() + tx,
           s * p.x() + c * p.y() + ty);
       };
+      // 【2026-09-16 插桩】地形否决点现场：**只加日志，不改任何判据、阈值或行为**。
+      // 打印 stage（start_static / start_dynamic / edge_static / edge_dynamic）、该点在
+      // 地形图（map）系的坐标与格号、格子 cost、前一点的格号与 cost、以及对应的 odom 系轨迹点。
+      // 判读：cost≥95 且落在真实墙体上 → 地形门工作正常，"挤压"是真的；
+      //       cost<95 却报否决、或格号对不上地图 → 判据/坐标系有问题。
+      const auto log_terrain_reject = [&](const char * stage,
+        const Eigen::Vector2d & point_map, const Eigen::Vector3d & point_odom,
+        const Eigen::Vector2d * prev_map) {
+        const uint64_t seen = terrain_reject_log_count_;
+        ++terrain_reject_log_count_;
+        if (seen >= kTerrainRejectLogFirstN && (seen % kTerrainRejectLogEveryN) != 0) {
+          return;
+        }
+        const auto & info = terrain->cost.info;
+        const auto cell_of = [&info](const Eigen::Vector2d & p, int & mx, int & my) {
+          mx = static_cast<int>(std::floor(
+            (p.x() - info.origin.position.x) / info.resolution));
+          my = static_cast<int>(std::floor(
+            (p.y() - info.origin.position.y) / info.resolution));
+        };
+        const auto cost_of = [&info, &terrain](int mx, int my) {
+          if (mx < 0 || my < 0 || mx >= static_cast<int>(info.width) ||
+            my >= static_cast<int>(info.height)) {
+            return -1;
+          }
+          return static_cast<int>(terrain->cost.data[
+            static_cast<size_t>(my) * static_cast<size_t>(info.width) +
+            static_cast<size_t>(mx)]);
+        };
+        int mx = 0, my = 0, pmx = -1, pmy = -1;
+        cell_of(point_map, mx, my);
+        if (prev_map != nullptr) {
+          cell_of(*prev_map, pmx, pmy);
+        }
+        // 【2026-09-16 追问】同一时刻、同一地点，ROGMap（优化器唯一看得见的图）读到什么？
+        // 判读：地形图 cost≥95 说"占据"，而这里 rog_clear 很大 / rog_free=1 →
+        //   两张图结论相反，根因是"优化器只看 ROGMap、静态图只在事后否决"这一结构，
+        //   不是阈值问题（此时再调净空阈值只会误伤）。
+        //   若 rog_clear 很小 → 地形门与净空门本来就一致，问题在别处。
+        double rog_clear = std::numeric_limits<double>::quiet_NaN();
+        int rog_value = -1;
+        int rog_free = -1;
+        const char * rog_status = "no_query";
+        if (map_) {
+          const auto rog_res = map_->query(point_odom);
+          rog_status = rog_map::queryStatusName(rog_res.status);
+          if (rog_res.ok && std::isfinite(rog_res.distance)) {
+            rog_clear = rog_res.distance;
+          }
+          unsigned int rx = 0U, ry = 0U;
+          if (map_->worldToMap(point_odom.x(), point_odom.y(), rx, ry)) {
+            rog_value = static_cast<int>(map_->value(rx, ry));
+            rog_free = map_->isFree(rx, ry) ? 1 : 0;
+          }
+        }
+        RCLCPP_WARN(logger_,
+          "[MincoPlanner] Terrain rejection #%llu: stage=%s map=(%.3f,%.3f) cell=(%d,%d) "
+          "cost=%d prev_cell=(%d,%d) prev_cost=%d odom=(%.3f,%.3f) frame=%s yaw=%.3f "
+          "| rog_clear=%.3f rog_free=%d rog_value=%d rog_status=%s",
+          static_cast<unsigned long long>(seen + 1), stage,
+          point_map.x(), point_map.y(), mx, my, cost_of(mx, my),
+          pmx, pmy, cost_of(pmx, pmy),
+          point_odom.x(), point_odom.y(),
+          terrain->cost.header.frame_id.c_str(), yaw,
+          rog_clear, rog_free, rog_value, rog_status);
+      };
       const double duration = traj.getTotalDuration();
       const double dt = std::min(0.02,
         static_cast<double>(terrain->cost.info.resolution) /
         (2.0 * std::max(0.1, minco_config.max_vel)));
       const int intervals = std::max(1, static_cast<int>(std::ceil(duration / dt)));
       Eigen::Vector2d previous = to_map(traj.getPos(0.0));
-      if (!terrain->traversable(previous) || !dynamic->freeAt(previous)) {
+      const bool start_static_ok = terrain->traversable(previous);
+      if (!start_static_ok || !dynamic->freeAt(previous)) {
+        log_terrain_reject(start_static_ok ? "start_dynamic" : "start_static",
+          previous, traj.getPos(0.0), nullptr);
         last_validation_failure_reason_ = "TERRAIN_COLLISION";
         return false;
       }
       for (int i = 1; i <= intervals; ++i) {
-        const Eigen::Vector2d current = to_map(traj.getPos(duration * i / intervals));
+        const Eigen::Vector3d pos_odom = traj.getPos(duration * i / intervals);
+        const Eigen::Vector2d current = to_map(pos_odom);
         bool dynamic_clear = true;
         const int edge_steps = std::max(1, static_cast<int>(std::ceil(
           (current - previous).norm() / (0.5 * terrain->cost.info.resolution))));
@@ -1715,7 +1870,11 @@ bool MincoPlanner::validateTrajectory(
             break;
           }
         }
-        if (!terrain->transition(previous, current) || !dynamic_clear) {
+        // 求值顺序与原先一致（static 先判、dynamic 短路），只是把结果留了下来给插桩用。
+        const bool edge_static_ok = terrain->transition(previous, current);
+        if (!edge_static_ok || !dynamic_clear) {
+          log_terrain_reject(edge_static_ok ? "edge_dynamic" : "edge_static",
+            current, pos_odom, &previous);
           last_validation_failure_reason_ = "TERRAIN_COLLISION_OR_DIRECTION";
           return false;
         }
@@ -1786,19 +1945,21 @@ bool MincoPlanner::checkCollision(const traj_opt::Trajectory & traj)
   // 发布前校验：阈值必须与运行时监视一致（见 requiredClearance 注释），否则刚发布的轨迹
   // 会被监视器立刻否决。近场（车体半径以内）按“不比当前净空更差”判，让贴着墙停下的车
   // 仍然能规划出离开障碍的轨迹。
-  // 【2026-09-15 已回退的尝试】曾把此处改为 requiredClearance(v) - kMonitorClearanceTolerance
-  // 以消除"过某个特定点必卡"（当时日志出现 clearance 0.300/0.299/0.298 below required 0.300
-  // 的毫米级否决）。改动后该条日志确实消失，但随后出现"完全无法规划"，日志显示瓶颈在更上游
-  // （31 次 Global path search failed → MINCO 无种子 → 46 次 path generation failed），
-  // 与本处阈值无关，故按用户要求回退。监视器确实用减容差的阈值、此处不减，两者不一致这一
-  // 事实仍然成立（与其上方注释矛盾），后续若要再动，需先拿到"全局搜索与 odom 卡顿"修好后的
-  // 现场数据，避免再次误判因果。
+  // 【2026-09-16 重新启用】此处改为与运行时监视一致：requiredClearance(v) - kMonitorClearanceTolerance。
+  // 首末两句注释本就要求"阈值必须与运行时监视一致"，而下方实现过去用不减容差的严格值，属自相矛盾。
+  // 依据（本轮现场日志 mas2027_nav_executor_node_107812_1789547009542.log）：清空上游阻塞后，
+  //   收到 16 / 到达 10、MINCO path generation failed 已降到 9 次、verdict=GEOMETRY 仅 2 次，
+  //   剩余失败几乎全是毫米级：clearance 0.245~0.250 vs required 0.250（差 0~5 mm）。
+  //   同一模式在 0.40 / 0.30 / 0.25 三档阈值上重复出现——说明问题不在阈值取值，而在"严格大于、零容差"。
+  //   ESDF 每帧更新、读数本身有抖动，几毫米的短差不该否决整条轨迹（监视器早已如此处理）。
+  // 2026-09-15 曾改动此处后回退：当时随之出现的"完全无法规划"经日志核实瓶颈在更上游（全局搜索失败
+  //   → MINCO 无种子），与本处无因果；那个上游阻塞（isFree/allow_unknown/OUT_OF_MAP）现已修复。
   const double speed = getCurrentSpeed().head<2>().norm();
   const double v = std::isfinite(speed) ? std::max(0.0, speed) : 0.0;
   TrajectorySafetyChecker::CheckOptions options;
   options.t_start = 0.0;
   options.horizon = 0.0;
-  options.check_dist = requiredClearance(v);
+  options.check_dist = std::max(0.0, requiredClearance(v) - kMonitorClearanceTolerance);
   options.near_field = collision_dist_;
   return safety_checker_->checkTrajectory(traj, options);
 }

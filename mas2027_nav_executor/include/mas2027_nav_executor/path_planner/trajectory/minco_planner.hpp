@@ -6,6 +6,8 @@
 #include "visualization_msgs/msg/marker_array.hpp"
 
 #include <limits>
+#include <map>
+#include <string>
 
 namespace minco_planner {
 
@@ -219,6 +221,33 @@ private:
   bool has_last_yaw_traj_ = false;
   bool has_latest_odom_{false};
   std::atomic_bool is_traj_safe_{true};
+
+  // === 失败原因统计（排障用） ===
+  // 失败原因日志原来整条 2 s 节流：实车一次 10 分钟运行 350 次失败只留下 139 条原因，
+  // 其中"修复后 0.3 ms 立即失败"的 76 次现场里有 60 次连原因都没打出来，"死在哪一步"
+  // 无法从日志判断。现在按原因计数：每种原因前 failure_log_first_n_ 次逐条打出（带累计计数），
+  // 之后每 failure_log_every_n_ 次采样一条；每 failure_summary_every_ 次失败再打一条汇总。
+  uint64_t replan_failure_total_{0};
+  std::map<std::string, uint64_t> replan_failure_counts_;
+  int64_t failure_log_first_n_{10};
+  // 第 failure_log_first_n_ 次之后的采样间隔。**不要退回按时间节流**：2 s 节流在
+  // "失败比节流窗口更密"时会丢现场——2026-09-16 14:55 那次运行 158 次失败只留下 54 条原因，
+  // COLLISION 109 次被压成 31 条，正是这个原因。按计数采样则无论失败多密都保证留下样本。
+  int64_t failure_log_every_n_{25};
+  int64_t failure_summary_every_{50};
+
+  // === 地形门否决点插桩（只加日志，不改任何判据/阈值） ===
+  // 起因：2026-09-16 20:13 那次运行 50 次失败里 TERRAIN_COLLISION_OR_DIRECTION 占 26 次
+  // （最长一次连续卡顿 21 s），但这条原因**从不打印否决位置**，因此无法判断它是在真实的
+  // 先验图墙体上否决（说明现场挤压是真的）还是在别处（说明判据或坐标系有问题）。
+  // 净空门早就有 "Trajectory clearance ... at (x,y)"，地形门缺同等待遇。
+  // 前 kTerrainRejectLogFirstN 次逐条打印，之后每 kTerrainRejectLogEveryN 次采样一条。
+  uint64_t terrain_reject_log_count_{0};
+
+  // 第四层兜底（短距离脱困前缀）参数，见 minco_planner.cpp 的 configure 段。
+  bool escape_enable_{true};
+  double escape_min_length_{0.08};
+  double escape_buffer_{0.05};
 
   mutable std::mutex path_mutex_;
   std::mutex perf_mutex_;

@@ -420,12 +420,27 @@ void ROGMap::refreshLayers()
   if (z_min > z_max) {
     std::swap(z_min, z_max);
   }
-  z_min = std::max(z_min, localMapMinIndex().z());
-  z_max = std::min(z_max, localMapMaxIndex().z());
+  // 只扫局部地图真正拥有的 z 层。配置的窗口（scan_z_relative_to_robot + -1.2/+2.75）是相对
+  // 雷达的 3.95 m，而 map_size.z 只有 2.5 m（±1.25），因此窗口里约一半的层恒在局部地图之外，
+  // 每个柱子都要为这些层跑一遍 rawGridType（内含 insideLocalMap + 哈希），结果必然是
+  // OUT_OF_MAP 被丢掉——纯浪费。按局部边界裁剪后逐格统计结果完全不变（越界格子本来就不计数），
+  // 而每列的工作量按实际层数下降。投影是当前单次更新里最大的固定开销，这一刀对所有分支
+  // （全量/脏列）都生效。
+  const int local_z_min = localMapMinIndex().z();
+  const int local_z_max = localMapMaxIndex().z();
+  z_min = std::max(z_min, local_z_min);
+  z_max = std::min(z_max, local_z_max);
+  // 裁剪后可能整段落在局部地图外（例如雷达 z 远离地图中心）。此时没有任何可观测的体素，
+  // 所有柱子都只会得到 INSUFFICIENT_OBSERVATION，直接不去扫这些层（由 updateOneCell 用
+  // 空的 ColumnStats 正常分类），省掉每帧 200×200 次空转。
+  const bool z_range_valid = z_min <= z_max;
 
   const std::vector<uint8_t> old_fused_mask = fused_projection_mask_;
+  const auto config_sync_start = std::chrono::steady_clock::now();
   const ProjectionSlideResult slide_result = layer_->syncSlidingWindow(
     width, height, res, Eigen::Vector2i(min_id.x(), min_id.y()), origin, layer_cfg);
+  runtime_stats_.layer_config_sync_time = elapsedMs(config_sync_start);
+  const auto dirty_merge_start = std::chrono::steady_clock::now();
   const bool geometry_changed = slide_result.full_refresh_required;
   const size_t cell_count =
     static_cast<size_t>(std::max(0, width)) * static_cast<size_t>(std::max(0, height));
@@ -437,15 +452,36 @@ void ROGMap::refreshLayers()
   projection_dirty_columns.erase(
     std::unique(projection_dirty_columns.begin(), projection_dirty_columns.end()),
     projection_dirty_columns.end());
+  runtime_stats_.layer_dirty_merge_time = elapsedMs(dirty_merge_start);
   const double dirty_ratio = std::clamp(cfg_.dirty_full_ratio, 0.0, 1.0);
   const bool dirty_over_ratio =
     cell_count > 0 &&
     projection_dirty_columns.size() > static_cast<size_t>(dirty_ratio * static_cast<double>(cell_count));
+  // 周期性全量安全网：与"脏列有多少"无关，每 dirty_full_period_s 强制走一次全量。
+  // 有了它，dirty_full_ratio 才能被放到"只在极端情况才回退"的位置——否则在稠密点云下
+  // 脏列恒超阈值（实测 19700/40401），增量路径永远不生效，投影每帧都要重算整张 200×200。
+  const bool periodic_full_due =
+    cfg_.dirty_full_period_s > 0.0 &&
+    (!std::isfinite(last_full_refresh_time_) ||
+     (current_update_time_ - last_full_refresh_time_) >= cfg_.dirty_full_period_s);
   const bool explicit_full_refresh = fullLayerRefreshRequired() && !slide_result.window_moved;
-  const bool force_full_refresh =
-    geometry_changed || explicit_full_refresh || !cfg_.dirty_column_en || dirty_over_ratio;
+  const bool force_full_refresh = geometry_changed || explicit_full_refresh ||
+                                  !cfg_.dirty_column_en || dirty_over_ratio || periodic_full_due;
   const bool has_dirty_update =
     cfg_.dirty_column_en && !projection_dirty_columns.empty() && !force_full_refresh;
+  if (force_full_refresh) {
+    last_full_refresh_time_ = current_update_time_;
+  }
+  // 全量回退的归因：这五个互斥标记让 CSV 能区分「滑窗自己要求全量」「上一帧遗留的标记」
+  // 「脏列关闭」「脏列超比例」「周期性兜底」，不必再去猜 last_projection_time_ms 为什么忽然变高。
+  runtime_stats_.full_reason_geometry = geometry_changed ? 1.0 : 0.0;
+  runtime_stats_.full_reason_explicit = (!geometry_changed && explicit_full_refresh) ? 1.0 : 0.0;
+  runtime_stats_.full_reason_dirty_disabled = cfg_.dirty_column_en ? 0.0 : 1.0;
+  runtime_stats_.full_reason_dirty_over_ratio = (cfg_.dirty_column_en && !geometry_changed &&
+    !explicit_full_refresh && dirty_over_ratio) ? 1.0 : 0.0;
+  runtime_stats_.full_reason_periodic = (cfg_.dirty_column_en && !geometry_changed &&
+    !explicit_full_refresh && !dirty_over_ratio && periodic_full_due) ? 1.0 : 0.0;
+  runtime_stats_.full_layer_flag_at_consume = explicit_full_refresh ? 1.0 : 0.0;
   runtime_stats_.projection_config_time = elapsedMs(config_start);
   runtime_stats_.projection_cell_count = static_cast<double>(cell_count);
   runtime_stats_.projection_z_min_id = static_cast<double>(z_min);
@@ -475,8 +511,11 @@ void ROGMap::refreshLayers()
     return GridType::UNKNOWN;
   };
 
-  auto scanner = [this, min_id, z_min, z_max, rawGridType](int mx, int my) {
+  auto scanner = [this, min_id, z_min, z_max, z_range_valid, rawGridType](int mx, int my) {
     ColumnStats stats;
+    if (!z_range_valid) {
+      return stats;
+    }
     const int gx = min_id.x() + mx;
     const int gy = min_id.y() + my;
     for (int gz = z_min; gz <= z_max; ++gz) {
@@ -592,7 +631,9 @@ void ROGMap::refreshLayers()
   if (cfg_.prior_map_enable && prior_map_.loaded && getPriorMapTransform(prior_transform)) {
     prior_transform_ptr = &prior_transform;
   }
+  const auto fused_start = std::chrono::steady_clock::now();
   rebuildFusedProjection(prior_transform_ptr);
+  runtime_stats_.fused_projection_time = elapsedMs(fused_start);
 
   const auto & new_mask = fused_projection_mask_;
   bool mask_changed = slide_result.window_moved || old_fused_mask.size() != new_mask.size();

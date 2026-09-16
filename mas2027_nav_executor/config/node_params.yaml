@@ -8,7 +8,7 @@
       # MPC 下一段指令（未来 0.35 s）在 ROGMap ESDF 上要求的最小净空，应与
       # planner.minco_optimizer.collision_dist 保持一致。机器人当前所在位置附近
       # （弧长等于该值以内）只要求不比当前实测净空更差，避免贴墙停车后 cmd_vel 恒为 0。
-      rog_map_clearance: 0.30
+      rog_map_clearance: 0.28
       output_in_body_frame: true
       frames:
         odom: odom

@@ -273,6 +273,14 @@ class ROGMapROS : public ROGMap
   std::shared_ptr<const VizFrame> viz_heavy_;
   /// 上次构建 heavy 帧的 ROS 时间戳（秒），用于 0.5 s 限频。
   double last_heavy_viz_s_{0.0};
+  /// 可视化发布周期（秒，来自 visualization.rate）与上次构建快照的时间戳（秒）。
+  /// 更新频率通常远高于发布频率，用它对快照构建限频，避免为一次发布重复构建多帧。
+  double viz_publish_period_s_{0.0};
+  double last_viz_build_s_{0.0};
+  /// 本次 captureVizFrame 的耗时（ms），写进性能统计的 last_viz_time_ms。
+  /// 这段开销发生在 updateMapInternal() 之后，不在 total_update_time 里——它正是
+  /// update_unaccounted_ms（真实周期 − 自报耗时）的主要来源之一。
+  double last_viz_time_ms_{0.0};
 
   /// 里程计回调：只更新机器人状态（位置/姿态/接收时刻），不做任何地图计算。
   /// 持 rc_.updete_lock 是因为 cloudCallback 会同时读 robot_state_ 来配对位姿。
@@ -420,8 +428,34 @@ class ROGMapROS : public ROGMap
       }
       // 可视化快照在更新之后、仍在同一线程内构建，保证与刚写入的地图状态一致。
       // hasVisualizationSubscriber() 为假时整段跳过，无 RViz 时零开销。
+      //
+      // 还要按**发布频率**限频：vizCallback 是 visualization.rate（现场 5 Hz）的定时器，
+      // 而更新跑在点云频率（20 Hz）上——此前每轮都重建整套快照，其中约 3/4 的结果在下次发布
+      // 之前就被新帧覆盖，纯属白烧更新线程的时间（RViz 订阅了 /rog_map/layer_* 时每轮要遍历
+      // 整张 200×200 投影层，多项叠加就是十万级格）。这里只在「距上次构建已达一个发布周期」
+      // 时才建：RViz 侧看到的刷新率不变（仍是 5 Hz 定时器在发），更新线程省掉这部分开销。
       if (cfg_.visualization_en && hasVisualizationSubscriber()) {
-        captureVizFrame();
+        if (viz_publish_period_s_ <= 0.0) {
+          // 周期只算一次；cfg_.visualization_rate 在 config 校验里已保证 > 0。
+          viz_publish_period_s_ =
+            cfg_.visualization_rate > 0.0 ? 1.0 / cfg_.visualization_rate : 0.2;
+        }
+        const double viz_now_s = now().seconds();
+        if (last_viz_build_s_ <= 0.0 || (viz_now_s - last_viz_build_s_) >= viz_publish_period_s_) {
+          last_viz_build_s_ = viz_now_s;
+          if (performance_monitor_) {
+            performance_monitor_->recordVizFrameBuilt();
+          }
+          captureVizFrame();
+          // 把这段耗时并入下一次统计：它不在 total_update_time 内，正是
+          // update_unaccounted_ms 的主要成分，单独成列后才能判断限频省了多少。
+          if (performance_monitor_) {
+            performance_monitor_->recordVizFrameTime(last_viz_time_ms_);
+          }
+        } else if (performance_monitor_) {
+          // 被限频跳过的轮数：配合 last_viz_time_ms / update_unaccounted_ms 判断这块还值不值得压。
+          performance_monitor_->recordVizFrameSkipped();
+        }
       }
     }
   }
@@ -458,16 +492,19 @@ class ROGMapROS : public ROGMap
   /// 未知区域就会和 FREE 同色。
   static constexpr uint8_t kUnknownTypeValue = 255U;
 
-  /// 在更新线程内构建一帧可视化快照。三个要点：
+  /// 在更新线程内构建一帧可视化快照。四个要点：
   ///   1) 只有存在可视化订阅者时才会被调用，无 RViz 时完全零开销；
-  ///   2) 每一项都单独判断「该话题是否有订阅者」，没订阅就不算、不拷贝；
-  ///   3) 低成本项每轮构建，高成本项（unknown/frontier/膨胀/ESDF）限频 0.5 s 放进 heavy 帧。
+  ///   2) 调用侧已按发布频率限频，因此这里每一帧都会被 vizCallback 真正发出去；
+  ///   3) 每一项都单独判断「该话题是否有订阅者」，没订阅就不算、不拷贝；
+  ///   4) 低成本项每次构建，高成本项（unknown/frontier/膨胀/ESDF）限频 0.5 s 放进 heavy 帧。
   void captureVizFrame()
   {
     // 一帧点云都没收到时不发布，避免 RViz 里出现一堆空帧。
     if (map_empty_) {
+      last_viz_time_ms_ = 0.0;
       return;
     }
+    const auto viz_start = std::chrono::steady_clock::now();
     auto frame = std::make_shared<VizFrame>();
     // 显示范围以机器人为中心，再裁剪到局部地图边界内。
     Vec3f box_max = robot_state_.p + cfg_.visualization_range / 2;
@@ -685,6 +722,9 @@ class ROGMapROS : public ROGMap
         viz_heavy_ = std::move(heavy);
       }
     }
+    // 记下耗时，供 updateWorkerLoop 写进性能统计（这段不在 total_update_time 内）。
+    last_viz_time_ms_ = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - viz_start).count();
   }
 
   /// 可视化发布定时器回调（周期由 visualization.rate 决定，默认 5 Hz）。

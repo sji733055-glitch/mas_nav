@@ -126,16 +126,22 @@ bool TrajectorySafetyChecker::checkTrajectory(
   bool start_clearance_ok = false;
   if (options.near_field > 1e-6) {
     const auto start_query = dynamic_query_->query(start_pos);
-    if (!start_query.ok) {
+    if (start_query.ok) {
+      start_clearance = start_query.distance;
+      start_clearance_ok = true;
+    } else {
+      // 起点查不到净空（现场典型是 OUT_OF_MAP：车在滑窗边缘或栅格之外）**不等于轨迹不安全**。
+      // 原实现在这里直接 return false，会把整条轨迹误杀——现场表现为连续
+      //   "Near-field clearance query failed: OUT_OF_MAP" + "Trajectory collision detected"（各 30 次）。
+      // 按 clearance_gate.hpp 的既定语义降级：拿不到当前净空就不启用近场放宽，
+      // 全程按完整 required 判（makeClearanceRequirement 在 current_clearance_ok=false 时正是如此）。
+      // 这只是取消"近场豁免"这一放宽项，逐个采样点的完整净空判据仍然生效，不放松安全底线。
       RCLCPP_WARN_THROTTLE(logger_,
         *rclcpp::Clock::make_shared(),
         1000,
-        "[MincoPlanner] Near-field clearance query failed: %s",
+        "[MincoPlanner] Near-field clearance query failed: %s; near-field relaxation disabled for this check",
         rog_map::queryStatusName(start_query.status));
-      return false;
     }
-    start_clearance = start_query.distance;
-    start_clearance_ok = true;
   }
   const mas2027_nav_executor::ClearanceRequirement gate =
     mas2027_nav_executor::makeClearanceRequirement(options.check_dist,
@@ -144,12 +150,18 @@ bool TrajectorySafetyChecker::checkTrajectory(
       start_clearance_ok,
       options.near_field_slack);
   if (gate.nearFieldEnabled() && gate.near_required < gate.required) {
-    // 明确记录「起点净空不足但按近场放宽」：真车贴着墙停车时靠这条规则才能起步，
+    // 明确记录「近场要求被下调」：真车贴着墙停车时靠这条规则才能起步，
     // 排查「车不动」时先看这里有没有刷，再看是不是连近场外的要求也满足不了。
+    // 措辞注意：本分支的条件是「近场要求被下调」，它会在起点净空**高于** required 时成立
+    // （净空落在 [required, required + slack) 区间内就会成立）。旧措辞写作
+    // "start clearance X below required Y" 会把 X = 0.318、Y = 0.300 这种 X > Y 的数字
+    // 摆在一起，读起来自相矛盾，已两次导致现场把「近场规则正常工作」误判成日志 bug 或
+    // 阈值不一致。这里改成直接打印三个量：实测净空、下调后的近场要求、完整要求。
     RCLCPP_INFO_THROTTLE(logger_, *rclcpp::Clock::make_shared(), 2000,
-      "[MincoPlanner] Near-field exemption: start clearance %.3f m below required %.3f m; "
+      "[MincoPlanner] Near-field exemption active: start clearance %.3f m, "
+      "near requirement lowered to %.3f m (full requirement %.3f m); "
       "inside %.2f m of the start only 'not worse than now' is enforced",
-      start_clearance, gate.required, gate.near_field);
+      start_clearance, gate.near_required, gate.required, gate.near_field);
   }
 
   if (t1 <= t0 + 1e-9) {

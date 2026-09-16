@@ -134,26 +134,55 @@ namespace mid360_driver {
         }
     }
 
-    bool is_timestamp_plausible(
-        std::unordered_map<asio::ip::address, double, IpAddressHasher> &last_timestamp_map,
+    bool Mid360Driver::resolve_packet_timestamp(
         const asio::ip::address &address,
-        const double timestamp,
-        const double max_time_jump
+        const bool no_sync_timestamp,
+        const double raw_timestamp,
+        std::unordered_map<asio::ip::address, TimestampAnchor, IpAddressHasher> &anchors,
+        double &timestamp_out
     ) {
-        if (!std::isfinite(timestamp) || timestamp <= 0.0) {
+        if (!std::isfinite(raw_timestamp) || raw_timestamp <= 0.0) {
             return false;
         }
+        const auto wall_now = static_cast<double>(std::chrono::high_resolution_clock::now().time_since_epoch().count()) * 1e-9;
+        const auto anchor_iter = anchors.find(address);
+        const bool has_anchor = anchor_iter != anchors.end();
 
-        auto [iter, inserted] = last_timestamp_map.try_emplace(address, timestamp);
-        if (inserted) {
-            return true;
+        // 静默超过 packet_resync_silence：重新锚定。水位线只在接受时前进，所以不重锚的话
+        // 一次超过 max_packet_time_jump 的断线会让这台雷达永远恢复不了（雷达重启后内部
+        // 时钟还可能归零，NO_SYNC 的 delta 也必须跟着重算）。
+        const bool resync = has_anchor
+                && robustness_config.packet_resync_silence > 0.0
+                && wall_now - anchor_iter->second.wall_time > robustness_config.packet_resync_silence;
+        if (resync) {
+            delta_time_map.erase(address);
+            RCLCPP_INFO(
+                rclcpp::get_logger("mid360_driver"),
+                "re-anchoring timestamps of %s after %.1f s of silence",
+                address.to_string().c_str(),
+                wall_now - anchor_iter->second.wall_time
+            );
         }
 
-        const double diff = timestamp - iter->second;
-        if (diff < -1e-3 || diff > max_time_jump) {
-            return false;
+        double timestamp = raw_timestamp;
+        if (no_sync_timestamp) {
+            auto [iter, inserted] = delta_time_map.try_emplace(address);
+            if (inserted) {
+                iter->second = wall_now - raw_timestamp;
+                timestamp = wall_now;
+            } else {
+                timestamp = raw_timestamp + iter->second;
+            }
         }
-        iter->second = timestamp;
+
+        if (has_anchor && !resync) {
+            const double diff = timestamp - anchor_iter->second.timestamp;
+            if (diff < -1e-3 || diff > robustness_config.max_packet_time_jump) {
+                return false;
+            }
+        }
+        anchors[address] = TimestampAnchor{timestamp, wall_now};
+        timestamp_out = timestamp;
         return true;
     }
 
@@ -264,18 +293,14 @@ namespace mid360_driver {
                 }
             }
 
-            double header_timestamp = static_cast<double>(header.timestamp) * 1e-9;
-            if (header.time_type == TIMESTAMP_TYPE_NO_SYNC) {
-                auto [iter, inserted] = delta_time_map.try_emplace(sender_endpoint.address());
-                if (inserted) {
-                    auto now = static_cast<double>(std::chrono::high_resolution_clock::now().time_since_epoch().count()) * 1e-9;
-                    iter->second = now - header_timestamp;
-                    header_timestamp = now;
-                } else {
-                    header_timestamp += iter->second;
-                }
-            }
-            if (!is_timestamp_plausible(last_lidar_timestamp_map, sender_endpoint.address(), header_timestamp, robustness_config.max_packet_time_jump)) [[unlikely]] {
+            const double raw_timestamp = static_cast<double>(header.timestamp) * 1e-9;
+            double header_timestamp = 0.0;
+            if (!resolve_packet_timestamp(
+                    sender_endpoint.address(),
+                    header.time_type == TIMESTAMP_TYPE_NO_SYNC,
+                    raw_timestamp,
+                    last_lidar_timestamp_map,
+                    header_timestamp)) [[unlikely]] {
                 log_packet_drop("lidar: implausible timestamp", robustness_config.min_drop_log_interval);
                 continue;
             }
@@ -375,18 +400,14 @@ namespace mid360_driver {
                     continue;
                 }
             }
-            double header_timestamp = static_cast<double>(header.timestamp) * 1e-9;
-            if (header.time_type == TIMESTAMP_TYPE_NO_SYNC) {
-                auto [iter, inserted] = delta_time_map.try_emplace(sender_endpoint.address());
-                if (inserted) {
-                    auto now = static_cast<double>(std::chrono::high_resolution_clock::now().time_since_epoch().count()) * 1e-9;
-                    iter->second = now - header_timestamp;
-                    header_timestamp = now;
-                } else {
-                    header_timestamp += iter->second;
-                }
-            }
-            if (!is_timestamp_plausible(last_imu_timestamp_map, sender_endpoint.address(), header_timestamp, robustness_config.max_packet_time_jump)) [[unlikely]] {
+            const double raw_timestamp = static_cast<double>(header.timestamp) * 1e-9;
+            double header_timestamp = 0.0;
+            if (!resolve_packet_timestamp(
+                    sender_endpoint.address(),
+                    header.time_type == TIMESTAMP_TYPE_NO_SYNC,
+                    raw_timestamp,
+                    last_imu_timestamp_map,
+                    header_timestamp)) [[unlikely]] {
                 log_packet_drop("imu: implausible timestamp", robustness_config.min_drop_log_interval);
                 continue;
             }

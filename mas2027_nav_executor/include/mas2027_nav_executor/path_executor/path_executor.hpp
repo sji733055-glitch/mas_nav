@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "mas2027_nav_executor/path_executor/monitoring/command_safety.hpp"
 #include "mas2027_nav_executor/path_executor/mpc/mpc_solver.hpp"
 #include "mas2027_nav_executor/path_executor/state/execution_state.hpp"
 #include "tf2_ros/buffer.h"
@@ -38,6 +39,10 @@ public:
 
   ExecutorOutput computeCommand(const ExecutorInput & input);
 
+  /// 最近一次 computeCommand 里命令门的判据归因（哪一条把指令否决掉的）。
+  /// 只读快照，供 nav_executor_node 打日志用；reason=="none" 表示上一次未被否决。
+  const CommandSafetyDetail & lastSafetyDetail() const { return last_safety_detail_; }
+
 private:
   bool transformedCommands(
     const interfaces::msg::MpcPositionCommand & trajectory,
@@ -54,6 +59,7 @@ private:
   std::shared_ptr<TerrainGrid> terrain_;
   std::shared_ptr<rog_map::MapQueryInterface> rog_query_;
   std::unique_ptr<minco_controller::MpcSolver> solver_;
+  CommandSafetyDetail last_safety_detail_{};
 };
 
 }  // namespace mas2027_nav_executor

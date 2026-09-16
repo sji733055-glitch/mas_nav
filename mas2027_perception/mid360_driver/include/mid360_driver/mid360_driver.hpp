@@ -24,6 +24,9 @@ namespace mid360_driver {
         double max_imu_acc;
         double max_imu_gyro;
         double min_drop_log_interval;
+        // 某台雷达静默超过这么多秒后，允许重新锚定它的时间戳（雷达重启/断网恢复）。
+        // <=0 关闭重锚定。
+        double packet_resync_silence;
     };
 
     struct Point {
@@ -46,6 +49,13 @@ namespace mid360_driver {
         std::size_t operator()(const asio::ip::address &addr) const noexcept;
     };
 
+    // 单路数据流（点云或 IMU，两者时间戳独立校验）里每台雷达的时间戳锚点：
+    // timestamp = 上一次接受的包时间戳（水位线），wall_time = 接受它时的主机墙钟。
+    struct TimestampAnchor {
+        double timestamp = 0.0;
+        double wall_time = 0.0;
+    };
+
     class Mid360Driver {
     private:
         std::atomic<bool> is_running = true;
@@ -54,10 +64,19 @@ namespace mid360_driver {
         asio::ip::udp::socket receive_imu_socket;
         DriverRobustnessConfig robustness_config;
         std::unordered_map<asio::ip::address, double, IpAddressHasher> delta_time_map;
-        std::unordered_map<asio::ip::address, double, IpAddressHasher> last_lidar_timestamp_map;
-        std::unordered_map<asio::ip::address, double, IpAddressHasher> last_imu_timestamp_map;
+        std::unordered_map<asio::ip::address, TimestampAnchor, IpAddressHasher> last_lidar_timestamp_map;
+        std::unordered_map<asio::ip::address, TimestampAnchor, IpAddressHasher> last_imu_timestamp_map;
         std::function<void(const asio::ip::address &lidar_ip, const std::vector<Point> &points)> on_receive_pointcloud;
         std::function<void(const asio::ip::address &lidar_ip, const ImuMsg &imu_msg)> on_receive_imu;
+
+        // 解析一个包的时间戳：NO_SYNC 时把雷达内部时钟换算到主机墙钟，再做跳变校验。
+        // 该雷达静默超过 packet_resync_silence 后允许重新锚定，否则水位线只在接受时前进，
+        // 一次超过 max_packet_time_jump 的断线会让这台雷达被永久判为 "implausible"。
+        bool resolve_packet_timestamp(const asio::ip::address &address,
+                                      bool no_sync_timestamp,
+                                      double raw_timestamp,
+                                      std::unordered_map<asio::ip::address, TimestampAnchor, IpAddressHasher> &anchors,
+                                      double &timestamp_out);
 
     public:
         Mid360Driver(asio::io_context &io_context,

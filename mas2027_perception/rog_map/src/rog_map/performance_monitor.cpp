@@ -83,6 +83,7 @@ void PerformanceMonitor::configure(const PerformanceConfig & config)
   resetWindow(0.0);
   detailed_csv_rows_ = 0;
   summary_csv_rows_ = 0;
+  last_observe_ns_ = 0;
 
   if (!config_.enable) {
     return;
@@ -182,6 +183,26 @@ void PerformanceMonitor::recordValidCloud(double odom_age_ms)
   last_valid_update_stamp_ = stamp;
 }
 
+void PerformanceMonitor::recordVizFrameBuilt()
+{
+  if (!enabled()) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  viz_built_total_ += 1.0;
+  viz_built_since_take_ += 1.0;
+}
+
+void PerformanceMonitor::recordVizFrameSkipped()
+{
+  if (!enabled()) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  viz_skipped_total_ += 1.0;
+  viz_skipped_since_take_ += 1.0;
+}
+
 void PerformanceMonitor::recordOdom(double stamp)
 {
   if (!enabled()) {
@@ -217,14 +238,32 @@ void PerformanceMonitor::fillInputStats(RuntimeStats & stats)
   stats.odom_received_count = odom_received_count_;
   stats.odom_hz = hzFrom(odom_received_count_, first_odom_stamp_, last_odom_stamp_);
   stats.odom_age_ms = last_odom_age_ms_;
+  stats.last_viz_time_ms = last_viz_time_ms_;
+  // 取走「自上次取走后新增」的次数：fillInputStats 在每次更新开头都会被调用，
+  // 用增量才能让 detailed CSV 每行显示的就是那一次更新对应的构建/跳过情况。
+  stats.viz_built_count = viz_built_since_take_;
+  stats.viz_skipped_count = viz_skipped_since_take_;
+  viz_built_since_take_ = 0.0;
+  viz_skipped_since_take_ = 0.0;
 }
 
-void PerformanceMonitor::observeUpdate(const RuntimeStats & stats)
+void PerformanceMonitor::observeUpdate(const RuntimeStats & raw_stats)
 {
   if (!enabled()) {
     return;
   }
   std::lock_guard<std::mutex> lock(mutex_);
+  RuntimeStats stats = raw_stats;
+  // 真实更新周期：从上次更新结束到这次更新结束的墙钟差。total_update_time 只覆盖
+  // updateMapInternal 内部，更新之后的可视化快照构建（captureVizFrame）不在其中，
+  // 因此这一列才是「地图实际多久刷新一次」；两者之差即那段不可见开销。
+  const long long now_ns = steadyNowNs();
+  if (last_observe_ns_ > 0) {
+    const double period_ms = static_cast<double>(now_ns - last_observe_ns_) / 1.0e6;
+    stats.update_period_ms = period_ms;
+    stats.update_unaccounted_ms = period_ms - stats.total_update_time;
+  }
+  last_observe_ns_ = now_ns;
   stats_ = stats;
   if (first_valid_update_stamp_ <= 0.0) {
     first_valid_update_stamp_ = stats.stamp;
@@ -292,7 +331,41 @@ void PerformanceMonitor::writeDetailedHeader()
       "reason_thin_surface",
       "reason_solid_vertical_wall",
       "reason_hollow_tunnel",
-      "reason_ambiguous_occupied"});
+      "reason_ambiguous_occupied",
+      "raycast_parallel_time_ms",
+      "raycast_merge_time_ms",
+      "cache_count",
+      "hit_count",
+      "miss_count",
+      "active_cell_count",
+      "dirty_column_count",
+      "dirty_expanded_column_count",
+      "dirty_column_enabled",
+      "full_reason_geometry",
+      "full_reason_explicit",
+      "full_reason_dirty_disabled",
+      "full_reason_dirty_over_ratio",
+      "full_reason_periodic",
+      "full_layer_flag_at_consume",
+      "mark_dirty_ok_count",
+      "mark_dirty_out_of_map_count",
+      "mark_dirty_invalid_count",
+      "layer_config_sync_time_ms",
+      "layer_dirty_merge_time_ms",
+      "projection_update_full_time_ms",
+      "projection_update_dirty_time_ms",
+      "projection_mask_filter_time_ms",
+      "projection_value_mask_time_ms",
+      "projection_count_cells_time_ms",
+      "fused_projection_time_ms",
+      "projection_scanned_voxel_estimate",
+      "projection_z_layers",
+      "update_robot_state_time_ms",
+      "update_period_ms",
+      "update_unaccounted_ms",
+      "last_viz_time_ms",
+      "viz_built_count",
+      "viz_skipped_count"});
 }
 
 void PerformanceMonitor::writeSummaryHeader()
@@ -310,6 +383,20 @@ void PerformanceMonitor::writeSummaryHeader()
       "last_raycast_time_ms",
       "last_projection_time_ms",
       "last_field_time_ms",
+      "last_prob_update_time_ms",
+      "last_decay_time_ms",
+      "last_query_refresh_time_ms",
+      "last_update_period_ms",
+      "last_update_unaccounted_ms",
+      "last_viz_time_ms",
+      "last_viz_built",
+      "last_viz_skipped",
+      "last_full_reason_dirty_over_ratio",
+      "last_full_reason_periodic",
+      "last_full_reason_explicit",
+      "last_full_reason_geometry",
+      "last_dirty_column_count",
+      "last_projection_z_layers",
       "last_free_count",
       "last_passable_count",
       "last_occupied_count",
@@ -344,7 +431,41 @@ void PerformanceMonitor::writeDetailedRow(const RuntimeStats & s)
       num(s.projection_thin_surface_count),
       num(s.projection_vertical_wall_count),
       num(s.projection_hollow_tunnel_count),
-      num(s.projection_ambiguous_occupied_count)});
+      num(s.projection_ambiguous_occupied_count),
+      num(s.raycast_parallel_time),
+      num(s.raycast_merge_time),
+      num(s.cache_count),
+      num(s.hit_count),
+      num(s.miss_count),
+      num(s.active_cell_count),
+      num(s.dirty_column_count),
+      num(s.dirty_expanded_column_count),
+      num(s.projection_dirty_column_enabled),
+      num(s.full_reason_geometry),
+      num(s.full_reason_explicit),
+      num(s.full_reason_dirty_disabled),
+      num(s.full_reason_dirty_over_ratio),
+      num(s.full_reason_periodic),
+      num(s.full_layer_flag_at_consume),
+      num(s.mark_dirty_ok_count),
+      num(s.mark_dirty_out_of_map_count),
+      num(s.mark_dirty_invalid_count),
+      num(s.layer_config_sync_time),
+      num(s.layer_dirty_merge_time),
+      num(s.projection_update_full_time),
+      num(s.projection_update_dirty_time),
+      num(s.projection_mask_filter_time),
+      num(s.projection_value_mask_time),
+      num(s.projection_count_cells_time),
+      num(s.fused_projection_time),
+      num(s.projection_scanned_voxel_estimate),
+      num(s.projection_z_layers),
+      num(s.update_robot_state_time),
+      num(s.update_period_ms),
+      num(s.update_unaccounted_ms),
+      num(s.last_viz_time_ms),
+      num(s.viz_built_count),
+      num(s.viz_skipped_count)});
   flushIfNeeded(detailed_csv_, detailed_csv_rows_);
 }
 
@@ -377,6 +498,23 @@ void PerformanceMonitor::maybeWriteSummary(double stamp)
         num(stats_.raycast_time),
         num(stats_.projection_total_time),
         num(stats_.field_time),
+        // 此前 summary 只报了三段耗时，剩下的 prob_update/decay/query 与「周期 − 自报」
+        // 都看不到，排障时必须靠 detailed CSV。这里补上，让每次实车运行（哪怕没开 detailed）
+        // 都留下可判读的分阶段数据。
+        num(stats_.prob_update_time),
+        num(stats_.decay_time),
+        num(stats_.query_refresh_time),
+        num(stats_.update_period_ms),
+        num(stats_.update_unaccounted_ms),
+        num(stats_.last_viz_time_ms),
+        num(stats_.viz_built_count),
+        num(stats_.viz_skipped_count),
+        num(stats_.full_reason_dirty_over_ratio),
+        num(stats_.full_reason_periodic),
+        num(stats_.full_reason_explicit),
+        num(stats_.full_reason_geometry),
+        num(stats_.dirty_column_count),
+        num(stats_.projection_z_layers),
         num(stats_.free_count),
         num(stats_.passable_count),
         num(stats_.occupied_count),

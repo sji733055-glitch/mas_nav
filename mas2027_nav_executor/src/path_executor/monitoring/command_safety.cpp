@@ -19,13 +19,26 @@ ExecutorStatus checkCommandSafety(
   const minco_controller::State & current,
   const minco_controller::Control & control,
   const std::vector<minco_controller::ReferencePoint> & reference,
-  const rclcpp::Time & stamp)
+  const rclcpp::Time & stamp,
+  CommandSafetyDetail * detail)
 {
+  auto reject = [detail](ExecutorStatus status, const char * reason, double value = 0.0,
+                   double threshold = 0.0) {
+    if (detail) {
+      detail->reason = reason;
+      detail->value = value;
+      detail->threshold = threshold;
+    }
+    return status;
+  };
   const auto terrain = grid ? grid->snapshot() : nullptr;
   const auto dynamic = grid ? grid->dynamicSnapshot() : nullptr;
-  if (!terrain || !dynamic || !tf || !rog_query ||
-    std::abs((stamp - rclcpp::Time(dynamic->grid.header.stamp)).seconds()) > 0.5) {
-    return ExecutorStatus::TERRAIN_BLOCKED;
+  if (!terrain || !dynamic || !tf || !rog_query) {
+    return reject(ExecutorStatus::TERRAIN_BLOCKED, "grid_or_frame_missing");
+  }
+  const double dynamic_age_s = std::abs((stamp - rclcpp::Time(dynamic->grid.header.stamp)).seconds());
+  if (dynamic_age_s > 0.5) {
+    return reject(ExecutorStatus::TERRAIN_BLOCKED, "dynamic_stale", dynamic_age_s, 0.5);
   }
   try {
     const auto transform = tf->lookupTransform(
@@ -40,7 +53,7 @@ ExecutorStatus checkCommandSafety(
       ms * control.vx + mc * control.vy);
     const double horizon = std::max(dt, 0.35);
     if (!terrain->transition(position, position + horizon * velocity)) {
-      return ExecutorStatus::TERRAIN_BLOCKED;
+      return reject(ExecutorStatus::TERRAIN_BLOCKED, "terrain_transition");
     }
     // 净空判据与规划侧的发布/监视门一致：机器人当前所在位置（近场，车体安全半径以内）
     // 只要求不比现在的实测净空更差，离开近场后必须满足 rog_map_clearance。
@@ -54,13 +67,16 @@ ExecutorStatus checkCommandSafety(
     for (int i = 0; i <= command_steps; ++i) {
       const double t = horizon * i / command_steps;
       if (!dynamic->freeAt(position + t * velocity)) {
-        return ExecutorStatus::DYNAMIC_BLOCKED;
+        return reject(ExecutorStatus::DYNAMIC_BLOCKED, "dynamic_horizon", t, horizon);
       }
       const Eigen::Vector3d odom_point(current.x + t * control.vx,
         current.y + t * control.vy, 0.0);
       const auto clearance = rog_query->query(odom_point);
       if (!clearance.ok || clearance.distance <= clearance_gate.requiredAt(t * travel_speed)) {
-        return ExecutorStatus::DYNAMIC_BLOCKED;
+        return reject(ExecutorStatus::DYNAMIC_BLOCKED,
+          clearance.ok ? "clearance" : "clearance_out_of_map",
+          clearance.distance,
+          clearance_gate.requiredAt(t * travel_speed));
       }
     }
     for (const auto & point : reference) {
@@ -69,13 +85,13 @@ ExecutorStatus checkCommandSafety(
         mc * p.x() - ms * p.y() + transform.transform.translation.x,
         ms * p.x() + mc * p.y() + transform.transform.translation.y);
       if (!dynamic->freeAt(map_point)) {
-        return ExecutorStatus::DYNAMIC_BLOCKED;
+        return reject(ExecutorStatus::DYNAMIC_BLOCKED, "dynamic_reference");
       }
     }
   } catch (const tf2::TransformException &) {
-    return ExecutorStatus::TERRAIN_BLOCKED;
+    return reject(ExecutorStatus::TERRAIN_BLOCKED, "tf_unavailable");
   }
-  return ExecutorStatus::PUBLISHED;
+  return reject(ExecutorStatus::PUBLISHED, "none");
 }
 
 }  // namespace mas2027_nav_executor

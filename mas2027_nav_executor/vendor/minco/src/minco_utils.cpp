@@ -438,7 +438,39 @@ std::vector<Eigen::Vector3d> getSparseWaypoints(const std::vector<Eigen::Vector3
   }
 
   // 4) Safety Verification & Repair
+  //
+  // 【2026-09-16 修复】修墙/绕行场景下这段"拐点修复"曾经把路径整体丢掉：
+  // 拐点 path[corner_idx] 是"离 current_safe_idx -> target_idx 直线最远的原始点"这一
+  // 启发式选出来的，它**不保证**能把碰撞段救回来；旧实现插入拐点时不校验，
+  // 末尾统一复核一旦发现该段碰撞就 `return {}`，于是一条逐段合格的绕行路径被整体否决。
+  // 实车表现：局部绕行刚修好 0.3 ms 后就是 "MINCO path generation failed"。
+  // 现在插入前必须校验：拐点段不合格就退化为逐点推进（相邻原始点之间的段由调用方契约保证，
+  // 这里也再校验一次）；确认稠密路径自身就碰撞时才返回失败。
+  std::vector<size_t> sparse_idx;   // sparse[i] 在 path 中的原始下标，用于最后的降级展开
+  sparse_idx.push_back(0u);
   size_t current_safe_idx = 0u;
+
+  // 尝试把 path[candidate_idx] 作为下一个稀疏点：先校验与当前已确认点之间的线段。
+  // 返回 true 表示已推进（或该点与上一个稀疏点重合而被跳过）。
+  auto advance_to = [&](size_t candidate_idx) -> bool {
+    if (candidate_idx <= current_safe_idx || candidate_idx >= path.size()) {
+      return false;
+    }
+    if (is_line_free && !is_line_free(path[current_safe_idx], path[candidate_idx])) {
+      return false;
+    }
+    Eigen::Vector3d point = path[candidate_idx];
+    point.z() = 0.0;
+    if ((point - sparse.back()).head<2>().norm() > 1e-6) {
+      sparse.push_back(point);
+      sparse_idx.push_back(candidate_idx);
+    } else {
+      sparse_idx.back() = candidate_idx;
+    }
+    current_safe_idx = candidate_idx;
+    return true;
+  };
+
   for (size_t ti = 1; ti < target_indices.size(); ++ti) {
     const size_t target_idx = target_indices[ti];
     if (target_idx <= current_safe_idx || target_idx >= path.size()) {
@@ -448,42 +480,69 @@ std::vector<Eigen::Vector3d> getSparseWaypoints(const std::vector<Eigen::Vector3
     // Try to connect current_safe_idx -> target_idx; if collision, insert corner(s).
     size_t guard = 0u;
     while (guard++ < 32u && target_idx > current_safe_idx) {
-      const bool line_free = is_line_free ? is_line_free(path[current_safe_idx], path[target_idx]) : true;
-      if (line_free) {
-        Eigen::Vector3d p = path[target_idx];
-        p.z() = 0.0;
-        if ((p - sparse.back()).head<2>().norm() > 1e-6) {
-          sparse.push_back(p);
-        }
-        current_safe_idx = target_idx;
+      if (!is_line_free || is_line_free(path[current_safe_idx], path[target_idx])) {
+        advance_to(target_idx);
         break;
       }
 
       // Collision: recover a corner point inside (current_safe_idx, target_idx)
       size_t corner_idx = findCornerIndex(current_safe_idx, target_idx);
       if (corner_idx <= current_safe_idx || corner_idx >= target_idx) {
-        // Fallback: force progress by inserting the next raw point.
         corner_idx = current_safe_idx + 1u;
-        if (corner_idx >= target_idx) {
-          // Worst-case: cannot progress further, just stop trying this target.
-          break;
-        }
       }
-
-      Eigen::Vector3d corner = path[corner_idx];
-      corner.z() = 0.0;
-      if ((corner - sparse.back()).head<2>().norm() > 1e-6) {
-        sparse.push_back(corner);
+      if (corner_idx >= target_idx) {
+        // Worst-case: cannot progress further, just stop trying this target.
+        break;
       }
-      current_safe_idx = corner_idx;
+      if (advance_to(corner_idx)) {
+        continue;
+      }
+      // 拐点段本身碰撞：退化为逐点推进，把这条捷径拆成若干个相邻原始点之间的段。
+      if (!advance_to(current_safe_idx + 1u)) {
+        // 连相邻原始点之间的段都碰撞：稠密路径自身有问题，交给调用方处理。
+        return {};
+      }
     }
   }
 
-  // Ensure goal is included
+  // 只有最后一段确认无碰撞时才补入终点。旧实现无条件追加终点，会把失败的捷径修复
+  // 再次变成碰撞种子，迫使 MINCO 从障碍内部求解本不属于连续优化的拓扑问题。
   if ((path.back() - sparse.back()).head<2>().norm() > 1e-6) {
-    Eigen::Vector3d goal = path.back();
-    goal.z() = 0.0;
-    sparse.push_back(goal);
+    if (!advance_to(path.size() - 1u)) {
+      return {};
+    }
+  }
+
+  // 末尾复核：正常情况下每个稀疏段在插入时都已校验过，这里只是兜底。若仍有不合格段，
+  // 不再整体丢弃，而是把该段展开成原始稠密点（相邻点之间的段如果也碰撞才真正失败）。
+  if (is_line_free) {
+    std::vector<Eigen::Vector3d> verified;
+    std::vector<size_t> verified_idx;
+    verified.reserve(sparse.size());
+    verified.push_back(sparse.front());
+    verified_idx.push_back(sparse_idx.front());
+    for (size_t i = 1U; i < sparse.size(); ++i) {
+      if (is_line_free(verified.back(), sparse[i])) {
+        verified.push_back(sparse[i]);
+        verified_idx.push_back(sparse_idx[i]);
+        continue;
+      }
+      const size_t from_idx = verified_idx.back();
+      const size_t to_idx = sparse_idx[i];
+      if (to_idx <= from_idx + 1u) {
+        return {};
+      }
+      for (size_t k = from_idx + 1u; k <= to_idx; ++k) {
+        if (!is_line_free(path[k - 1u], path[k])) {
+          return {};
+        }
+        Eigen::Vector3d point = path[k];
+        point.z() = 0.0;
+        verified.push_back(point);
+        verified_idx.push_back(k);
+      }
+    }
+    sparse.swap(verified);
   }
 
   return sparse;

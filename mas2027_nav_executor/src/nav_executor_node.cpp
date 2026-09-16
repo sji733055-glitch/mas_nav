@@ -441,12 +441,18 @@ private:
         "Braking: trajectory cannot be expressed in %s", odom_frame_.c_str());
     } else if (output.status == ExecutorStatus::SOLVER_FAILED) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Braking: MPC solve failed");
-    } else if (output.status == ExecutorStatus::TERRAIN_BLOCKED) {
+    } else if (output.status == ExecutorStatus::TERRAIN_BLOCKED ||
+               output.status == ExecutorStatus::DYNAMIC_BLOCKED) {
+      // 这一类以前四种完全不同的成因共用一句话（动态层缺帧 / 地形层 transition 拒绝 /
+      // TF 一时拿不到 / 净空或动态走廊违规），现场 43 条 Braking 里 28 条属于这类却
+      // 分不出是哪一种。这里把命令门带出来的判据名与实测值打进日志。
+      const auto & d = path_executor_->lastSafetyDetail();
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
-        "Braking: terrain layer or map transform unavailable, or next command violates terrain");
-    } else if (output.status == ExecutorStatus::DYNAMIC_BLOCKED) {
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
-        "Braking: current dynamic obstacle intersects the MPC reference horizon");
+        "Braking: %s (reason=%s value=%.3f threshold=%.3f)",
+        output.status == ExecutorStatus::TERRAIN_BLOCKED ?
+          "terrain layer or map transform unavailable, or next command violates terrain" :
+          "current dynamic obstacle intersects the MPC reference horizon",
+        d.reason, d.value, d.threshold);
     }
   }
 

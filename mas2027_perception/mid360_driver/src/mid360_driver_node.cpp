@@ -6,6 +6,7 @@
 
 #include "mid360_driver/mid360_driver_node.hpp"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <stdexcept>
 
@@ -13,51 +14,9 @@ namespace mid360_driver {
 
     namespace {
 
-        struct RigidTransform {
-            float r00, r01, r02;
-            float r10, r11, r12;
-            float r20, r21, r22;
-            float tx, ty, tz;
-        };
-
-        RigidTransform make_transform(const std::vector<double> &xyz_rpy) {
-            const double roll = xyz_rpy[3];
-            const double pitch = xyz_rpy[4];
-            const double yaw = xyz_rpy[5];
-            const double cr = std::cos(roll);
-            const double sr = std::sin(roll);
-            const double cp = std::cos(pitch);
-            const double sp = std::sin(pitch);
-            const double cy = std::cos(yaw);
-            const double sy = std::sin(yaw);
-
-            return {
-                static_cast<float>(cp * cy),
-                static_cast<float>(sr * sp * cy - cr * sy),
-                static_cast<float>(cr * sp * cy + sr * sy),
-                static_cast<float>(cp * sy),
-                static_cast<float>(sr * sp * sy + cr * cy),
-                static_cast<float>(cr * sp * sy - sr * cy),
-                static_cast<float>(-sp),
-                static_cast<float>(sr * cp),
-                static_cast<float>(cr * cp),
-                static_cast<float>(xyz_rpy[0]),
-                static_cast<float>(xyz_rpy[1]),
-                static_cast<float>(xyz_rpy[2])
-            };
-        }
-
-        std::vector<Point> transform_points(const std::vector<Point> &points, const RigidTransform &tf) {
-            std::vector<Point> transformed;
-            transformed.reserve(points.size());
-            for (const auto &point : points) {
-                Point output = point;
-                output.x = tf.r00 * point.x + tf.r01 * point.y + tf.r02 * point.z + tf.tx;
-                output.y = tf.r10 * point.x + tf.r11 * point.y + tf.r12 * point.z + tf.ty;
-                output.z = tf.r20 * point.x + tf.r21 * point.y + tf.r22 * point.z + tf.tz;
-                transformed.push_back(output);
-            }
-            return transformed;
+        // 融合判活/发布节拍统一用单调时钟，避免系统时间跳变影响掉线判定。
+        double steady_now_s() {
+            return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
         }
 
     } // namespace
@@ -222,7 +181,11 @@ namespace mid360_driver {
     }
 
     void LidarPublisher::publish_imu(const std::string &frame_id) const {
-        for (const auto &imu: imu_to_publish) {
+        publish_imu_messages(imu_to_publish, frame_id);
+    }
+
+    void LidarPublisher::publish_imu_messages(const std::vector<ImuMsg> &messages, const std::string &frame_id) const {
+        for (const auto &imu: messages) {
             sensor_msgs::msg::Imu msg;
             msg.header.stamp.sec = static_cast<int32_t>(std::floor(imu.timestamp));
             msg.header.stamp.nanosec = static_cast<uint32_t>((imu.timestamp - msg.header.stamp.sec) * 1e9);
@@ -245,6 +208,13 @@ namespace mid360_driver {
         std::copy(points.begin(), points.end(), std::back_inserter(pending));
     }
 
+    void Mid360DriverNode::stage_merge_imu(std::vector<ImuMsg> &pending, const ImuMsg &imu_msg) {
+        if (pending.size() >= MAX_PENDING_IMU) {
+            pending.clear();
+        }
+        pending.push_back(imu_msg);
+    }
+
     void Mid360DriverNode::enqueue_merge_frame(std::deque<MergeFrame> &queue, std::vector<Point> &&points) {
         if (points.empty()) {
             return;
@@ -258,7 +228,7 @@ namespace mid360_driver {
         if (!std::isfinite(base_timestamp)) {
             return;
         }
-        if (queue.size() >= MAX_MERGE_QUEUE_FRAMES) {
+        if (queue.size() >= merge_queue_limit_frames_) {
             queue.pop_front();
         }
         queue.push_back(MergeFrame{base_timestamp, std::move(points)});
@@ -317,6 +287,140 @@ namespace mid360_driver {
         return merged_frames;
     }
 
+    void Mid360DriverNode::drain_merge_queue(std::deque<MergeFrame> &queue, std::vector<std::pair<double, std::vector<Point>>> &out) {
+        while (!queue.empty()) {
+            MergeFrame frame = std::move(queue.front());
+            queue.pop_front();
+            out.emplace_back(frame.base_timestamp, std::move(frame.points));
+        }
+    }
+
+    std::vector<std::vector<Point>> Mid360DriverNode::collect_single_lidar_frames(const double now_s) {
+        const bool front_fresh = merge_cloud_gate_.is_fresh(true, now_s);
+        const bool back_fresh = merge_cloud_gate_.is_fresh(false, now_s);
+        // 掉线那一路的积压直接丢：它已经配不上对，留着只会在恢复瞬间补发一批旧帧。
+        if (!front_fresh) {
+            merge_front_queue_.clear();
+        }
+        if (!back_fresh) {
+            merge_back_queue_.clear();
+        }
+        std::vector<std::pair<double, std::vector<Point>>> staged;
+        if (front_fresh) {
+            drain_merge_queue(merge_front_queue_, staged);
+        }
+        if (back_fresh) {
+            drain_merge_queue(merge_back_queue_, staged);
+        }
+        // 两路都新鲜（另一路还在恢复保持期内）时按时间排序，避免后发的帧比先发的旧，
+        // 否则 LIO Preprocess 的时间戳水位线会把晚到却更旧的整帧砍掉。
+        std::sort(staged.begin(), staged.end(), [](const auto &lhs, const auto &rhs) {
+            return lhs.first < rhs.first;
+        });
+        std::vector<std::vector<Point>> frames;
+        frames.reserve(staged.size());
+        for (auto &entry: staged) {
+            frames.push_back(std::move(entry.second));
+        }
+        return frames;
+    }
+
+    void Mid360DriverNode::log_cloud_mode_change_locked(const bool front_online, const bool back_online, const double now_s) {
+        if (front_online && back_online) {
+            RCLCPP_INFO(get_logger(), "lidar merge: both lidars online, dual-lidar pairing active");
+            return;
+        }
+        if (!front_online && !back_online) {
+            RCLCPP_WARN(
+                get_logger(),
+                "lidar merge: no lidar is publishing; %s",
+                merge_cloud_gate_.ever_seen(true) || merge_cloud_gate_.ever_seen(false)
+                    ? "both lidars are silent, waiting for either to come back"
+                    : "waiting for the first point cloud"
+            );
+            return;
+        }
+        const bool missing_front = !front_online;
+        const char *missing = missing_front ? "front" : "back";
+        const char *kept = missing_front ? "back" : "front";
+        if (!merge_cloud_gate_.ever_seen(missing_front)) {
+            RCLCPP_WARN(
+                get_logger(),
+                "lidar merge: %s lidar has not sent any point cloud yet; publishing %s lidar frames alone (single-lidar mode)",
+                missing,
+                kept
+            );
+            return;
+        }
+        const double silence_ms = (now_s - merge_cloud_gate_.last_seen_s(missing_front)) * 1e3;
+        ++merge_degrade_count_;
+        RCLCPP_WARN(
+            get_logger(),
+            "lidar merge degraded to single-lidar mode: %s lidar silent for %.0f ms (timeout %.0f ms); publishing %s lidar frames alone; degradations=%zu",
+            missing,
+            silence_ms,
+            merge_cloud_gate_.config().stale_timeout_s * 1e3,
+            kept,
+            merge_degrade_count_
+        );
+    }
+
+    std::vector<std::vector<Point>> Mid360DriverNode::merge_pointcloud_tick_locked(const double now_s) {
+        // 两路在同一个 tick 切帧，随后按 base_timestamp 配对。
+        enqueue_merge_frame(merge_front_queue_, std::move(merge_front_pending_));
+        merge_front_pending_.clear();
+        enqueue_merge_frame(merge_back_queue_, std::move(merge_back_pending_));
+        merge_back_pending_.clear();
+
+        const bool front_online = merge_cloud_gate_.update_online(true, now_s);
+        const bool back_online = merge_cloud_gate_.update_online(false, now_s);
+        if (front_online != merge_front_cloud_online_ || back_online != merge_back_cloud_online_) {
+            log_cloud_mode_change_locked(front_online, back_online, now_s);
+            merge_front_cloud_online_ = front_online;
+            merge_back_cloud_online_ = back_online;
+        }
+        if (front_online && back_online) {
+            return collect_merged_frames();
+        }
+        return collect_single_lidar_frames(now_s);
+    }
+
+    std::vector<ImuMsg> Mid360DriverNode::merge_imu_tick_locked(const double now_s) {
+        const bool front_online = merge_imu_gate_.update_online(true, now_s);
+        const bool back_online = merge_imu_gate_.update_online(false, now_s);
+        const bool front_fresh = merge_imu_gate_.is_fresh(true, now_s);
+        const bool back_fresh = merge_imu_gate_.is_fresh(false, now_s);
+        // 选源：参考雷达优先，掉线切换，都不在线时按新鲜度兜底（见 select_front_imu_source）。
+        const bool use_front = select_front_imu_source(front_online, back_online, front_fresh, back_fresh);
+        std::vector<ImuMsg> messages;
+        if (use_front) {
+            std::swap(messages, merge_imu_front_pending_);
+        } else {
+            std::swap(messages, merge_imu_back_pending_);
+        }
+        // 两个来源每 tick 都清空：非当前来源的 IMU 不能补发，否则同一时刻会出现两份 IMU。
+        merge_imu_front_pending_.clear();
+        merge_imu_back_pending_.clear();
+        const bool any_fresh = front_fresh || back_fresh;
+        if (any_fresh && (!merge_imu_has_source_ || use_front != merge_imu_from_front_)) {
+            const bool first_source = !merge_imu_has_source_;
+            merge_imu_has_source_ = true;
+            merge_imu_from_front_ = use_front;
+            if (first_source) {
+                RCLCPP_INFO(get_logger(), "IMU source: %s lidar", use_front ? "front" : "back");
+            } else {
+                ++merge_imu_switch_count_;
+                RCLCPP_WARN(
+                    get_logger(),
+                    "IMU failover: source switched to the %s lidar (rotated into the reference lidar frame); switches=%zu",
+                    use_front ? "front" : "back",
+                    merge_imu_switch_count_
+                );
+            }
+        }
+        return messages;
+    }
+
     Mid360DriverNode::Mid360DriverNode(const rclcpp::NodeOptions &options) : Node("mid360_driver", options) {
         std::string lidar_topic = declare_parameter<std::string>("lidar_topic");
         std::string lidar_frame = declare_parameter<std::string>("lidar_frame");
@@ -333,6 +437,9 @@ namespace mid360_driver {
         const std::string merge_front_ip = declare_parameter<std::string>("merge_front_ip", "192.168.1.136");
         const std::string merge_back_ip = declare_parameter<std::string>("merge_back_ip", "192.168.1.193");
         const double merge_max_interval_ms = declare_parameter<double>("merge_max_interval_ms", 5.0);
+        const double merge_stale_timeout_s = declare_parameter<double>("merge_stale_timeout_s", 0.5);
+        const double merge_recover_hold_s = declare_parameter<double>("merge_recover_hold_s", 0.5);
+        const double merge_imu_stale_timeout_s = declare_parameter<double>("merge_imu_stale_timeout_s", 0.1);
         const std::vector<double> merge_extrinsic = declare_parameter<std::vector<double>>(
             "merge_extrinsic_back_to_front",
             {0.0, 0.0, 0.0, 0.0, 0.0, 0.0}
@@ -341,7 +448,7 @@ namespace mid360_driver {
         asio::ip::address back_lidar_address;
         asio::ip::address merge_front_address;
         asio::ip::address merge_back_address;
-        RigidTransform merge_back_to_front{};
+        MergeTransform merge_back_to_front{};
         if (enable_lidar_merge && is_topic_name_with_lidar_ip) {
             throw std::invalid_argument(
                 "enable_lidar_merge and is_topic_name_with_lidar_ip cannot both be true"
@@ -371,15 +478,37 @@ namespace mid360_driver {
             if (!(merge_max_interval_ms > 0.0) || !std::isfinite(merge_max_interval_ms)) {
                 throw std::invalid_argument("merge_max_interval_ms must be a positive finite number");
             }
+            if (!(merge_stale_timeout_s >= 0.0) || !std::isfinite(merge_stale_timeout_s)) {
+                throw std::invalid_argument("merge_stale_timeout_s must be a non-negative finite number (0 disables degrading)");
+            }
+            if (!(merge_recover_hold_s >= 0.0) || !std::isfinite(merge_recover_hold_s)) {
+                throw std::invalid_argument("merge_recover_hold_s must be a non-negative finite number");
+            }
+            if (!(merge_imu_stale_timeout_s > 0.0) || !std::isfinite(merge_imu_stale_timeout_s)) {
+                throw std::invalid_argument("merge_imu_stale_timeout_s must be a positive finite number");
+            }
             merge_max_interval_s_ = merge_max_interval_ms * 1e-3;
-            merge_back_to_front = make_transform(merge_extrinsic);
+            merge_back_to_front = make_merge_transform(merge_extrinsic);
+            merge_cloud_gate_.configure(LidarHealthConfig{merge_stale_timeout_s, merge_recover_hold_s});
+            merge_imu_gate_.configure(LidarHealthConfig{merge_imu_stale_timeout_s, merge_recover_hold_s});
+            // 融合队列要能装下整个"掉线判定窗口"的帧，否则降级生效前就已经在丢帧。
+            const double publish_interval_s = std::max(1e-3, lidar_publish_time_interval);
+            const auto frames_in_window = static_cast<std::size_t>(std::ceil(merge_stale_timeout_s / publish_interval_s));
+            merge_queue_limit_frames_ = std::min(
+                MAX_MERGE_QUEUE_FRAMES_HARD_LIMIT,
+                std::max(MAX_MERGE_QUEUE_FRAMES, frames_in_window + 4)
+            );
             RCLCPP_INFO(
                 get_logger(),
-                "merging lidar %s into %s in frame '%s', pairing window %.1f ms",
+                "merging lidar %s into %s in frame '%s', pairing window %.1f ms, single-lidar degrade after %.0f ms (recover hold %.0f ms), IMU failover after %.0f ms, merge queue %zu frames",
                 merge_back_ip.c_str(),
                 merge_front_ip.c_str(),
                 lidar_frame.c_str(),
-                merge_max_interval_ms
+                merge_max_interval_ms,
+                merge_stale_timeout_s * 1e3,
+                merge_recover_hold_s * 1e3,
+                merge_imu_stale_timeout_s * 1e3,
+                merge_queue_limit_frames_
             );
         }
         DriverRobustnessConfig robustness_config;
@@ -390,6 +519,7 @@ namespace mid360_driver {
         robustness_config.max_imu_acc = declare_parameter<double>("max_imu_acc");
         robustness_config.max_imu_gyro = declare_parameter<double>("max_imu_gyro");
         robustness_config.min_drop_log_interval = declare_parameter<double>("min_drop_log_interval");
+        robustness_config.packet_resync_silence = declare_parameter<double>("packet_resync_silence", 1.0);
         if (!is_topic_name_with_lidar_ip) {
             lidar_publisher.configure_robustness(robustness_config);
             lidar_publisher.ensure_initialized(*this, lidar_topic, imu_topic);
@@ -402,10 +532,13 @@ namespace mid360_driver {
                     std::lock_guard lock(multi_lidar_mutex_);
                     if (enable_lidar_merge) {
                         // 只暂存，等定时器切帧后按时间配对；后雷达在入队前就变到前雷达系。
+                        const double now_s = steady_now_s();
                         if (lidar_ip == merge_front_address) {
                             stage_merge_points(merge_front_pending_, points);
+                            merge_cloud_gate_.mark_seen(true, now_s);
                         } else if (lidar_ip == merge_back_address) {
-                            stage_merge_points(merge_back_pending_, transform_points(points, merge_back_to_front));
+                            stage_merge_points(merge_back_pending_, transform_merge_points(points, merge_back_to_front));
+                            merge_cloud_gate_.mark_seen(false, now_s);
                         }
                     } else if (is_topic_name_with_lidar_ip) {
                         auto iter = multi_lidar_publishers.try_emplace(lidar_ip).first;
@@ -415,11 +548,17 @@ namespace mid360_driver {
                         lidar_publisher.on_receive_pointcloud(points);
                     }
                 },
-                [this, is_topic_name_with_lidar_ip, enable_lidar_merge, merge_front_address, robustness_config](const asio::ip::address &lidar_ip, const ImuMsg &imu_msg) {
+                [this, is_topic_name_with_lidar_ip, enable_lidar_merge, merge_front_address, merge_back_address, merge_back_to_front, robustness_config](const asio::ip::address &lidar_ip, const ImuMsg &imu_msg) {
                     std::lock_guard lock(multi_lidar_mutex_);
                     if (enable_lidar_merge) {
+                        // 两个来源都收着：参考雷达 IMU 掉线时立刻切到另一台（换算到参考雷达系）。
+                        const double now_s = steady_now_s();
                         if (lidar_ip == merge_front_address) {
-                            lidar_publisher.on_receive_imu(imu_msg);
+                            stage_merge_imu(merge_imu_front_pending_, imu_msg);
+                            merge_imu_gate_.mark_seen(true, now_s);
+                        } else if (lidar_ip == merge_back_address) {
+                            stage_merge_imu(merge_imu_back_pending_, rotate_imu_to_front(imu_msg, merge_back_to_front));
+                            merge_imu_gate_.mark_seen(false, now_s);
                         }
                     } else if (is_topic_name_with_lidar_ip) {
                         auto iter = multi_lidar_publishers.try_emplace(lidar_ip).first;
@@ -465,26 +604,24 @@ namespace mid360_driver {
             });
         } else if (enable_lidar_merge) {
             publish_pointcloud_timer = rclcpp::create_timer(this, get_clock(), std::chrono::duration<double, std::ratio<1, 1>>(lidar_publish_time_interval), [this, lidar_frame]() {
-                std::vector<std::vector<Point>> merged_frames;
+                std::vector<std::vector<Point>> frames;
                 {
                     std::lock_guard lock(multi_lidar_mutex_);
-                    // 两路在同一个 tick 切帧，随后按 base_timestamp 配对。
-                    enqueue_merge_frame(merge_front_queue_, std::move(merge_front_pending_));
-                    merge_front_pending_.clear();
-                    enqueue_merge_frame(merge_back_queue_, std::move(merge_back_pending_));
-                    merge_back_pending_.clear();
-                    merged_frames = collect_merged_frames();
+                    // 两路在同一个 tick 切帧：两台都在线时按 base_timestamp 配对，
+                    // 有一台掉线时降级为单雷达发帧，保证 /lidar 不断流。
+                    frames = merge_pointcloud_tick_locked(steady_now_s());
                 }
-                for (const auto &merged : merged_frames) {
-                    lidar_publisher.publish_points(merged, lidar_frame);
+                for (const auto &frame : frames) {
+                    lidar_publisher.publish_points(frame, lidar_frame);
                 }
             });
             publish_imu_timer = rclcpp::create_timer(this, get_clock(), std::chrono::milliseconds(1), [this, imu_frame]() {
+                std::vector<ImuMsg> messages;
                 {
                     std::lock_guard lock(multi_lidar_mutex_);
-                    lidar_publisher.prepare_imu_to_publish();
+                    messages = merge_imu_tick_locked(steady_now_s());
                 }
-                lidar_publisher.publish_imu(imu_frame);
+                lidar_publisher.publish_imu_messages(messages, imu_frame);
             });
         } else {
             publish_pointcloud_timer = rclcpp::create_timer(this, get_clock(), std::chrono::duration<double, std::ratio<1, 1>>(lidar_publish_time_interval), [this, lidar_frame]() {

@@ -27,6 +27,43 @@ def main():
     args = parser.parse_args()
     env = os.environ.copy()
     env["LD_LIBRARY_PATH"] = "/lib/x86_64-linux-gnu:" + env.get("LD_LIBRARY_PATH", "")
+    # 把配置复制一份再改掉 ROGMap 的性能 CSV 路径后再启动。
+    # 原因：planner_params.yaml 的 rog_map.performance.summary_csv_path 指向工作区里的
+    # .scratch/rog_map_perf_summary.csv，而 PerformanceMonitor 是以 trunc 模式打开的，
+    # 于是每跑一次冒烟都会把**实车那一次的数据**覆盖成只有一行冒烟样本（已实测踩到）。
+    # 复制到本次运行专属目录后，实车 CSV 不再被动过，冒烟自己的数据也留在 .scratch 下可查。
+    config_dir = os.path.abspath(args.executor_config_dir)
+    smoke_run_dir = os.path.join(os.getcwd(), ".scratch", "smoke_run")
+    os.makedirs(smoke_run_dir, exist_ok=True)
+    resolved_config_dir = os.path.join(smoke_run_dir, "config")
+    os.makedirs(resolved_config_dir, exist_ok=True)
+    for name in ("mpc_params.yaml", "node_params.yaml", "planner_params.yaml"):
+        with open(os.path.join(config_dir, name)) as src:
+            text = src.read()
+        if name == "planner_params.yaml":
+            csv_names = {"summary_csv_path": "rog_map_summary.csv",
+                         "detailed_csv_path": "rog_map_detailed.csv"}
+            lines = text.splitlines()
+            for key, filename in csv_names.items():
+                target = f'{key}: "{os.path.join(smoke_run_dir, filename)}"'
+                existing = [l for l in lines if l.strip().startswith(key + ":")]
+                if existing:
+                    for line in existing:
+                        indent = line[:len(line) - len(line.lstrip())]
+                        text = text.replace(line, indent + target)
+                    continue
+                # 配置里没显式写 detailed_csv_path 时（默认值指向 /tmp，冒烟侧读不到），
+                # 就在同一段落里补一行，缩进对齐相邻的 summary_csv_path / summary_rate。
+                anchor = next((l for l in lines
+                               if l.strip().startswith("summary_rate:")), None)
+                if anchor is None:
+                    raise RuntimeError(
+                        f"cannot locate summary_rate in {name} to inject {key}")
+                indent = anchor[:len(anchor) - len(anchor.lstrip())]
+                text = text.replace(anchor, indent + target + "\n" + anchor)
+                lines = text.splitlines()
+        with open(os.path.join(resolved_config_dir, name), "w") as dst:
+            dst.write(text)
     map_exe = os.path.join(get_package_prefix("map_server"), "lib/map_server/map_server_node")
     nav_exe = os.path.join(get_package_prefix("mas2027_nav_executor"),
                            "lib/mas2027_nav_executor/mas2027_nav_executor_node")
@@ -38,7 +75,7 @@ def main():
     nav = subprocess.Popen([
         nav_exe, "--ros-args",
         *[item for name in ("mpc_params.yaml", "node_params.yaml", "planner_params.yaml")
-          for item in ("--params-file", os.path.join(args.executor_config_dir, name))],
+          for item in ("--params-file", os.path.join(resolved_config_dir, name))],
     ], env=env)
     rclpy.init()
     node = rclpy.create_node("goal_smoke")
