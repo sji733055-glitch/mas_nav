@@ -2,6 +2,606 @@
 
 本文件记录由开发任务产生的代码、配置、脚本、资源和文档变更。新记录追加在最上方，不改写旧记录。
 
+## 2026-09-18 — 远点导航与"反复冷启动/挪动"结案：新增实车验收结论文档，并纠正最近两条条目
+
+- 行为与文件：**本次只加/改文档，不改任何代码、配置、脚本逻辑**。
+  1. 新增 `docs/far_goal_coldstart_final_2026-09-18.md`。以 2026-09-17 21:52–22:07 的实车
+     `~/.ros/log/mas2027_nav_executor_node_7150_1789653149789.log` 作为验收：**29 个目标 28 个到达**
+     （唯一没打印到达行的目标在 7 s 后被下一次点击顶替），去程 `(9.79,-0.05)` 12.6 s、
+     最远 `(19.54,-2.4)` 58.7 s 到达；同时 0 次 `switched to STRICT`、0 次 `dynamic_stale`、
+     0 次 `Ignoring goal`，仍有 191 次 MINCO 失败 / 39 次急停 / 24 次 `reason=clearance` 制动。
+     文档逐条给出相对 `7e19968` 的**净改动**清单与证据：A 远点（软种子门、四道净空门统一 0.26、
+     `esdf_max_cost` 0.5→5.0、`prior_map` 保持关、`strict_seed_after_failures: 0`）；
+     B 反复启停（`node.dynamic_map_timeout_s` 0.5→1.5、MPC 打断后锚到实测车速）；
+     C 目标时间戳归零、日志可观测性与回归用例；并列出 P0/P1/P2 未决项。
+  2. 同一文档 §3 对 `change-history.md` 顶部两条条目逐条纠错（用户指出"最近的两次历史有犯错"）：
+     - 《修"远处点导航失败 / 车原地不动"：软种子门连续失败后退回净空硬否决》：其前提
+       "三层兜底根本不会被执行"被 run 7150 否证（`Repaired a ROGMap-blocked global segment with a
+       local grid-search detour.` 在软种子门下照常执行且到达相邻目标）；其改动
+       `strict_seed_after_failures: 3` 在 21:05 / 21:07 两次实车上把到达率打成 8/4 与 4/1；
+       其台架 A/B（软门 0.00 m vs 硬门 5.22~6.31 m）来自合成回放台架（PCD 与地形图不一致），
+       不能当作实车判据。
+     - 《回归旧工程的连续规划语义：禁用严格种子切换、恢复 HOT_START 与时间权重》：方向与 run 7150
+       一致，但三处与事实不符——(a) "恢复 HOT_START"**不是行为改动**：`7e19968` 的
+       `minco_planner.cpp:1574-1585` 本来就是 `return PlanningState::HOT_START;`，本次只把
+       误导性的 `Downgrading to COLD_START` 文本改成 `keeping HOT_START`；
+       (b) "禁用严格种子切换"只被证明"开着更糟"，没有被证明"关掉是唯一解"，属过度归因；
+       (c) 条目自称"未上实车"，真正的实车验收发生在它写完后 15 分钟的 run 7150。
+  3. `.gitignore` 增加 `.scratch/`（仓库内临时目录，避免 `git add -A` 误提交一次性脚本与日志）。
+- 验证：
+  1. `colcon build --packages-select mas2027_nav_executor --symlink-install
+     --cmake-args -DCMAKE_BUILD_TYPE=Release` 通过（产物均为最新，无重编译）；
+     `colcon test --packages-select mas2027_nav_executor --event-handlers console_direct+`
+     **9/9 通过**，`colcon test-result --verbose` 为 10 tests / 0 errors / 0 failures。
+  2. 文档中的全部计数与引用为本次重新抽取：run 7150 的逐目标账本（29/28）、35251/32290 的
+     `switched to STRICT`（2 / 26）与 `LOCAL_SEED_INVALID`（12 / 15）、9049 的 175 条
+     `dynamic_stale value=0.501 threshold=0.500`、75351 的 18 条 `Ignoring goal`、
+     61759 的 8 条 `threshold=0.280`（值域 0.261~0.280）、以及
+     `install/` 符号链接 → 21:27 构建的二进制与源码 21:35 的 `planner_params.yaml`
+     （证明 run 7150 跑的就是本次提交的工作区状态）。
+- 未验证 / 未做：
+  1. 未改任何代码或阈值。P0（`strict_seed_after_failures=0` 缺正向证据、STRICT 链路已成死代码）、
+     P1（锚点未做可行域裁剪、`dynamic_map_timeout_s ≤ 0` 时 fail-open、"四道门统一"依赖
+     `replan_react_time=0`/`monitor_margin=0`、`allow_motion==false` 分支仍清零锚点）、
+     P2（`test_local_path_processor.cpp` 净空断言 0.30→0.0 与容差 1e-6→0.10、窄口未处理）
+     全部只记录在结论文档，留待专项提交决定。
+  2. 未做软/硬种子门的实车 A/B；run 7150 没有留存三路速度 CSV，因此"反复启停已消除"目前只有
+     日志侧证据（0 次 `dynamic_stale`、24 次净空制动但均可恢复），没有实测速度曲线对比。
+
+## 2026-09-17 — 回归旧工程的连续规划语义：禁用严格种子切换、恢复 HOT_START 与时间权重
+
+- 需求与证据：用户反馈当前未提交版本相较 native 最新提交和
+  `/home/mas/mas_nav_2027` 出现两类回归：远点目标不出轨迹，以及行进中实速跟不上指令后
+  反复“冷启动”、只能一段一段挪动；并补充
+  `/home/mas/nav_opensource/navi_minco_bit` 是新旧两工程 MINCO/MPC 的真正上游。检查最新实车日志
+  `~/.ros/log/mas2027_nav_executor_node_35251_1789650374567.log`：去程已到达，返程开始后先出现
+  `clearance=0.255 < 0.260` 制动，连续 3 次规划失败后切到 STRICT 种子门，此后在
+  `(3.78,1.62)` 附近以 `clear=0.244~0.245 / req=0.260` 持续
+  `LOCAL_SEED_INVALID`，整次日志共有 48 条 `MINCO path generation failed`，返程未到达。
+  三方代码对照还确认：上游与旧工程在跟踪/速度误差过大时都实际返回 `HOT_START`（虽保留了
+  误导性的 `Downgrading to COLD_START` 文本），上游时间权重为 100；native 最新提交同样保持
+  HOT_START、时间权重 100，并因本车先验图对齐问题关闭 `prior_map`。
+- 行为改动：
+  1. `mas2027_nav_executor/config/planner_params.yaml`：将
+     `strict_seed_after_failures` 从 3 改为 0，保持旧工程“折线只因占据/地形/查询失败而硬拒绝，
+     净空由优化后轨迹门把关”的语义；将 `penalty_weight_time` 从实验值 500 恢复为上游、旧工程和
+     native 最新提交共同使用的 100，避免规划速度峰值抬高后进一步放大车速跟踪误差；
+     `prior_map.enable` 保持 native 最新提交的 false，避免把已记录的 map↔odom 错位先验重新叠加
+     进 ROG ESDF。发布前、20 Hz、MPC 指令和静态地形安全门均未放宽。
+  2. `mas2027_nav_executor/src/path_planner/trajectory/minco_planner.cpp`：参数缺省值同步为 0；
+     大位置误差和大速度误差继续返回 `HOT_START`，不再丢弃上一条轨迹的时间/路点热启动种子，
+     同时把日志改成与实际行为一致的 `keeping HOT_START for trajectory continuity`。
+  3. 保留本轮已经加入的 MPC 中断恢复处理：`mpc_solver.hpp` / `path_executor.cpp` 在轨迹过期、
+     参考失败、求解失败或安全门否决后，用实测车速而不是零值重设下一拍加速度锚点；恢复首拍从
+     车辆真实速度连续接续，速度、加速度和净空上限不变。对应回归用例位于
+     `test/test_mpc_horizon.cpp`。
+- 验证：
+  1. `colcon build --packages-select mas2027_nav_executor --symlink-install
+     --cmake-args -DCMAKE_BUILD_TYPE=Release` 通过；`colcon test --packages-select
+     mas2027_nav_executor --event-handlers console_direct+` 为 **9/9 通过**。MPC 锚点用例实测：清零时
+     恢复首拍上限 0.2 m/s；锚到实测 1.5 m/s 后首拍为 1.7 m/s。
+  2. 标准目标冒烟通过：`52 trajectory poses / 48 global plan poses / marker width 0.150 m`；
+     20 s 闭环短程（目标 `(-0.15,-0.70)`）得到规划峰值 0.90 m/s、实测峰值 0.88 m/s、位移
+     0.82 m、轨迹覆盖 903/994 拍，约 1.6 s 到达；没有大速度误差导致的 COLD_START 循环。
+  3. 对静态先验做了 A/B：开启时远点复现固定死在 ROG 净空 0.245 < 0.260；关闭时该合成复现
+     又因回放 PCD 与地形图不一致，MINCO 看不到 terrain `(5.15,1.91)` 的墙，候选轨迹被 native
+     额外的 `edge_static` 发布门拒绝。后者说明该远点合成台架不能替代实车在线点云验证，未据此
+     删除静态地形安全门或下调 0.26 m 有效净空阈值。
+- 未验证 / 风险：尚未上实车复测原去返航路线。重启后应确认：① 启动日志不再出现
+  `loaded prior map`；② 不再出现 `Local seed gate switched to STRICT`；③ 大跟踪/速度误差只打印
+  `keeping HOT_START`；④ 返程能持续发布 `/opt_path` 且 `/cmd_vel` 不再周期性跌到冷启动首拍。
+  合成远点仍不能到达的原因是 PCD/地形不一致，并非本轮安全阈值已验证可放宽，因此本轮没有改
+  `collision_dist=0.28` 或共用的 0.02 m ESDF 抖动余量。
+
+## 2026-09-17 — 修"远处点导航失败 / 车原地不动"：软种子门连续失败后退回净空硬否决
+
+- 需求与现场证据：用户反馈"还是会反复进入冷启动；无法像最新提交的那一版做远处点导航，
+  会出现 traj failed"。查最近两次运行日志（`~/.ros/log/` 下
+  `mas2027_nav_executor_node_6166_1789646967183.log`（20:09–20:26）与
+  `mas2027_nav_executor_node_14967_1789648111771.log`（20:28–20:31））：
+  1. 20:09 那次：30 个目标 18 个到达，但去程 `(1.21,-0.10) → (7.16,2.32)` 全程
+     **600 条 `MINCO path generation failed; retrying`（COLLISION=583）**、`/opt_path`
+     一直为空、车 19 分钟没动；其间种子门每 2 s 刷
+     `Local seed is tight but not blocked (closest clear=0.248 req=0.260 at (4.65,1.84))`，
+     并伴随 8 次 `Publishing emergency stop: committed traj unsafe and replan failed`。
+     发布前净空门的现场值是 `Trajectory clearance 0.246 m below required 0.260 m at (5.64, 2.27)`
+     ——**只差 1.4 cm，且 MINCO 连续 600 次都做不到**。
+  2. 对照"最新提交那一版"的行为（2026-09-16 21:50 那次实车，`prior_map.enable` 还是 false）：
+     同一片区域的目标 `(10.32,2.13)` / `(10.36,2.38)` 10 个到 9 个，日志里每次重规划都出现
+     `Repaired a ROGMap-blocked global segment with a local grid-search detour.`
+     ⇒ 旧行为下"净空差几毫米的种子"会被**否决**，然后走 ROGMap 绕行把种子改写成能过的路由。
+- 机制（代码级）：2026-09-17 白天把种子门改成"软"门（`local_path_processor.cpp` 的
+  `segmentClear(..., enforce_clearance=false)`：净空不足不再否决种子），前提是
+  "MINCO 的位置罚项会把轨迹推离障碍"。这个前提在**唯一通路本身就比 required 窄**时不成立：
+  此时三层兜底（ROGMap 绕行 → 障碍前完整停车前缀 → 短距离脱困前缀）**根本不会被执行**，
+  规划器每 0.5 s 重复同一个不可能成功的优化 ⇒ `/opt_path` 为空 ⇒ 执行器只能发 0 ⇒
+  现场就是"车不动 + traj failed + 反复启停"。这也是台架与实车都能复现的：见下面验证第 2 条。
+- 改动（**只加"退路"，不动任何净空数值**）：
+  1. `local_path_processor.{hpp,cpp}`：`buildSeed` 新增 `enforce_seed_clearance`（默认 false，
+     保持软种子门）、`pathClear`/`segmentClear` 新增 `enforce_clearance` 透传；硬否决时既有的
+     三层兜底链原样生效。另把 `seed.dense_reject` 改为"种子门否决过就记录"（含随后被绕行/前缀
+     修复成功的情形），并在硬否决只因"净空差一点"时打一条带坐标的 WARN，回答"为什么走了兜底"。
+  2. `minco_planner.{hpp,cpp}`：新增 `strict_seed_after_failures`（默认 3）。连续失败达到该次数
+     （≈1.5 s，`replan_period_s` 0.2 + 优化耗时）就把种子门切回硬否决，任一次局部规划成功即复位；
+     切换时打一条 WARN（`Local seed gate switched to STRICT clearance after N ...`）。
+  3. `config/planner_params.yaml`：`planner.minco_optimizer.strict_seed_after_failures: 3`
+     （附现场依据、取值理由、`0` = 关闭的回退方式）。
+  ⚠️ 四道净空门（发布前校验 / 20 Hz 监视 / MPC 指令门 / 种子门与绕行）的**阈值一个都没改**，
+  本项只决定"折线净空不足算不算否决种子"。
+- 验证：
+  1. `colcon build --packages-select mas2027_nav_executor --symlink-install`（Release）通过；
+     `ctest` **9/9 通过**，其中 `test_local_path_processor` 新增用例锁住新语义：0.50 m 走廊上
+     软种子门原样放行（`clearance_only=true`），同一折线在硬否决下必须落进三层兜底之一
+     （`used_dynamic_detour || stop_at_local_end || used_escape_prefix || !valid`），
+     且否决原因仍是"只差净空"而不是"被堵死"。
+  2. 闭环台架 `test/bench_closed_loop.py`（真实 map_server + 真实 nav_executor + 真实 lab3
+     地图/PCD；`map→odom` 取 20:09 实车那次的 `(0.046,0.123,0.274, yaw −1.36°)`；起点
+     `(1.211,-0.097)`、目标 `(7.26,2.28)` 与实车一致）：
+     | 版本 | 有轨迹的拍 | 位移 | MINCO 失败 | Braking |
+     |---|---|---|---|---|
+     | 改前（`strict_seed_after_failures` 缺省即软门，40 s） | **0/1986** | **0.00 m** | 73 | — |
+     | 改后（60 s，两次运行） | **2804~2808/2974** | **5.22~6.31 m** | 8~20 | 9（8 clearance + 1 dynamic_reference，**无 dynamic_stale**）|
+     即"车原地不动"变成"94% 的拍都有可执行轨迹、能推进 5~6 m"。
+  3. 配置副本对照（`.scratch/repro/cfg_*`，同一台架同一目标）：把 `prior_map.enable` 改回
+     false、`esdf_max_cost` 改回 0.5、`penalty_weight_time` 改回 100（甚至三者同时改回，
+     即"改动前的配置"）**同样是 0 位移**，证明本次回归不在那三项配置，而在软种子门本身。
+  4. F3（velocity error → COLD_START）与"提交前行为"（HOT_START）做了 2×2 台架对照：
+     `Downgrading to COLD_START` 条数 COLD 18/44 vs HOT 19/7，位移 COLD 5.22/6.31 m vs
+     HOT 6.60/4.43 m，两边都跨过对方的值域 —— 与台架已知的双峰一致，**没有证据支持回退 F3**，
+     故保留现行为并把数据留在这里。
+  5. 标准冒烟 `test/smoke_goal.py` 通过：`goal smoke passed: 40 trajectory poses,
+     48 global plan poses, marker width 0.150 m`；实车 CSV `.scratch/rog_map_perf_summary.csv`
+     冒烟前后 md5 不变（`e8a7c844f7fd3128e17e5eab948f4580`）。
+- 未验证 / 未做 / 已知残留（**都要上车确认**）：
+  - **未上实车**。车上要看两件事：(a) 远点目标不再出现"几分钟刷几百条
+    `MINCO path generation failed`、车不动"；(b) 新增的
+    `Strict seed gate rejected the global corridor (closest clear=X req=Y at (x,y) arc=..)`
+    是否正好指出现场真正过不去的窄处（这条日志就是"该挪东西 / 该换目标"的证据）。
+  - 台架上远点**仍未真正到达**（停在离目标 0.1~1.3 m 处蠕行/停住）：走廊在
+    odom ≈ `(4.6~4.8, 1.7~2.0)` 处的真实净空只有 ~0.25 m（在线层在那里有 2 格占据，
+    来自 z≈0.3~2.7 m 的结构；PGM 先验图同一处是空的），比 required 0.260 m 窄 1~3 cm。
+    这属于现场通行性判断（挪开物体或换目标），**没有**为此放松任何阈值。
+  - `Downgrading to COLD_START` 在台架上仍有 ~43 次/60 s，且与 HOT_START 变体同量级，
+    说明它由"车被刹停 / 被门控打断"触发，而不是本项改动带来；真正压低它的是让 `/opt_path`
+    不再中断。若车上仍频繁出现，下一批嫌疑是窄道里的净空门控与在线层那两格，而不是该分支。
+  - 未做：把 ROGMap 实时占据接入全局搜索（让全局折线主动避开在线层窄口并居中）；
+    在线层高度窗口复核（`scan_z_max_abs` 2.75 vs 旧工程 0.75，本次在台架上试过 1.0 / 0.75
+    两档，那两格占据依旧存在，故未改）。一次性脚本都留在 `.scratch/`（不进仓库）：
+    `repro/run_variants.sh`（配置副本对照）、`repro/ab_f3.sh`（F3 对照）、
+    `corridor_width_check.py`、`layer_probe.py`。
+
+## 2026-09-17 — 目标时间戳归零：远端 Foxglove 点击的目标不再因时钟偏差被丢弃
+
+- 需求与现场证据：用户用 Foxglove + SSH 远程调试，在地图上点击发目标点，3D 面板能看到点，
+  但 `/opt_path_vis`、`/nav_executor/global_plan` 始终没有轨迹。nav_executor 节点日志显示每次点击都是
+
+  ```text
+  Ignoring goal: cannot transform from map to odom
+    (Lookup would require extrapolation into the future.
+     Requested time 1789645723.193000 but the latest data is at 1789645723.112084)
+  ```
+
+  逐次量「目标到达时刻（本机时钟）vs 目标自带 `header.stamp`」得到 +351 / +346 / +313 / +320 ms，
+  即**笔记本时钟比机器人快约 330 ms**。Foxglove 用客户端时钟给发布的 ROS 消息打戳，目标一到达本机
+  就已经「在未来」，tf2 拒绝向未来外推，于是目标在 `acceptGoal` 的第一次坐标变换就被丢弃。
+  机器人自身时钟正常（`System clock synchronized: yes` / `NTP service: active`，且无 `/clock`）。
+  先尝试同步笔记本时钟，未能收敛——`systemd-timesyncd` 对小于 5 s 的偏差是约 500 ppm 的缓 slew，
+  350 ms 需要十几分钟才能掰回来。
+- 改动（代码，`src/mas2027_nav_executor/src/path_planner/path_planner.cpp`）：`acceptGoal` 在两次
+  `tf_buffer_->transform(...)` 之前把目标 `header.stamp` 归零
+  （`rclcpp::Time(0, 0, node_->get_clock()->get_clock_type())`），tf2 把 0 视为「取最新可用 TF」，
+  从此与两端时钟偏差无关；第二次（转到地形图坐标系）查询前再显式归零一次，避免依赖 tf2 对
+  `transform()` 输出时间戳的实现细节。**只改时间戳，坐标系、可通行性、ROGMap 快照、
+  里程计新鲜度、`dynamic_map_timeout_s` 等判定门槛一处都没动。**
+  下游确认不受影响：`TaskManager::submitGoal` 用的是自己的 `rclcpp::Clock().now()`，
+  且 `task_manager.cpp:76` 的 `pose.header.stamp` 检查针对的是机器人位姿而不是目标。
+- 验证：
+  1. 改前先做无风险对照实验：用 `ros2 topic pub --once` 发一个 `stamp=0`、位于地图外 `(1000, 1000)`
+     的目标，日志由 `extrapolation into the future` 变为
+     `Ignoring goal: occupied in terrain or dynamic map`，证明 TF 那一步已经能通过
+     （该目标在地图外必被拒，全程不产生任何运动命令）。
+  2. `colcon build --packages-select mas2027_nav_executor --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release`
+     通过（22 s），新二进制时间戳 19:54:21。
+  3. **未完成**：改后尚未在实机复测。重启 nav 栈需要伪终端，而本次会话 shell 无 tty，
+     `emulate_tty=True` 的节点（`nav_executor` / `odom_localizer` / `ros2_comm`）报
+     `OSError: out of pty devices`，因此重启交回用户在自有 SSH 会话执行；
+     待其重启后需补一次「带 +330 ms 未来时间戳的目标能被接纳」的验证。
+
+## 2026-09-17 — 新增 Foxglove 远程可视化调试手册（含 3.5.0 子协议改名坑）
+
+- 需求与现场证据：用户需要"在另一台机器通过 SSH 远程用 Foxglove 可视化并调试"。
+  现场为 Ubuntu 24.04 + ROS 2 Jazzy，机器人 `mas-intel-1`（wlan `192.168.77.79`），
+  笔记本 `192.168.77.15`，已装 `ros-jazzy-foxglove-bridge 3.5.0` 与 Foxglove Studio 3.1.1。
+  排障中定位到两个必踩的坑：① 原先用 `address:=127.0.0.1` 起 bridge，只监听回环，
+  远端无从连起；② 该版本 bridge 已换用新版 Rust `foxglove-sdk`，WebSocket 握手
+  **只接受子协议 `foxglove.sdk.v1`**，不再接受 `foxglove.websocket.v1`，旧客户端一律被 400 拒绝，
+  服务端只留下 `Dropping client ...: handshake failed`，而报错文本
+  `Missing expected sec-websocket-protocol header` 位于 `/opt/ros/jazzy/lib/libfoxglove.so`。
+- 改动：新增文档 `src/docs/foxglove_remote_debug.md`，内容包括链路拓扑、机器人端/笔记本端
+  指令、Foxglove 面板与话题清单、`topic_whitelist` 限流、8 类已知坑、排障速查表，
+  以及远程发 `/goal_pose`、录包等调试动作。**未改动任何代码、launch 或配置**；
+  bridge 仍用官方 `foxglove_bridge_launch.xml`，仅通过 `address` / `port` / `topic_whitelist`
+  参数区分"SSH 隧道"与"直连"两种用法。
+- 验证：在本机实测。用 Python 原始 socket 对比三种子协议声明：`foxglove.websocket.v1`
+  → `400 Bad Request`，`foxglove.sdk.v1` → `101 Switching Protocols`，两者同时声明 → `101`
+  且服务端选中 `foxglove.sdk.v1`；在 `libfoxglove.so` 中确认该错误字符串与 `foxglove.sdk.v1`
+  相邻；在 `/opt/Foxglove/resources/app.asar` 中确认客户端
+  `SUPPORTED_SUBPROTOCOLS=["foxglove.websocket.v1","foxglove.sdk.v1"]`，即 Studio 3.1.1 兼容。
+  bridge 分别以 `0.0.0.0:8765` 与 `127.0.0.1:8765` 起过，`ss -tln` 确认监听，
+  日志出现 50 余条 `Advertising new channel`；另确认 ufw 为 `ENABLED=no`、
+  `sshd_config` 未限制 `AllowTcpForwarding`。
+  **未验证**：笔记本侧 Foxglove 的实连（无法代替上位机操作）、隧道带宽下的点云帧率、
+  网页版 `studio.foxglove.dev` 的实际握手（仅依据 mixed-content 规则推断必须走隧道）。
+
+## 2026-09-17 — "MPC 输出让车慢且卡顿"排查：种子门撤掉净空硬否决 + MPC 打断时锚到实测车速
+
+- 需求与现场证据：用户反馈"经过 MPC 输出的速度，会使得频繁地进入冷启动，行驶速度慢且卡顿；
+  `/home/mas/mas_nav_2027` 里设 3 m/s 上限就跑得很快，应该不是上下位机传输的问题"。
+  先量了三路速度（新脚本 `test/trace_speed.py`）：2026-09-17 14:02 那次实车，
+  6.8 m 的一段用了 12.8 s（平均 0.53 m/s）、**全程无任何 Braking/停车前缀/急停**，
+  而 `cmd` 1.14~1.73 m/s、`odom` 0.55~0.91 m/s，且 `odom` 与位姿位移一致（0.66 vs 0.62~0.75）
+  ⇒ 那一段的"慢"不在规划也不在 MPC，底盘只跟到指令的一半。
+  再建闭环台架 `test/bench_closed_loop.py`（真实 map_server + 真实 nav_executor +
+  真实 lab3 地图 + 一阶底盘模型）复现"走走停停"：规划峰值 2.5~2.9 m/s、MPC 输出跟着到
+  2.4~2.6 m/s，但 `MINCO path generation failed` 多的那些运行移动拍只有 11~19%、
+  40 s 只走 4.4~4.6 m；失败少的运行移动拍 70~84%、走 15~20 m
+  ⇒ **慢的机制是规划侧拒绝发布轨迹（`/opt_path` 一断就只能发 0），MPC 不是限速环节**。
+  `Large velocity error → COLD_START` 是车被刹停后规划器的自愈动作，是症状不是原因。
+- 改动 1（代码，`local_path_processor.cpp` / `.hpp`）：**种子门不再用净空硬否决**。
+  交给 MINCO 的是折线种子、真正执行的是优化后的轨迹，MINCO 的位置罚项会把轨迹推离障碍，
+  拿折线的净空去否决种子等于要求种子先满足轨迹的指标、把 MINCO 的避障能力作废；
+  旧工程 `mas_nav_2027` 的 `isLineFree`（`minco_core/components/local_path_processor.cpp:9-31`）
+  只查占据，而它的轨迹级门槛更严（`collision_dist 0.30`、无抖动容差）却跑得快。
+  现在 `segmentClear(..., enforce_clearance)`：占据/地形/查询无效仍是硬否决，净空不足只记现场
+  （新增 `SeedRejectInfo::clearance_only`）并继续采样；停车/脱困前缀传 `enforce_clearance=true`
+  （前缀末端是"车要停在哪"，本身必须满足净空）；新增可查 INFO
+  `Local seed is tight but not blocked (...)`,与 `Live obstacle blocks the local route` 区分；
+  `note_reject` 允许硬否决覆盖先前的软记录。**三道轨迹级净空门一处都没放松。**
+- 改动 2（代码，`mpc_solver.hpp` / `path_executor.cpp`）：**MPC 加速度锚点在被"轨迹过期 /
+  参考失败 / 求解失败 / 任一指令门否决"打断时，锚到实测车速而不是清零**。此前清零 ⇒
+  恢复后第一拍被限成 `a_max·dt = 0.2 m/s`，车还在 1.5 m/s 就硬砍到 0.2 ⇒ 底盘急刹再爬回来，
+  门控 1~2 Hz 抖动时就是"反复启停 / 频繁冷启动"。速度上下限、加速度上下限、净空判据全不变，
+  只是把约束从"相对上一条指令"改成"相对车实际速度"（后者才是真正的加速度）；缺里程计仍清零。
+- 改动 3（工具与文档）：`test/bench_closed_loop.py`（闭环台架，含 stdout 抓取与三路速度曲线）、
+  `test/trace_speed.py`（实车三路速度记录，docstring 写明"必须先 source 工作区，否则 plan 两列恒为 0"）、
+  `docs/executor_velocity_triage_2026-09-17.md`（完整证据、机制、未定论项、上车验证步骤）。
+- 验证：
+  1. `colcon build`（Release）通过；`ctest` **9/9 通过**；
+  2. `test_mpc_horizon` 新增锚点用例，实测打印
+     `anchor semantics: reset cap 0.2 m/s, measured 1.5 m/s -> first step 1.7 m/s`；
+  3. `test_local_path_processor` 按新语义改写并保留反例：0.50 m 走廊（中线净空 0.25 < 0.30）
+     ⇒ 种子有效 + `clearance_only=true`；走廊中段整列封死且车离封口 0.10 m
+     ⇒ 四层兜底全败、`dense_path` 清空、`verdict=GEOMETRY`；
+  4. 标准冒烟：`smoke_goal.py` → `goal smoke passed: 40 trajectory poses, 48 global plan poses,
+     marker width 0.150 m`；`smoke_goal_motion.py` → `cmd_vel: 240 msgs, moving 239,
+     max speed 0.941 m/s` + `goal motion smoke passed`。
+- 未验证 / 未做：**未上实车**。台架是**双峰**的（起点 odom(0,0) 净空只有 0.158 m，
+  头 1 秒能不能从 near-field 放宽里挤出来基本掷硬币），rho 100/500 各跑两次结论互相矛盾
+  （78%/19% 与 73%/11%），因此**没有**据此改 `penalty_weight_time`，也没动 `safe_dist`、
+  ROGMap 高度窗口（`scan_z_max_abs` 2.75 vs 旧工程 0.75）等配置；这些都写进 triage 文档 §5，
+  需按"单变量 + 至少 2~3 次运行"上车复测。另记一条待查项：台架 `/cmd_vel` 间隔 p90 61~80 ms、
+  max ~100 ms（标称 50 ms），而 `nav_executor_node` 的四个可视化/地图订阅回调与 20 Hz 控制
+  定时器同处默认回调组，可能是抖动来源，本次未改。
+
+## 2026-09-17 — 统一四道净空门的有效阈值（审计 §1.1）：消掉"规划放行、执行刹车"的 2 cm 缝
+
+- 需求与现场证据：用户给出新一轮实车日志并确认"明显一顿一顿，能听到反复启停"。
+  该轮 **3/3 目标全部到达**、无急停、无 `MINCO trajectory not published`，但实测平均速度只有
+  0.30~0.38 m/s（目标 2：7.37 m / 19.4 s；目标 3：2.18 m / 7.3 s），而规划速度是 1.3~2.5 m/s
+  （45 次 `Large velocity error (1.0~1.6 m/s)` 即为该差值）。日志里
+  `Braking: ... (reason=clearance value=0.263/0.273/0.274/0.279/0.279/0.279/0.280 threshold=0.280)`
+  共 7 次，**全部落在 [0.26, 0.28] 这条缝里** —— 即全部是两套阈值造成的假否决。
+- 机制：四道净空门里，发布前校验（`minco_planner.cpp:1931`）与 20 Hz 监视（`:1968`）用
+  `requiredClearance(v) − kMonitorClearanceTolerance(0.02)`，而 **MPC 指令门**
+  （`command_safety.cpp`）与**局部种子门/绕行搜索**（`local_path_processor.cpp`）直接用完整要求。
+  于是规划器按 0.26 判"能过"并发布轨迹（或生成种子），执行器却按 0.28 否决指令、
+  种子门又按 0.28 否掉种子 → 现场表现就是反复启停。指令门每次否决还会
+  `solver_->resetLastControl()`（丢 MPC 加速度锚点），所以是"一脚踩死 + 重新起步"。
+- 改动（**一处常量、一条判据**）：
+  1. `common/environment/clearance_gate.hpp` 新增唯一定义处
+     `kEsdfJitterTolerance = 0.02` 与 `effectiveClearanceThreshold(full)`，
+     并在注释里写明四道门、0.05→0.02 的来历（0.05 曾把有效阈值压到 0.20 导致实车撞墙）；
+  2. `minco_planner.cpp` 的 `kMonitorClearanceTolerance` 改为引用该常量的别名（行为不变）；
+  3. `command_safety.cpp`：完整要求改用 `effectiveClearanceThreshold(rog_map_clearance)`，
+     **近场半径仍取 `rog_map_clearance`（车体安全半径），不变**；
+  4. `local_path_processor.cpp`：种子门 `segmentClear`、绕行搜索 `cellTraversable` 的完整要求
+     改用新私有 helper `fullClearanceRequirement()`（= effectiveClearanceThreshold(collision_dist_)），
+     近场半径与 `kNearFieldSlack` 语义不变（后者也改为引用同一常量）；
+  5. `classifySeedReject` 的判读模型同步改为统一后的有效阈值（否则它会继续按旧的两套阈值
+     建模，把"其实能过"的点报成 SEED_GATE_STRICTER）。
+- 验证：
+  1. `colcon build`（Release）通过；`ctest` **9/9 通过**；
+  2. `test_rog_map_command_safety.cpp` 新增 3b 用例锁住这条缝：起点净空 0.45、1.0 m/s、
+     净空随 +x 以 0.46/m 下降 ⇒ 前视 0.35 s 末端（弧长 0.35 m，已出近场半径 0.30）净空 ≈0.289，
+     **统一前按 0.30 必拒、统一后按 0.28 必放行**；并保留"压到 0.28 以下仍必须拦下"的反例，
+     避免把统一写成放水；
+  3. `test_local_path_processor.cpp` 两处期望按新语义更新：种子门的 `required` 由 0.30 改为
+     `effectiveClearanceThreshold(0.30) = 0.28`（并加断言防止某道门再自己写死一个数）；
+     `classifySeedReject` 的"近场之外、clearance 0.295"一格由 `GEOMETRY` 改为
+     `SEED_GATE_STRICTER`（统一后 0.295 能过 0.28，因此该否决只可能来自漂移——这一格
+     从"环境过不去"变成了"判据不一致"的探针），并补一格 clearance 0.27 < 0.28 仍报 GEOMETRY；
+  4. 标准冒烟 `smoke_goal.py` 通过：`goal smoke passed: 40 trajectory poses, 48 global plan poses,
+     marker width 0.150 m`；实车 CSV `.scratch/rog_map_perf_summary.csv` 冒烟前后 md5 不变。
+- 未验证 / 未做：**未上实车**。预期效果：那 7 次 `clearance` 否决全部消失、种子门不再因
+  0.26~0.28 的窄处报 `LOCAL_SEED_INVALID`（这也是 0.28 m 蠕行前缀的来源之一）。
+  仍需现场确认的是：统一后实际速度是否跟上来；若"一顿一顿"仍在，下一批嫌疑是
+  MPC 跟踪权重（`mpc.weights.state/command`）与建图丢帧（`[ROG WARN] Unfinished frame` 仍约 1 s 一次）。
+  **未改动任何净空数值本身**（`collision_dist`/`rog_map_clearance` 仍 0.28），
+  只统一了四道门对它的取用方式。
+
+## 2026-09-17 — 提速：`minco_optimizer.penalty_weight_time` 100 → 500（**只改一项配置**）
+
+- 需求：用户反馈"现在基本好了，轨迹也是走的中间，但是我希望更快一点"。
+- 先排除嫌疑（每条单变量各跑一次冒烟，量 `/nav_executor/global_path` 上 MINCO 轨迹的速度
+  剖面 —— 该话题按 `t_step = 0.05 s` 均匀采样发布，相邻点间距 / 0.05 即规划速度）：
+  | 变体 | vmax | vmean | 结论 |
+  |---|---|---|---|
+  | 基线（`max_velocity 3.0`） | 1.937 | 1.021 | — |
+  | `max_velocity` 3.0 → 4.0 | 1.942 | 1.021 | **速度上限没被顶到**，不是瓶颈 |
+  | `turn_angle_deadzone` 0.1→0.35、`decay_power` 1.3→0.8、`min_turn_vel` 0.8→1.5 | 1.943 | 1.021 | **转弯限速也没起作用** |
+  另核对 `calCurvatureDecay`（`minco_utils.cpp:17-29`）：`ratio` 的分母是 `saturation`，
+  `saturation=1.0` 时 `ratio` 被夹在 0.9，`exp(-1.3×0.9)=0.31` ⇒ 转角限速实际下限约
+  **1.48 m/s**，配置里的 `min_turn_vel: 0.8` 永远取不到（该值形同虚设，但也不是瓶颈）。
+- 真正的瓶颈是 MINCO 的"能量 ↔ 时间"权衡：`rho`（本项）相对 jerk 能量项太小，优化器倾向
+  拉长分段时长省能量。实测同一目标点、同一张图：
+  | `penalty_weight_time` | 轨迹时长 | vmax | vmean | v_p50 |
+  |---|---|---|---|---|
+  | **100（原值）** | 2.55 s | 1.937 | 1.021 | 1.084 |
+  | 200 | 2.25 s | 2.186 | 1.156 | 1.225 |
+  | **500（本次取值）** | 1.95 s | **2.506** | **1.336** | 1.367 |
+  | 1000 | 1.95 s | 2.461 | 1.339 | 1.459（已饱和） |
+  即 100 → 500 使峰值速度 **+29%**、平均 **+31%**，再往上无额外收益（已顶到加速度/速度限制），
+  故取 500。
+- 改动：仅 `mas2027_nav_executor/config/planner_params.yaml` 的
+  `planner.minco_optimizer.penalty_weight_time` 由 100.0 改为 500.0（附 30 行说明：
+  排除嫌疑的实测表、饱和点、代价、回退方式）。**未改任何源码、未改其它参数。**
+- 验证：
+  1. 最终配置复测：`MINCO-SPEED pts=40 vmax=2.506 vmean=1.336 v_p50=1.367 v_p90=2.454`，
+     与变体测量一致；折线相对融合层净空不变（min 0.427 m，`frac_lt_0.30 = 0`）；
+  2. 标准冒烟 `smoke_goal.py`（ROS_DOMAIN_ID=232）通过：
+     `goal smoke passed: 40 trajectory poses, 48 global plan poses, marker width 0.150 m`
+     —— 轨迹点数 52 → 40 正是时长 2.55 s → 1.95 s 的体现，其余断言（格点路径、帧、末点、
+     marker 样式）全部照旧通过；
+  3. 本轮所有对比都在 `.scratch/` 下的配置副本里做（`cfg_speed_base` / `cfg_sp_time200` /
+     `cfg_sp_time500` / `cfg_sp_time1000` / `cfg_sp_vmax4` / `cfg_sp_turnsoft`），
+     实车 CSV 未被触碰。
+- 顺带修正一个**测量脚本自身的坑**（`.scratch/esdf_path_compare.py`，不进仓库）：
+  原先等到 `/nav_executor/global_plan`（全局折线）就退出，而 MINCO 轨迹是随后才发布的，
+  导致一次变体被误判为"完全无轨迹"。已改成必须同时等到 `/nav_executor/global_path`。
+- 未验证 / 未做：**未上实车**。需要现场确认：(a) 实际车速是否跟着上来（RViz 的 MINCO Trajectory
+  按速度染色，可直接看颜色）；(b) MPC 能否跟上更激进的计划（若跟不上/超调，下一批旋钮是
+  `mpc.weights.state / command` 与 `mpc.constraints.*`，不要先动本项）；
+  (c) 本项削弱了"靠降速换净空"的倾向，若觉得"快了但不踏实"，正确做法是把
+  `replan_react_time` 从 0 调到 0.05~0.1（给 required 加 v·t 的制动预算），而不是回退本项。
+  未动 `max_velocity` / MPC 速度上限（当前两处都是 3.0，本次轨迹峰值 2.5 仍未顶到）。
+
+## 2026-09-17 — 让 MINCO 看到先验墙：`rog_map.projection.prior_map.enable` false → true（**只改一项配置**）
+
+- 需求：用户要求"让 minco 看到先验墙"，并指出"rogmap 不是有先验模式吗，你去看 mas_nav_2027"。
+- 上游核对（按用户指示）：
+  - 原始 HW 工程 `navi_minco_bit/src/navigation/navi2_bringup/params/sentry1.yaml:389-398`
+    **在运行时是开启的**：`projection.prior_map.{enable: true, yaml_path: <first_floor_prior.yaml>,
+    pgm_path: "", frame_id: map}`；注释写明"启用后只增加二维硬障碍，不清除在线障碍"。
+  - 本工程 `src/mas2027_perception/rog_map/src/rog_map/prior_map.cpp` 与上游
+    `navi_minco_bit/src/perception/rog_map/src/rog_map/prior_map.cpp` **逐字节相同**
+    （`diff` 无输出），加载器实现正确：`negate=0` 时 `occupancy=(255-gray)/255`、
+    PGM 行序按 `image_row = height-1-my_from_bottom` 翻转、支持 origin/yaw。
+  - 生效链路（逐行核对）：`enable=true` → `rebuildFusedProjection()` 把先验占据格并进
+    `fused_projection_mask_`（只叠加障碍；`rog_map.cpp:832-844`）→
+    `field_->update(..., fused_projection_mask_, ...)` 用它烘焙二维 ESDF（`rog_map.cpp:766-770`）
+    → `refreshQuery()` 把快照与 field 交给查询接口（`rog_map.cpp:869`）→
+    MINCO 位置罚项 / 发布前校验 / 20 Hz 监视 / MPC 指令门（都走 `dynamicQuery()`）全部可见。
+    **合并发生在 ESDF 之前**，因此是"优化器直接看得见"，而非地形门那种事后否决。
+  - 失效保护：拿不到 map→odom 时 `getPriorMapTransform()` 返回 false，
+    `rebuildFusedProjection()` 收到 nullptr 直接 return，退化为只用在线感知
+    （`prior_map.cpp:298-301`），不会用错位姿贴图。
+- **推翻 `planner_params.yaml` 里 2026-09-15 的"先验图未对齐"结论**（本次改动的关键依据）：
+  当时的证据是"在 (3.2,-0.03) 附近 layer_value_static 有墙而 layer_value_dynamic 是空的"，
+  但两层语义本就不同 —— static 是 PGM 先验，dynamic 只含**实时观测过**的格子，未观测处为空
+  是正常的，它证明不了错位。本次直接查先验点云（新增一次性脚本
+  `/home/mas/mas_nav_2027_native/.scratch/pcd_wall_check.py`，解 `binary_compressed`/LZF 后统计）：
+  - `(3.20,-0.03) ±0.15 m` → **43 点**，z∈[-0.03, 3.13]，z 中位 1.89 m，z>0.05 m 的 41 点；
+  - 对照 `(5.97,2.11) ±0.15 m` → 21 点，z 中位 2.14 m（审计 §1.3 已核实的真墙）。
+  即 (3.2,-0.03) **本来就是真墙**。所以当次融合后净空降到 0.272~0.285 m 是**真实净空**，
+  4 次 COLLISION + 10 次急停是**正确拒绝**（该路径距真墙 0.27 m < collision_dist 0.28，
+  更远低于车体外接圆半径 0.306 m）。真正该修的是"路径贴墙"，不是把墙藏起来。
+- 改动：仅 `mas2027_nav_executor/config/planner_params.yaml` 的
+  `planner.rog_map.projection.prior_map.enable` 由 false 改为 true；`yaml_path` 仍指向
+  `src/mas2027_nav_bringup/map/lab3.yaml`（`pgm_path: ""` 走 YAML 的 image 字段，
+  `frame_id: map`）。**未改任何源码、未改其它参数**；同时重写了该段注释（推翻旧结论的依据、
+  生效链路、失效保护、两个副作用、回退方式）。
+- 验证：
+  1. 冒烟 `smoke_goal.py`（ROS_DOMAIN_ID=232）在开启后仍通过：
+     `goal smoke passed: 52 trajectory poses, 48 global plan poses, marker width 0.150 m`；
+  2. 用探针订阅 `/rog_map/layer_value_static`（QoS 必须匹配发布端的
+     `QoS(1).best_effort().keep_last(1).volatile`，否则收不到）实测**开关前后**：
+     | 配置 | `/rog_map/layer_value_static` | 融合层 `/rog_map/layer_value` | 折线相对融合层净空 |
+     |---|---|---|---|
+     | `enable: false` | 占据格 **0** | 占据格 **0** | 无意义（距离场全为哨兵值 1.58e6）|
+     | `enable: true` | 占据格 **11835** | 占据格 **11835** | min **0.427 m** / mean 0.684 m |
+     11835 与离线按 `lab3.pgm` 数出的 11932 吻合；且折线净空与它相对**地形图**（同一张 PGM）
+     的净空逐位一致（min 0.427 / mean 0.684）⇒ 两张图口径统一，MINCO 不再"看不见墙"。
+  3. 开关前后全局折线本身不变（48 点 / 2.749 m）——符合预期：全局搜索用地形图，不走 ROGMap。
+  4. 新增的一次性脚本均放在 `/home/mas/mas_nav_2027_native/.scratch/`（**不进仓库**）：
+     `pcd_wall_check.py`、`rog_static_probe.py`，以及扩展了融合层统计的
+     `esdf_path_compare.py`；实车 CSV `.scratch/rog_map_perf_summary.csv` 未被本轮触碰
+     （对比运行写到 `.scratch/esdf_cmp/<配置名>/`）。
+- 未验证 / 未做：**未上实车**。需要现场确认的三件事：(a) RViz `/rog_map/layer_value_static`
+  与实测墙体是否吻合；(b) 是否出现"点目标没反应"——先验占据格会让机器人自身所在格被判不自由，
+  `acceptGoal` 会拒绝（`Ignoring goal: ROGMap is not clear at the robot pose`）；
+  (c) 窄处是否更频繁触发 `LOCAL_SEED_*`/`COLLISION`。回退方式：本项改回 `false` 并重启
+  （configure-time，运行时改不生效）。
+
+## 2026-09-17 — 修"全局折线太贴墙"：`smac_2d.esdf_max_cost` 0.5 → 5.0（**只改一项配置**）
+
+- 需求：用户反馈"全局路径规划太贴墙了，明明可以有更好的路径"，并问"esdf 是有动态物体吗、
+  先验图不进入 esdf 吗"。本轮先只做用户选定的**单变量**改动，其余候选（统一四道净空门、
+  把 ROGMap 实时占据接入全局搜索、先验图进 MINCO 的 ESDF）留待后续。
+- 机制（代码依据）：`smac_planner_2d_simple.cpp:181-186` 的
+  `potential = min(weight·exp(-d/decay), max_cost)`，而 `max_cost(0.5)` 只有 `weight(1.0)` 的一半
+  ⇒ **d ≤ decay·ln2 = 0.5545 m 以内 potential 恒为 0.5、梯度为 0**；走廊净宽 ≤ ~1.1 m 时
+  整条走廊都落在饱和区，全局搜索只剩"最短路径"一个目标 → 贴内侧墙、切内角。
+  代价量纲是"每米路径的倍率"（1 + potential）：贴墙 1.5×/m，2 m 宽走廊中心仅 1.29×/m。
+  另外 `TerrainMapQuery::refresh()` 把所有非占据格统一压成 `kFreeCost=0`，SMAC 的
+  `evaluateInflationCost(0)=1.0`，因此地形图里 50/66 那类中间代价在进搜索前就丢了 ——
+  **ESDF 是全局搜索里唯一的软引导**，它饱和等于没有引导。
+- 溯源（避免误判为笔误）：0.5 与上游 HW 原始工程
+  `navi_minco_bit/src/navigation/navi2_bringup/params/sentry1.yaml:508-512` 完全一致；
+  而 `smac_planner_2d_simple.hpp:161-164` 的代码默认是 `use_esdf_cost=false / decay=0.5 /
+  max_cost=5.0`，即上游本意是"势场不封顶"。取 5.0 是因为 `max_cost ≥ weight` 时封顶不生效，
+  与 1.0 行为等价，写 5.0 是为了显式表达"不封顶"并与代码默认一致。
+- 改动：仅 `mas2027_nav_executor/config/planner_params.yaml` 的 `smac_2d.esdf_max_cost`
+  由 0.5 改为 5.0（连同 40 行说明：机制、量纲、溯源、实测数据、回退方式）。
+  **未改任何源码、未改其它参数**；`esdf_weight` 仍 1.0、`esdf_decay` 仍 0.8。
+- 验证（新增一次性对比脚本 `/home/mas/mas_nav_2027_native/.scratch/esdf_path_compare.py`，
+  **不属于仓库**）：跑真实 `map_server` + `mas2027_nav_executor_node`，取
+  `/nav_executor/global_plan` 与 `/cost_map`，用与 `TerrainMapQuery::refresh()` 同一判据
+  （`cost < 95` 且 `>= 0` 为自由）以 `cv2.distanceTransform` 烘焙距离场，量折线沿线净空：
+  | 配置 | 点数 | 折线长 | 最小净空 | 平均 | 中位 | <0.30 m 占比 | <0.50 m 占比 |
+  |---|---|---|---|---|---|---|---|
+  | `max_cost 0.5`（改前） | 48 | 2.755 m | 0.391 m | 0.678 m | 0.702 m | 0.0% | **10.4%** |
+  | `max_cost 5.0`（改后） | 48 | 2.749 m | **0.427 m** | 0.684 m | 0.702 m | 0.0% | **6.2%** |
+  | 另测 `weight 2.0`（max 5.0） | 48 | 2.749 m | 0.427 m | 0.684 m | 0.702 m | 0.0% | 6.2% |
+  | 另测 `decay 1.2`（max 5.0） | 48 | 2.749 m | 0.427 m | 0.684 m | 0.702 m | 0.0% | 6.2% |
+  结论：**起决定作用的是"解除封顶"**；在本用例上再加权/放宽衰减与单改 5.0 结果完全相同，
+  故本轮只改这一项。每次运行的实际取值已从节点启动日志核对
+  （`SMAC 2D global search enabled: use_esdf_cost=true weight=… decay=… max_cost=…`）。
+  标准冒烟 `smoke_goal.py`（ROS_DOMAIN_ID=232）通过：
+  `goal smoke passed: 52 trajectory poses, 48 global plan poses, marker width 0.150 m`。
+  另核对 CSV 隔离有效：本次对比运行的产物落在 `.scratch/esdf_cmp/<配置名>/rog_map_*.csv`，
+  实车 `.scratch/rog_map_perf_summary.csv` 的最后一行是**用户自己那次实车运行**
+  （时间戳 1789620143~1789620314）写入的，未被本轮触碰。
+- 未验证 / 未做：**未上实车**，贴墙改善幅度（本用例最小净空 +3.6 cm、近墙采样点比例 10.4%→6.2%）
+  在真实窄走廊里可能更明显也可能不足，需现场用同一目标点前后对比折线形状；
+  未做统一四道净空门（审计 §1.1，本轮日志里仍出现
+  `Braking: … reason=clearance value=0.278 threshold=0.280`，差 2 mm）、
+  未把 ROGMap 实时占据接入全局搜索、未把先验图并入 MINCO 的 ESDF。
+
+## 2026-09-17 — 修"一卡一卡"：动态层新鲜度阈值参数化（F1）+ 热启动日志/行为矛盾（F3）
+
+- 需求与现场证据：用户报告"车移动的很不丝滑，一卡一卡"，并给出一份 25 s 的实车日志。
+  日志里的两条规律性重复定位到本轮的改动：
+  1. `Braking: ... (reason=dynamic_stale value=0.509~0.521 threshold=0.500)` **12 次/24.5 s**，
+     且数值几乎恒定 —— 说明不是偶发抖动，而是被卡在阈值边缘按发布周期反复触发；
+  2. `Large velocity error (1.0~1.7 m/s). Downgrading to COLD_START.` 与
+     `Hot Start Rejected: Direction mismatch` 各几十次 —— 热启动几乎从不生效。
+  用户另确认：**当时车头前方空间是空的**（见下"未解决"）。
+- **F1（动态层新鲜度阈值参数化 + 给足余量）**：`map_server` 在
+  `bypass_dynamic_obstacle:=True`（本仓库 `nav_executor_launch.py:119` 的默认值）下不订阅点云，
+  只由 500 ms 定时器发一帧**全 0 空图**（`map_server_node.cpp:94/101/109`），而判据硬编码 0.5 s
+  （`command_safety.cpp:40`），两者零余量 ⇒ 20 Hz 控制下每个周期末尾必有一拍越界，
+  整条速度指令被清零且 `resetLastControl()` 丢掉 MPC 热启动 ⇒ 每秒约 2 次顿挫。
+  改动：
+  - 新增参数 `node.dynamic_map_timeout_s`，默认 **1.5 s**（= 3× 发布周期），
+    在 `nav_executor_node.cpp` 声明并校验（必须为正）；
+  - `command_safety.{hpp,cpp}` 增加形参 `dynamic_map_timeout_s`，替换硬编码 0.5；
+  - `PathExecutorParams` 增加同名字段，`path_executor.cpp` 透传；
+  - `PathPlanner` 构造函数增加 `dynamic_map_timeout_s` 形参，目标接纳门
+    （原 `path_planner.cpp:72` 的 `> 0.5`）改用该值，并把 age 上限打进 WARN；
+  - `config/node_params.yaml` 增加该项（含现场依据与"只放宽新鲜度、不触碰净空阈值"的说明）。
+  ⚠️ 本项只放宽"地图新鲜度"，实时避障仍由 ROGMap（20 Hz）负责，未改动任何净空阈值。
+- **F3（热启动两条分支的日志与行为矛盾）**：`minco_planner.cpp` 的 `determinePlanningState()`
+  在 tracking_error / vel_error 超限时打印 "Downgrading to COLD_START" 却 `return HOT_START`
+  （COLD_START 那行被注释掉）。已核对上游 `/home/mas/mas_nav_2027` 的同名文件是**同样的写法**，
+  属移植遗留而非本地实验，且本地无任何验证记录。改为真正 `return COLD_START`：
+  起点取实测速度、加速度置零，时间/路点种子由 PTAllocation 从新路径重新分配。
+  影响面：执行器正在刹车时，优化器不再按"上一条轨迹的预测速度"（实测差 1.0~1.7 m/s）生成轨迹。
+- 验证：
+  1. `colcon build --packages-select mas2027_nav_executor`（Release）通过；
+  2. `ctest` **9/9 通过**；并给 `test/test_rog_map_command_safety.cpp` 补了 4 条新断言锁住本行为
+     （age=0.51 s 必须放行、age=2.0 s 必须被 `dynamic_stale` 拒绝、`detail.threshold` 必须等于
+     传入参数），旧两处调用同步了新签名；
+  3. `smoke_goal.py`（隔离域 ROS_DOMAIN_ID=232）通过：`goal smoke passed: 52 trajectory poses,
+     48 global plan poses, marker width 0.150 m`；冒烟前后实车 CSV
+     `.scratch/rog_map_perf_summary.csv` 行数（79）与 md5 不变，确认隔离仍有效；
+  4. 已确认 `nav_executor_launch.py:96` 用 `glob` 加载执行器包内全部 `config/*.yaml`，
+     因此新参数无需改 launch 即可生效。
+- 未验证 / 未做：**未上实车**，1.5 s 的实际手感与是否仍偶发 `dynamic_stale` 待现场确认；
+  未做 F2（旁路空图不应有否决权）、F4（否决时按加速度限幅减速而非一步到零）、F6（ROGMap 丢帧）。
+- **未解决（本轮改完后仍需跟进）**：用户确认"空间是空的"，但日志里
+  `No local route around the live obstacle; planning a safe stopping prefix.` 11 次、
+  `escaping with a 0.28 m creep prefix.` 4 次 —— 即 ROGMap 在空场地里把车头前方约 0.35 m 处
+  判成了障碍，属**误停**。候选成因（本次未取证）：车体自身点云进入 `raycasting.ray_range`
+  下限 0.3 m 之外、ROGMap 丢帧（`dropped 1` 约每 0.5 s 一次）造成的幽灵占据、
+  或 `pathClear` 首点即车体所在格。下一步判据：卡住时看 RViz `/rog_map/occupied` 与
+  `/rog_map/field` 在车头 0.5 m 内是否有格子；必要时给"修复成功"的分支也加上
+  `dense_reject=` 插桩（当前该现场只在四层全败时才打印）。
+
+## 2026-09-17 — 新增「全局折线穿过新障碍物」判别流程文档（**只加文档，未改任何代码/配置**）
+
+- 需求：用户反馈"运行中突然遇到障碍物，全局路径不会改变，会穿过 occupied 过去"。经逐行核对，
+  用户确认现场是"RViz 里粗青色的**全局路径**穿过障碍块，车实际绕开了/停下了"，
+  并要求**只诊断、暂不改代码**。
+- 结论：该现象属**预期行为**。全局搜索只在 `!hasGlobalPath()` 时执行
+  （`task_manager.cpp:153`），`invalidateGlobalPath()` 仅 5 处调用（同文件 68/91/108/124/145），
+  因此 FOLLOWING 期间折线不随新障碍更新；实际绕障由 `local_path_processor.cpp:171-229`
+  的四层兜底在 ROGMap 滑窗内完成，与折线显示无关。
+- 新增文件：`src/docs/global_plan_stale_triage_2026-09-17.md`。内容为四步判别流程
+  （① 局部修复日志 ② MINCO 失败原因 ③ `rog_map_perf_summary.csv` 的输入/更新频率
+  ④ RViz 粗青线 vs 细彩线该看哪条）、"什么情况下才不再是预期行为"的 7 条成因
+  （建图丢帧、0.3 m 盲区、投影高度带、1.2 s 监视视界、失败后仍执行旧轨迹、
+  全局搜索与净空用两张不同的图、`robot_state_` 竞态），以及代码位置索引与 4 个未实施的修复选项。
+- 验证：本轮全部为只读核对（`task_manager.cpp`、`local_path_processor.cpp`、`minco_planner.cpp`、
+  `planner_mode_context.cpp`、`planner_params.yaml`、审计报告 §1.3/§1.4）；
+  文档中引用的行号均按当前 HEAD 逐条重读确认。**未跑实车、未运行任何会写盘的脚本、未改动源码或配置**，
+  因此判别流程本身的现场有效性仍待用户跑一次带日志的实车验证。
+
+## 2026-09-17 — 审查报告补 §6「复审：现在确实存在的 vs 之前已改掉的」（**只改文档**）
+
+- 需求：用户要求只保留"现在确实有的问题，而不是之前改过的"。因此对 `docs/project_audit_2026-09-17.md`
+  的 §1~§3 做了**逐条回到当前 HEAD 代码复核**，并新增 §6 记录复核结果；**未修改任何源码或配置**。
+- 改动内容（`src/docs/project_audit_2026-09-17.md`，新增 §6 约 62 行）：
+  1. §6.1「现存」：28 条，每条给出**本次在 HEAD 上重新读到的行号**作为证据，并标注现场状态
+     （"每次运行"/"跨多次运行"/"特定条件触发"）。其中带本次实车计数的有：四道门两套阈值（9/13 次刹车）、
+     verdict 误判（11/17）、静态墙（28+10 次）、建图丢帧 30%、动态图层陈旧门（14 次目标被丢，12 次在运行中途）。
+  2. §6.2「已剔除」：9 条历史上已修好的问题（发布门↔监视门阈值一致、近场查询失败误杀、
+     `fill_occ_min=9` 崩溃、投影全量重算、可视化快照未限频、`smoke_goal.py` 覆盖 CSV、
+     双雷达掉线整段静默、地形门无否决点日志、失败原因被时间节流），
+     逐条给出**当前代码**里的修复位置，证明"以前修的现在确实还是好的"，不再作为待办列出。
+  3. 明确区分：§1.1 的四道门阈值不一致**不是**历史那条"发布门 vs 监视门"问题的重复
+     （那条已在 `minco_planner.cpp:1925,1962` 修好），而是同一次修复没有覆盖到
+     `command_safety.cpp:63-64`（执行门）与 `local_path_processor.cpp:331-339`（种子门）。
+- 本轮为复核所做的验证（只读）：`grep`/`sed` 重读 `command_safety.cpp`、`mpc_solver.cpp`、
+  `mpc_types.hpp`、`recovery_behaivor.cpp`、`terrain_map_query.cpp`、`smac_planner_2d_simple.cpp`、
+  `terrain_grid.cpp`、`prob_map.cpp`、`mid360_driver.cpp`、`pgm_to_terrain_msgpack.py`、
+  `map_server_node.cpp`、`odom_localizer/config/params.yaml`、`install/interfaces/.../CostMaps.*`，
+  并对两份 mid360 配置做了 `diff`。
+- 未验证 / 未做：未跑实车、未运行任何会写盘的脚本（含 §1.6 点名的 `smoke_goal_motion.py`，故意不跑）；
+  §6.1 中非"每次运行"的条目仍是**代码路径确认**，触发频率未实测。
+
+## 2026-09-17 — 全项目只读审查：新增 `docs/project_audit_2026-09-17.md`（**只加文档，未改任何代码/配置**）
+
+- 需求：用户要求"分析本项目找出可能问题"。本次为**只读审查 + 实测复核**，
+  **没有修改任何源码、配置或脚本**；唯一新增文件是本报告本身（外加本条历史记录）。
+- 新增文件：`src/docs/project_audit_2026-09-17.md`（569 行）。内容为按严重度分级的问题清单
+  （7 条高、25 条中、20 条低），每条给出位置（`文件:行号`）、证据、影响、最小修复与置信度，
+  并附"本次核实为正常/已改善"的一节，避免重复劳动。
+- 本次为取证所做的**只读/可写产物之外的实测**（均未改动仓库内容）：
+  1. `build/mas2027_nav_executor` 下 `ctest` → **9/9 通过**（0.18 s，`ROS_LOG_DIR` 指向 `.scratch/ctest_log`）；
+  2. `test/smoke_goal.py` + 原始 `lab3_terrain.msgpack`（隔离域 `ROS_DOMAIN_ID=232`）→
+     `goal smoke passed: 52 trajectory poses, 48 global plan poses, marker width 0.150 m`（退出码 0）；
+     并**实测确认冒烟脚本的 CSV 隔离有效**：`.scratch/rog_map_perf_summary.csv`（301 行、实车数据）
+     在冒烟前后行数与 mtime 不变，冒烟产物落在 `.scratch/smoke_run/`。
+  3. **解析了此前未被分析的最新一次实车数据**：`~/.ros/log/mas2027_nav_executor_node_80395_*.log`
+     （21:59–22:04，21 目标/18 到达）+ `.scratch/rog_map_perf_summary.csv`（300 个 1 s 窗口）。
+     由此得到两条**新结论**：① 脏列增量在实车确实生效（`full_reason_dirty_over_ratio` 300/300 为 0，
+     projection 中位 12.8 ms），顶条记录里"未在实车确认"的悬念可结案；② 点云回调实测 **28.78 Hz**
+     而非文档假定的 20 Hz，按 29 Hz 换算预算后 **60% 的窗口超预算**（不是"贴着 50 ms 跑"）。
+  4. 逐条复算了该次运行 17 条 `Live obstacle blocks` 的 `verdict=`：**11/17 被误报为 GEOMETRY**
+     （分类器 `local_path_processor.cpp:43-64` 的近场规则与种子门 `:331` 不同源，也不含轨迹门的
+     0.02 容差），5/17 的实际差距 ≤5 mm；并复算 13 条 `Braking: reason=clearance`，其中 9 条
+     threshold=0.280 而 value 0.262~0.279（**四道净空门存在 0.26/0.28 两套有效阈值**）。
+  5. 独立解包 `pcd/lab3.pcd`，确认被地形门否决的 map (5.9~6.1, 2.0~2.2) 处**确有真实墙体**
+     （19 点、z 到 3.89 m），即地形门拒绝正确、问题在 ROGMap 侧未知格被当自由。
+- 验证：以上 5 项均可复现；报告中的行号均以本次读到的文件内容为准，
+  凡只有代码依据而无实车/实测支撑的推断，条目内已标注「较可能 / 待验证」。
+- 未验证 / 未做：**未修改任何代码或配置**（因此没有"修复后回归"可谈）；
+  未运行 `smoke_goal_motion.py`（报告 §1.6 指出它会 trunc 掉实车 CSV，故意不跑）；
+  未做 clean build（§2.24 的 install 残留建议由有写权限的一侧执行）。
+- 说明：报告 §1.6/§1.7 指出**现有两个脚本仍带着已知风险**（`smoke_goal_motion.py` 会清空实车 CSV；
+  `save_pcd_and_make_map.sh` 引用已删除的 launch 且兜底路径少一层 `src/`），本次**只记录未修**，
+  留待后续按报告的 §5 顺序处理。
+
 ## 2026-09-16 — 脏列增量此前**从未生效**（实测 49% > 0.30 阈值）：阈值放到 0.95 + 周期性全量兜底
 
 - 起因：用户问"为什么突然又卡起来了"。回查 21:30 那次的 summary 分阶段数据，发现**投影耗时仍与"每帧全量"量级一致**（13.98 ms 中位、最大 64.98 ms），而同一时段基准里全量投影是 42.9 ms、增量是 0 ms ⇒ 怀疑增量分支根本没走到。

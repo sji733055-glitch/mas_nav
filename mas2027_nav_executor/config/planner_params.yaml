@@ -16,7 +16,6 @@
       # 本项是结构开关（决定 smac_planner_ 是否存在），属 configure-time，运行时改会被拒绝。
       use_smac: true
       smac_2d:
-        # 取值与 mas_nav_2027 nav2_params.yaml 的 smac_2d 段一致（true / 1.0 / 0.8 / 0.5）。
         # 代价增量 = step * min(weight * exp(-dist/decay), max_cost)，dist 取自 TerrainMapQuery
         # 由规划约束图烘焙的二维有符号距离场（自由为正，上限 3.0 m）。
         # 作用：让折线主动远离墙面、贴近走廊中线，减少 MINCO 后期被净空判据否掉的概率。
@@ -24,7 +23,28 @@
         use_esdf_cost: true
         esdf_weight: 1.0
         esdf_decay: 0.8
-        esdf_max_cost: 0.5
+        # 【2026-09-17 0.5 → 5.0】修"全局折线太贴墙"。
+        # 机制：potential = min(weight·exp(-d/decay), max_cost)，而 max_cost(0.5) 恰好只有
+        # weight(1.0) 的一半 ⇒ **d ≤ decay·ln2 = 0.8×0.693 = 0.5545 m 以内 potential 恒等于
+        # 0.5，梯度为 0**：搜索分不出"贴墙 5 cm"和"离墙 50 cm"，走廊净宽 ≤ ~1.1 m 时整条走廊
+        # 都落在饱和区，全局搜索只剩"最短路径"一个目标 → 贴内侧墙、切内角。
+        # 代价量纲是"每米路径的倍率"（1 + potential）：贴墙 1.5×/m，2 m 宽走廊中心仅 1.29×/m，
+        # 5 m 路径上只差约 1 m 等效代价，很容易被一点抄近路抵消。
+        # 取值依据：`max_cost ≥ weight` 时势场**永不封顶**（最大 potential 就是 weight 本身），
+        # 恢复处处有梯度。5.0 与 1.0 在行为上等价（封顶不生效），取 5.0 只是为了显式表达
+        # "不封顶"，同时与 smac_planner_2d_simple.hpp 的代码默认值一致。
+        # 溯源：0.5 与上游 HW 原始工程 navi_minco_bit 的 params/sentry1.yaml:508-512 一致，
+        # **不是移植笔误**；而该头文件的代码默认是 esdf_max_cost=5.0 / decay=0.5，
+        # 即上游本意是"不封顶"，sentry1.yaml 的 0.5 把势场退化了。
+        # 实测（.scratch/esdf_path_compare.py，跑真实 map_server+nav_executor，取
+        # /nav_executor/global_plan 与 /cost_map 用同一判据 cost<95 烘焙距离场后量净空）：
+        #   max_cost 0.5 → min 0.391 m, mean 0.678, 最贴墙的 10.4% 采样点在 0.50 m 以内
+        #   max_cost 5.0 → min 0.427 m, mean 0.684, 该比例降到 6.2%（路径长度 2.755→2.749 m）
+        #   另测 weight 2.0 与 decay 1.2 两档：在本用例上与 5.0 单变量**结果完全相同**，
+        #   说明起决定作用的是"解除封顶"，额外加权/放宽衰减暂无收益，故本轮只改这一项。
+        # ⚠️ 本项只影响全局**折线**的形状（以及 MINCO 的参考线），不改变任何净空判据。
+        #   若现场仍偏贴墙，下一步再单变量调 esdf_weight（1.0 → 2.0）。
+        esdf_max_cost: 5.0
       odom_topic: /Odometry
       tolerance: 0.3
       exploration:
@@ -146,6 +166,12 @@
           min_length: 0.08
           # 收尾余量：前缀在第一个净空不足的采样点之前这么多米处结束。
           buffer: 0.05
+        # 保持旧工程的种子语义：折线只因实际占据/地形/查询失效被硬否决，
+        # 净空不足交给 MINCO 优化和优化后的发布前/20 Hz/MPC 三道轨迹门把关。
+        # 2026-09-17 实车证明，连续 3 次失败后切回折线净空硬否决，会在
+        # clear=0.244~0.250 / req=0.260 的近场反复产生 LOCAL_SEED_INVALID，
+        # 车只能停住或短距离挪动。0 = 禁用该切换；轨迹级净空安全门不变。
+        strict_seed_after_failures: 0
         # 机器人当前所在位置附近（弧长 collision_dist 以内）是它已经占住的地方，
         # 贴着墙停车时那里不可能满足完整净空，因此该段只要求「不比当前实测净空更差」，
         # 离开这段之后必须满足上面的 required。否则车停在墙边就再也发不出轨迹。
@@ -184,6 +210,9 @@
         decay_power: 1.3
         opt_accuracy: 0.001
         print_optimizer_log: false
+        # MINCO 时间正则 rho：cost += rho * ΣT，是轨迹速度的主要旋钮。
+        # 500 在实车上把规划峰值从约 1.94 m/s 提到 2.51 m/s，底盘跟不上后
+        # 速度误差门反复触发重规划。恢复旧工程与 native 最新提交共用的 100。
         penalty_weight_time: 100.0
         penalty_weight_pos: 50000.0
         penalty_weight_vel: 1500.0
@@ -246,20 +275,13 @@
         projection:
           enable: true
           scan_z_relative_to_robot: true
-          # 先验图融合（对齐 docker 内 navi_minco_bit 的 rog_map.projection.prior_map：
-          # enable/yaml_path/pgm_path/frame_id 四个键完全一致）。
-          # 目的：让 ROGMap 的二维投影/ESDF 在滑窗内带上静态先验障碍，为后续把全局搜索
-          # 从"HW 地形图 + 自研 Kino"切到"ROGMAP 图 + A*"做准备。
-          # 第 1 步只验对齐：map_size 暂不改，仍只在 10×10 m 窗口内融合。
-          # 先在 RViz 确认 /rog_map/layer_value_static 与实测墙体吻合；对不上就不要继续放大窗口，
-          # 否则后面两步都是白做（map↔odom 由 odom_localizer + tf_maintainer 提供）。
+          # ROGMap 静态先验融合。当前关闭：静态地形仍由 map_server 供给
+          # 全局搜索和地形轨迹门，ROGMap 保持旧的实时局部障碍职责。
           prior_map:
-            # 【2026-09-15 实测结论】先验图与现场**未对齐**：在 (3.2, -0.03) 附近
-            # /rog_map/layer_value_static 显示有墙、而 layer_value_dynamic 那里是空的。
-            # fusePriorMapProjection() 把先验图的占据格当硬障碍叠加，于是该处二维净空
-            # 由约 0.4 m 掉到 0.272~0.285 m，低于 collision_dist 0.30：
-            # 返程 26 秒中有 20 秒耗在该点（4 次 COLLISION + 10 次急停），去程无此现象。
-            # 因此按"第 1 步只验对齐、对不上不继续"的约定先关闭，等对齐问题解决后再开。
+            # 这份实验先验此前在本车 map↔odom 下已有错位记录；native 最新提交也因此
+            # 保持关闭。2026-09-17 返程开启后又在 (3.78,1.62) 附近把净空压到
+            # 0.244 m < 0.260 m，并与严格种子切换叠加成永久拒绝。重新开启前需先
+            # 专项验证图对齐；不把它与本次速度/冷启动修复一起上车。
             enable: false
             yaml_path: "/home/mas/mas_nav_2027_native/src/mas2027_nav_bringup/map/lab3.yaml"
             # 留空时使用 YAML 的 image 字段，并相对 YAML 所在目录解析。

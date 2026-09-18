@@ -15,6 +15,7 @@ ExecutorStatus checkCommandSafety(
   const std::shared_ptr<tf2_ros::Buffer> & tf,
   const std::string & odom_frame,
   double rog_map_clearance,
+  double dynamic_map_timeout_s,
   double dt,
   const minco_controller::State & current,
   const minco_controller::Control & control,
@@ -37,8 +38,14 @@ ExecutorStatus checkCommandSafety(
     return reject(ExecutorStatus::TERRAIN_BLOCKED, "grid_or_frame_missing");
   }
   const double dynamic_age_s = std::abs((stamp - rclcpp::Time(dynamic->grid.header.stamp)).seconds());
-  if (dynamic_age_s > 0.5) {
-    return reject(ExecutorStatus::TERRAIN_BLOCKED, "dynamic_stale", dynamic_age_s, 0.5);
+  // 阈值必须给足余量，不能等于发布周期：旁路模式下 /dynamic_cost_map 由 map_server 的
+  // 500 ms 定时器发一帧全 0 空图，判据若也是 0.5 s，则每个周期的最后一拍必然越界
+  // （实测 age 恒在 0.509~0.521），表现为车每秒被清零两次的"一卡一卡"。
+  // 默认 1.5 s = 3 倍发布周期，改动只放宽"地图新鲜度"，不触碰任何净空阈值。
+  if (std::isfinite(dynamic_map_timeout_s) && dynamic_map_timeout_s > 0.0 &&
+    dynamic_age_s > dynamic_map_timeout_s) {
+    return reject(ExecutorStatus::TERRAIN_BLOCKED, "dynamic_stale", dynamic_age_s,
+      dynamic_map_timeout_s);
   }
   try {
     const auto transform = tf->lookupTransform(
@@ -58,10 +65,16 @@ ExecutorStatus checkCommandSafety(
     // 净空判据与规划侧的发布/监视门一致：机器人当前所在位置（近场，车体安全半径以内）
     // 只要求不比现在的实测净空更差，离开近场后必须满足 rog_map_clearance。
     // 否则「贴着墙停下」会让每一条速度指令都在 t=0 处被否决，cmd_vel 恒为 0。
+    // 【2026-09-17 统一四道门】完整要求同样要减掉 ESDF 抖动余量（kEsdfJitterTolerance），
+    // 与发布前校验/20 Hz 监视/局部种子门取同一个有效阈值。此前本门直接用 rog_map_clearance，
+    // 比发布门严 2 cm ⇒ 规划器按 0.26 发布、执行器按 0.28 否决，实车日志里
+    // `reason=clearance value=0.263~0.280 threshold=0.280` 7 次全部落在 [0.26,0.28] 这条缝里，
+    // 表现为"一顿一顿、反复启停"。近场半径仍取车体安全半径 rog_map_clearance，不变。
+    const double effective_clearance = effectiveClearanceThreshold(rog_map_clearance);
     const auto current_clearance =
       rog_query->query(Eigen::Vector3d(current.x, current.y, 0.0));
     const ClearanceRequirement clearance_gate = makeClearanceRequirement(
-      rog_map_clearance, rog_map_clearance, current_clearance.distance, current_clearance.ok);
+      effective_clearance, rog_map_clearance, current_clearance.distance, current_clearance.ok);
     const double travel_speed = velocity.norm();
     const int command_steps = std::max(1, static_cast<int>(std::ceil(horizon / dt)));
     for (int i = 0; i <= command_steps; ++i) {

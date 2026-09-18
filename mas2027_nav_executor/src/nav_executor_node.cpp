@@ -100,6 +100,11 @@ public:
     executor_params.trajectory_timeout_s = declare_parameter<double>("node.trajectory_timeout_s");
     executor_params.odom_timeout_s = declare_parameter<double>("node.odom_timeout_s", 0.5);
     executor_params.rog_map_clearance = declare_parameter<double>("node.rog_map_clearance", 0.30);
+    // 动态层新鲜度上限。默认 1.5 s = map_server 旁路心跳（500 ms 一帧全 0 空图）的 3 倍：
+    // 原来两处都硬编码 0.5 s，与发布周期零余量，实测 age 恒在 0.509~0.521 → 每个周期末尾
+    // 必然有一拍把整条速度指令清零并丢掉 MPC 热启动，车表现为"一卡一卡"。
+    executor_params.dynamic_map_timeout_s =
+      declare_parameter<double>("node.dynamic_map_timeout_s", 1.5);
     executor_params.control_delay_s = declare_parameter<double>("mpc.control_delay_compensation");
     executor_params.deadzone_speed = declare_parameter<double>("mpc.deadzone_speed_threshold");
     executor_params.output_in_body_frame = declare_parameter<bool>("node.output_in_body_frame");
@@ -134,8 +139,12 @@ public:
 
     if (control_rate_hz_ <= 0.0 || planner_frequency_ <= 0.0 || config.dt <= 0.0 ||
       !std::isfinite(executor_params.odom_timeout_s) || executor_params.odom_timeout_s <= 0.0 ||
+      !std::isfinite(executor_params.dynamic_map_timeout_s) ||
+      executor_params.dynamic_map_timeout_s <= 0.0 ||
       !std::isfinite(executor_params.rog_map_clearance) || executor_params.rog_map_clearance < 0.0) {
-      throw std::invalid_argument("control_rate_hz, planner_frequency and dt must be positive");
+      throw std::invalid_argument(
+        "control_rate_hz, planner_frequency, dt, odom_timeout_s and dynamic_map_timeout_s "
+        "must be positive");
     }
     if (!std::isfinite(velocity_color_min_) || !std::isfinite(velocity_color_max_) ||
       velocity_color_min_ >= velocity_color_max_) {
@@ -144,7 +153,8 @@ public:
 
     terrain_grid_ = std::make_shared<TerrainGrid>();
     path_planner_ = std::make_shared<PathPlanner>(
-      terrain_grid_, executor_params.odom_timeout_s, odom_frame_);
+      terrain_grid_, executor_params.odom_timeout_s, odom_frame_,
+      executor_params.dynamic_map_timeout_s);
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
     tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
     path_executor_ = std::make_unique<PathExecutor>(

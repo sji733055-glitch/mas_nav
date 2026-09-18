@@ -249,6 +249,17 @@ private:
   double escape_min_length_{0.08};
   double escape_buffer_{0.05};
 
+  // === 软种子门的退路：连续失败后切回"净空硬否决"（绕行 / 停车前缀 / 脱困前缀） ===
+  // 背景（2026-09-17 实车 20:09 那次）：种子门撤掉净空硬否决后，遇到"折线本身就是唯一通路、
+  // 但比 required 窄几毫米"的现场时，MINCO 每次都拿到同一个不可能成功的种子，于是
+  // `MINCO path generation failed; retrying` 以 2 Hz 刷屏、`/opt_path` 一直为空、车原地不动
+  // （那一次连续 600 次失败，目标 (7.16, 2.32) 永远到不了）。硬否决版本则会在同一处走三层
+  // 兜底把车带出去（旧行为，实车能走）。因此：连续失败达到 strict_seed_after_failures_ 次
+  // 就把种子门切回硬否决，成功一次即复位。0 表示关闭（永远用软种子门 = 回到本次改动之前）。
+  int64_t strict_seed_after_failures_{3};
+  uint64_t consecutive_local_failures_{0};
+  bool strict_seed_active_{false};
+
   mutable std::mutex path_mutex_;
   std::mutex perf_mutex_;
   mutable std::mutex odom_mutex_;

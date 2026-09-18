@@ -73,13 +73,6 @@ ExecutorOutput PathExecutor::computeCommand(const ExecutorInput & input)
     output.status = ExecutorStatus::WAITING_INPUT;
     return output;
   }
-  if ((input.stamp - rclcpp::Time(input.trajectory->header.stamp)).seconds() >
-    params_.trajectory_timeout_s)
-  {
-    solver_->resetLastControl();
-    output.status = ExecutorStatus::TRAJECTORY_STALE;
-    return output;
-  }
 
   const double yaw = tf2::getYaw(input.odom->pose.pose.orientation);
   const double c = std::cos(yaw);
@@ -92,15 +85,35 @@ ExecutorOutput PathExecutor::computeCommand(const ExecutorInput & input)
   current.vy = s * input.odom->twist.twist.linear.x + c * input.odom->twist.twist.linear.y;
   current.omega = input.odom->twist.twist.angular.z;
 
+  // 【2026-09-17】有实测车速之后，被打断**不再清零**加速度锚点，而是锚到实测车速。
+  //
+  // 清零的后果：恢复后的第一拍被加速度约束限成 |u_0| <= a_max·dt = 0.2 m/s，而车可能还在
+  // 1.5 m/s —— 指令被硬砍到 0.2，底盘跟着急刹，再按每拍 0.2 m/s 爬回去。轨迹过期、参考
+  // 失败、求解失败、任一道门否决都会走这条路，门控只要以 1~2 Hz 抖动，现场就是"反复启停、
+  // 频繁冷启动"（用户报的现象）。锚到实测车速后，指令从车真正所在的速度接着走；速度上下限、
+  // 加速度上下限、三道净空门全部不变，只是把约束从"相对上一条指令"改成"相对车实际速度"
+  // —— 后者才是真正的加速度 (v_cmd - v_actual)/dt。
+  const auto anchor_to_measured = [this, &current]() {
+    solver_->setLastControl(Eigen::Vector3d(current.vx, current.vy, current.omega));
+  };
+
+  if ((input.stamp - rclcpp::Time(input.trajectory->header.stamp)).seconds() >
+    params_.trajectory_timeout_s)
+  {
+    anchor_to_measured();
+    output.status = ExecutorStatus::TRAJECTORY_STALE;
+    return output;
+  }
+
   std::vector<ReferencePoint> reference;
   if (!buildReference(*input.trajectory, current, reference)) {
-    solver_->resetLastControl();
+    anchor_to_measured();
     output.status = ExecutorStatus::REFERENCE_FAILED;
     return output;
   }
   Control control;
   if (!solver_->solve(current, reference, control)) {
-    solver_->resetLastControl();
+    anchor_to_measured();
     output.status = ExecutorStatus::SOLVER_FAILED;
     return output;
   }
@@ -108,10 +121,11 @@ ExecutorOutput PathExecutor::computeCommand(const ExecutorInput & input)
   CommandSafetyDetail safety_detail;
   output.status = checkCommandSafety(
     terrain_, rog_query_, tf_buffer_, params_.odom_frame, params_.rog_map_clearance,
-    config_.dt, current, control, reference, input.stamp, &safety_detail);
+    params_.dynamic_map_timeout_s, config_.dt, current, control, reference, input.stamp,
+    &safety_detail);
   last_safety_detail_ = safety_detail;
   if (output.status != ExecutorStatus::PUBLISHED) {
-    solver_->resetLastControl();
+    anchor_to_measured();
     return output;
   }
 

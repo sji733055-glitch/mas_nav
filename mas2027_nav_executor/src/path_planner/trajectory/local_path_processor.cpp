@@ -1,4 +1,5 @@
 #include "mas2027_nav_executor/path_planner/trajectory/local_path_processor.hpp"
+#include "mas2027_nav_executor/common/environment/clearance_gate.hpp"
 
 #include <algorithm>
 #include <array>
@@ -10,7 +11,9 @@ namespace minco_planner {
 
 namespace {
 
-constexpr double kNearFieldSlack = 0.02;
+/// 近场放宽的抖动余量。与 ESDF 抖动余量是同一个量级的同一个理由，直接共用同一个常量，
+/// 避免两处各写一个 0.02 后又漂移。
+constexpr double kNearFieldSlack = mas2027_nav_executor::kEsdfJitterTolerance;
 constexpr double kStoppingBuffer = 0.15;
 constexpr double kMinimumStoppingPrefix = 0.30;
 // "修复后被否决"日志前 N 次不节流：排障最需要的是第一次发生时的现场，之后退回 2 s 节流。
@@ -40,10 +43,12 @@ std::string classifySeedReject(const SeedRejectInfo &info,
   }
 
   // 脱困层 / 轨迹校验门用的"近场规则"：近场外是完整要求，近场内是"不比现在更差 - slack"。
+  // 【2026-09-17】近场外的"完整要求"要用**四道门统一后的有效阈值**（减 ESDF 抖动余量），
+  // 否则这个判读器还在按旧的两套阈值建模，会把"其实能过"的点判成 SEED_GATE_STRICTER。
   const bool in_near_field = info.arc_from_start < collision_dist;
   const double near_rule_required =
       in_near_field ? std::max(0.0, start_clearance - near_field_slack)
-                    : collision_dist;
+                    : mas2027_nav_executor::effectiveClearanceThreshold(collision_dist);
   // 该点其实能过"近场规则"，那它被判据拒绝就只能是因为种子门用了更严的完整要求。
   const bool passes_near_rule = info.clearance > near_rule_required;
 
@@ -95,7 +100,8 @@ LocalPathSeed LocalPathProcessor::buildSeed(
     const geometry_msgs::msg::PoseStamped &current_pose,
     const PlannerModeContext &mode_context,
     const std::function<bool(const Eigen::Vector3d &, const Eigen::Vector3d &)>
-        &terrain_segment_free) const {
+        &terrain_segment_free,
+    bool enforce_seed_clearance) const {
   LocalPathSeed seed;
   if (global_path.empty()) {
     return seed;
@@ -169,7 +175,23 @@ LocalPathSeed LocalPathProcessor::buildSeed(
   };
 
   if (!pathClear(checked_path, cur_pos, query, start_clearance,
-                 start_clearance_ok, terrain_segment_free, &dense_reject)) {
+                 start_clearance_ok, terrain_segment_free, &dense_reject,
+                 enforce_seed_clearance)) {
+    // 排障用：不管后面有没有修复成功，都留下"种子门死在哪一点"。调用方（以及测试）靠它
+    // 区分"毫米级净空否决"与"物理阻断"，因此必须在进兜底链之前就记下。
+    seed.dense_reject = dense_reject;
+    if (enforce_seed_clearance && dense_reject.valid && dense_reject.clearance_only) {
+      // 硬否决只是因为"净空差一点"：说明这条走廊本身比 required 窄，是真实的通行性问题。
+      // 打出来是为了让现场看到"软种子门为什么被切换掉"，而不是只看到随后的绕行/前缀消息。
+      RCLCPP_WARN_THROTTLE(logger_, *rclcpp::Clock::make_shared(), 2000,
+                           "[MincoPlanner] Strict seed gate rejected the global "
+                           "corridor (closest clear=%.3f req=%.3f at (%.2f,%.2f) "
+                           "arc=%.2f); trying ROGMap detour / stopping prefix "
+                           "instead of handing it to MINCO.",
+                           dense_reject.clearance, dense_reject.required,
+                           dense_reject.point.x(), dense_reject.point.y(),
+                           dense_reject.arc_from_start);
+    }
     std::vector<Eigen::Vector3d> repaired;
     if (searchDynamicDetour(cur_pos, seed.dense_path.back(), query,
                             start_clearance, start_clearance_ok,
@@ -227,6 +249,19 @@ LocalPathSeed LocalPathProcessor::buildSeed(
       seed.dense_path.clear();
       return seed;
     }
+  } else if (dense_reject.valid && dense_reject.clearance_only) {
+    // 【2026-09-17】"贴墙但没堵死"：折线是自由的，只是有一段净空小于要求。种子照常交给
+    // MINCO（净空由轨迹级三道门决定），这里只留一条可查的现场，方便与"真的被挡住"区分。
+    // 想确认"种子门又变回硬否决"时，把这条日志与上面的
+    // "Live obstacle blocks the local route" 一起看即可。
+    seed.dense_reject = dense_reject;
+    RCLCPP_INFO_THROTTLE(
+        logger_, *rclcpp::Clock::make_shared(), 2000,
+        "[MincoPlanner] Local seed is tight but not blocked "
+        "(closest clear=%.3f req=%.3f at (%.2f,%.2f) arc=%.2f); handing it to "
+        "MINCO, clearance is enforced on the trajectory instead.",
+        dense_reject.clearance, dense_reject.required, dense_reject.point.x(),
+        dense_reject.point.y(), dense_reject.arc_from_start);
   }
 
   seed.local_end_is_goal =
@@ -280,13 +315,19 @@ bool LocalPathProcessor::segmentClear(
     bool start_clearance_ok,
     const std::function<bool(const Eigen::Vector3d &, const Eigen::Vector3d &)>
         &terrain_segment_free,
-    SeedRejectInfo *reject_info) const {
+    SeedRejectInfo *reject_info, bool enforce_clearance) const {
   // 记录"第一次否决"的现场。只在 reject_info 非空时写入，且只写第一次，
   // 这样调用方拿到的是整条路径上最早的失败点，而不是最后一次。
+  // 【2026-09-17】例外：已经记下的是"只差净空"（clearance_only）而新来的是硬否决
+  // （占据/地形/查询无效）时允许覆盖——判读与日志都必须按**最严重**的那一类归类，
+  // 否则一条"前面贴墙、后面被堵死"的路径会被标成"只是贴墙"。
   const auto note_reject = [reject_info, &planning_start](
       const Eigen::Vector3d &point, double clearance, double required,
-      bool near_field_relaxed, bool terrain_blocked) {
-    if (reject_info == nullptr || reject_info->valid) {
+      bool near_field_relaxed, bool terrain_blocked, bool clearance_only) {
+    if (reject_info == nullptr) {
+      return;
+    }
+    if (reject_info->valid && !(reject_info->clearance_only && !clearance_only)) {
       return;
     }
     reject_info->valid = true;
@@ -297,15 +338,16 @@ bool LocalPathProcessor::segmentClear(
     reject_info->arc_from_start = (point - planning_start).head<2>().norm();
     reject_info->near_field_relaxed = near_field_relaxed;
     reject_info->terrain_blocked = terrain_blocked;
+    reject_info->clearance_only = clearance_only;
     reject_info->length_limited = false;
   };
   if (!query || query->resolution() <= 0.0 || !from.allFinite() ||
       !to.allFinite()) {
-    note_reject(from, 0.0, collision_dist_, false, false);
+    note_reject(from, 0.0, fullClearanceRequirement(), false, false, false);
     return false;
   }
   if (terrain_segment_free && !terrain_segment_free(from, to)) {
-    note_reject(from, 0.0, collision_dist_, false, true);
+    note_reject(from, 0.0, fullClearanceRequirement(), false, true, false);
     return false;
   }
   const double length = (to - from).head<2>().norm();
@@ -318,15 +360,36 @@ bool LocalPathProcessor::segmentClear(
     unsigned int my = 0U;
     if (!query->worldToMap(point.x(), point.y(), mx, my) ||
         !query->isFree(mx, my)) {
-      note_reject(point, 0.0, collision_dist_, false, false);
+      note_reject(point, 0.0, fullClearanceRequirement(), false, false, false);
       return false;
     }
     const auto clearance = query->query(point);
     if (!clearance.ok || !std::isfinite(clearance.distance)) {
-      note_reject(point, 0.0, collision_dist_, false, false);
+      note_reject(point, 0.0, fullClearanceRequirement(), false, false, false);
       return false;
     }
-    double required = collision_dist_;
+    // 【2026-09-17 种子门撤掉净空硬否决：净空是**轨迹**的属性，不是原始折线的属性】
+    //
+    // 这里曾经把"净空 <= required"直接当成整条种子无效（→ 绕行 → 停车前缀 → 0.28 m
+    // 蠕行 → 最后一层脱困前缀）。代价在台架与实车上都量到了：局部折线只要有一段贴着墙
+    // （哪怕差几毫米），种子就被判死，车原地停住；同一时刻 /opt_path 上的规划峰值是
+    // 2.5 m/s，而车 30 s 只走了 4~7 m（平均 0.13~0.24 m/s），日志里刷的是
+    // "Live obstacle blocks the local route..." / "planning a safe stopping prefix" /
+    // 反复 COLD_START。现场表现就是"走一下停一下"。
+    //
+    // 这个判据从根上过严：交给 MINCO 的是**折线种子**，真正执行的是优化后的**轨迹**，
+    // 而 MINCO 的位置罚项（safe_dist 0.33）会把轨迹推离障碍 —— "折线净空 0.244"完全
+    // 可以优化成"轨迹净空 0.30"。拿折线的净空去否决种子，等于要求种子先满足轨迹的指标，
+    // MINCO 的避障能力全部作废。
+    //
+    // 旧工程 /home/mas/mas_nav_2027 就是这个语义：
+    // minco_core/components/local_path_processor.cpp:9-31 的 isLineFree 只查占据，
+    // 而它的轨迹级门槛反而更严（collision_dist 0.30、无 ESDF 抖动容差），实车能跑快。
+    //
+    // 所以：**占据 / 地形 / 查询有效**才是硬否决；净空不足只记录现场（clearance_only=true）
+    // 并继续采样。净空要求仍然由轨迹级三道门把关 —— 发布前校验、20 Hz 监视、MPC 指令门，
+    // 三者都用 effectiveClearanceThreshold(collision_dist)，这一处也没有放松。
+    double required = fullClearanceRequirement();
     bool relaxed = false;
     if (start_clearance_ok && start_clearance < collision_dist_ &&
         (point - planning_start).head<2>().norm() <= collision_dist_) {
@@ -334,8 +397,11 @@ bool LocalPathProcessor::segmentClear(
       relaxed = true;
     }
     if (clearance.distance <= required) {
-      note_reject(point, clearance.distance, required, relaxed, false);
-      return false;
+      note_reject(point, clearance.distance, required, relaxed, false, true);
+      // 停车/脱困前缀要在这里停下：前缀末端就是"车要停在哪"，它本身必须满足净空。
+      if (enforce_clearance) {
+        return false;
+      }
     }
   }
   return true;
@@ -348,14 +414,14 @@ bool LocalPathProcessor::pathClear(
     double start_clearance, bool start_clearance_ok,
     const std::function<bool(const Eigen::Vector3d &, const Eigen::Vector3d &)>
         &terrain_segment_free,
-    SeedRejectInfo *reject_info) const {
+    SeedRejectInfo *reject_info, bool enforce_clearance) const {
   if (path.size() < 2U) {
     return false;
   }
   for (size_t i = 1U; i < path.size(); ++i) {
     if (!segmentClear(query, path[i - 1U], path[i], planning_start,
                       start_clearance, start_clearance_ok,
-                      terrain_segment_free, reject_info)) {
+                      terrain_segment_free, reject_info, enforce_clearance)) {
       return false;
     }
   }
@@ -405,7 +471,9 @@ bool LocalPathProcessor::searchDynamicDetour(
                 query->isFree(mx, my);
     if (safe) {
       const auto result = query->query(point);
-      double required = collision_dist_;
+      // 与种子门/轨迹门同一个有效阈值，否则绕行搜索会拒绝轨迹门本来接受的格子
+      // （0.26~0.28 m 的窄处），表现为"有路可绕却报 No local route"→ 停车前缀 → 蠕行。
+      double required = fullClearanceRequirement();
       if (start_clearance_ok && start_clearance < collision_dist_ &&
           (point - start).head<2>().norm() <= collision_dist_) {
         required = std::max(0.0, start_clearance - kNearFieldSlack);
@@ -577,7 +645,7 @@ bool LocalPathProcessor::buildStoppingPrefixCore(
                          (target - previous);
       if (!segmentClear(query, samples.back(), point, start, start_clearance,
                         start_clearance_ok, terrain_segment_free,
-                        reject_info)) {
+                        reject_info, /*enforce_clearance=*/true)) {
         double safe_length = 0.0;
         for (size_t k = 1U; k < samples.size(); ++k) {
           safe_length += (samples[k] - samples[k - 1U]).head<2>().norm();

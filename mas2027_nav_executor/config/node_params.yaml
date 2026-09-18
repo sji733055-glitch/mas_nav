@@ -9,6 +9,17 @@
       # planner.minco_optimizer.collision_dist 保持一致。机器人当前所在位置附近
       # （弧长等于该值以内）只要求不比当前实测净空更差，避免贴墙停车后 cmd_vel 恒为 0。
       rog_map_clearance: 0.28
+      # 动态层新鲜度上限（秒），同时管两处硬门：
+      #   command_safety.cpp 的 dynamic_stale（能否发指令）与 path_planner.cpp 的目标接纳。
+      # 【2026-09-17 实测】原来是硬编码 0.5 s，而 map_server 在 bypass_dynamic_obstacle:=True
+      # （本仓库 launch 的默认值）下**不订阅点云**，只由 500 ms 定时器发一帧全 0 空图，
+      # 时间戳取发布时刻 ⇒ 发布周期与判据零余量。20 Hz 控制下每个周期末尾必有一拍读到
+      # 0.509~0.521 > 0.500：整条速度指令被清零、MPC 热启动被 resetLastControl() 丢掉。
+      # 现场表现就是"车一卡一卡"，日志里 "Braking: ... reason=dynamic_stale value=0.51 threshold=0.50"
+      # 每 2 s 一条（WARN 节流上限）。取 3 倍发布周期 = 1.5 s。
+      # ⚠️ 本项只放宽"地图新鲜度"，不触碰任何净空阈值；实时避障仍由 ROGMap（20 Hz）负责。
+      # 若将来 map_server 的旁路关闭、动态层承载真实障碍，可按其实际延迟回调（不要低于 3 倍发布周期）。
+      dynamic_map_timeout_s: 1.5
       output_in_body_frame: true
       frames:
         odom: odom

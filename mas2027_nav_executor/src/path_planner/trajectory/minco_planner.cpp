@@ -1,5 +1,6 @@
 // Corresponding header
 #include "mas2027_nav_executor/path_planner/trajectory/minco_planner.hpp"
+#include "mas2027_nav_executor/common/environment/clearance_gate.hpp"
 #include "mas2027_nav_executor/path_planner/trajectory/arc_length_speed_profile.hpp"
 
 #include <algorithm>
@@ -22,7 +23,10 @@ namespace {
 /// 为 0.25 时有效阈值被压到 0.20 m，小于车体半宽，**实车发生了撞墙**。收到 0.02 后，
 /// 配合 collision_dist 0.28，有效硬阈值 = 0.26 m，既远大于 0.20，又仍允许通过实测约 0.59 m 的窄道
 /// （净空约 0.295 > 0.26）。抖动余量的量级应保持"几毫米~2 cm"，不要用 5 cm 这种接近车体半径的量。
-constexpr double kMonitorClearanceTolerance = 0.02;
+/// 【2026-09-17】常量本体已移到 clearance_gate.hpp 的 kEsdfJitterTolerance：
+/// 同一个值必须被四道门（发布前校验、20 Hz 监视、MPC 指令门、局部种子门）共用，
+/// 否则又会出现"规划放行、执行刹车"。这里的名字保留为别名，避免改动散落的调用点。
+constexpr double kMonitorClearanceTolerance = mas2027_nav_executor::kEsdfJitterTolerance;
 
 // 地形门否决点的日志节流（只影响日志，不影响判据）。前 N 次逐条打印，之后每 M 次采样一条。
 // 与 failure_log_first_n / failure_log_every_n 同一思路：**不要按时间节流**，否则
@@ -405,6 +409,17 @@ void MincoPlanner::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & pa
   node->get_parameter(prefix + "minco_optimizer.stuck_escape.buffer", escape_buffer_);
   if (!(std::isfinite(escape_buffer_) && escape_buffer_ >= 0.0)) {
     escape_buffer_ = 0.05;
+  }
+
+  // 默认保持旧工程语义：种子折线的净空不足不做硬否决，由优化后轨迹门把关。
+  // 实车证明连续失败后切硬门会在近场微小净空差上锁死；保留参数仅供专项诊断。
+  declareParameterIfMissing(
+    node, prefix + "minco_optimizer.strict_seed_after_failures",
+    rclcpp::ParameterValue(static_cast<int64_t>(0)));
+  node->get_parameter(prefix + "minco_optimizer.strict_seed_after_failures",
+    strict_seed_after_failures_);
+  if (strict_seed_after_failures_ < 0) {
+    strict_seed_after_failures_ = 0;
   }
 
   declareParameterIfMissing(
@@ -972,6 +987,14 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
     }
   }
   auto finish = [&](bool success, const std::string & reason) {
+    // 连续失败计数：软种子门（见成员注释）靠它决定何时切回"净空硬否决"。
+    // 只统计**局部规划**是否产出可发布轨迹；一次成功即复位（含绕行/停车前缀这类兜底成功）。
+    if (success) {
+      consecutive_local_failures_ = 0;
+      strict_seed_active_ = false;
+    } else {
+      ++consecutive_local_failures_;
+    }
     if (!success) {
       // 失败原因必须能在实车上直接读到，否则"规划一直失败"就只能靠猜。
       // 原实现整条日志 2 s 节流：实测 350 次失败只留下 139 条原因，其中 76 次
@@ -1078,8 +1101,21 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
       return finish(false, "TERRAIN_TF_UNAVAILABLE");
     }
   }
+  // 软种子门的退路：连续失败够多就把种子门切回"净空硬否决"，让绕行 / 停车前缀 / 脱困前缀
+  // 三层兜底接上（旧行为）。切换只影响"折线净空不足算不算否决"，三道轨迹级净空门不受影响。
+  const bool strict_seed =
+    strict_seed_after_failures_ > 0 &&
+    consecutive_local_failures_ >= static_cast<uint64_t>(strict_seed_after_failures_);
+  if (strict_seed && !strict_seed_active_) {
+    strict_seed_active_ = true;
+    RCLCPP_WARN(logger_,
+      "Local seed gate switched to STRICT clearance after %llu consecutive "
+      "planning failures: tight seeds will no longer be handed to MINCO; "
+      "falling back to ROGMap detour / stopping prefix / escape prefix.",
+      static_cast<unsigned long long>(consecutive_local_failures_));
+  }
   const LocalPathSeed seed = local_path_processor_->buildSeed(
-    global_path_snapshot, current_pose, *mode_context_, terrain_segment_free);
+    global_path_snapshot, current_pose, *mode_context_, terrain_segment_free, strict_seed);
   if (visualizer_) {
     if (!seed.dense_path.empty()) {
       visualizer_->updateLocalEndPoint(seed.dense_path.back(), seed.local_end_is_goal);
@@ -1570,18 +1606,19 @@ MincoPlanner::PlanningState MincoPlanner::determinePlanningState(
   Eigen::Vector3d current_speed = getCurrentSpeed();
   double dynamic_error_threshold = 1.0 + 0.5 * current_speed.head<2>().norm();
   double vel_error = (current_speed - pred_vel).norm();
+  // 对齐旧工程：跟踪/速度误差大时仍保持 HOT_START，避免以 20 Hz 重复丢掉
+  // 时间和路点热启动种子。MPC 端的加速度锚点已在门控后使用实测速度，
+  // 发布前/20 Hz/MPC 净空门仍会拒绝不安全的轨迹。
   if (tracking_error > dynamic_error_threshold) {
     std::cout << YELLOW << "[MincoPlanner] Large tracking error (" << tracking_error
-              << "m). Downgrading to COLD_START." << RESET << std::endl;
+              << "m); keeping HOT_START for trajectory continuity." << RESET << std::endl;
     return PlanningState::HOT_START;
-    // return PlanningState::COLD_START;
   }
 
   if (vel_error > 1.0) {
     std::cout << YELLOW << "[MincoPlanner] Large velocity error (" << vel_error
-              << "m/s). Downgrading to COLD_START." << RESET << std::endl;
+              << "m/s); keeping HOT_START for trajectory continuity." << RESET << std::endl;
     return PlanningState::HOT_START;
-    // return PlanningState::COLD_START;
   }
 
   if (new_path.size() >= 2) {

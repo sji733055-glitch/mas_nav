@@ -22,7 +22,7 @@ struct CommandSafetyDetail
   /// 命中的判据名（固定字符串，便于 grep/统计）：
   ///   "none"                   通过
   ///   "grid_or_frame_missing"  地形/动态层快照为空、tf 或 rog_query 为空
-  ///   "dynamic_stale"          动态层时间戳与当前时间相差 > 0.5 s
+  ///   "dynamic_stale"          动态层时间戳与当前时间相差 > dynamic_map_timeout_s
   ///   "tf_unavailable"         lookupTransform 抛异常（map↔odom 一时拿不到）
   ///   "terrain_transition"     地形层 transition(pos -> pos+horizon*v) 返回 false
   ///   "dynamic_horizon"        动态层在前视 0.35s 内不自由
@@ -40,6 +40,10 @@ ExecutorStatus checkCommandSafety(
   const std::shared_ptr<tf2_ros::Buffer> & tf,
   const std::string & odom_frame,
   double rog_map_clearance,
+  /// 动态层新鲜度上限（秒），来自 node.dynamic_map_timeout_s。
+  /// 曾经硬编码 0.5：map_server 的旁路心跳（bypass_dynamic_obstacle=true，500 ms 定时器发全 0 空图）
+  /// 与它零余量，正常行驶时约每 500 ms 就有一拍越过阈值 → 整条速度指令被清零 + MPC 热启动被丢。
+  double dynamic_map_timeout_s,
   double dt,
   const minco_controller::State & current,
   const minco_controller::Control & control,

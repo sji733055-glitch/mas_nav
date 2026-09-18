@@ -306,9 +306,13 @@ int main(int argc, char **argv) {
     double max_y = -std::numeric_limits<double>::infinity();
     for (size_t i = 0U; i < seed.sparse_waypoints.size(); ++i) {
       max_y = std::max(max_y, seed.sparse_waypoints[i].y());
+      // 【2026-09-17】种子/稀疏化只保证"不穿障碍"（净空 > 0 ⇔ 不落在占据格里）。
+      // 净空要求是轨迹级的：折线与稀疏点都会被 MINCO 拉开，最终由发布前校验 /
+      // 20 Hz 监视 / MPC 指令门按 effectiveClearanceThreshold 验收。
+      // 旧工程（mas_nav_2027 的 isLineFree）就是这个口径。
       if (i > 0U) {
         assert(segmentHasClearance(query, seed.sparse_waypoints[i - 1U],
-                                   seed.sparse_waypoints[i], clearance));
+                                   seed.sparse_waypoints[i], 0.0));
       }
     }
     assert(max_y > 2.2);
@@ -374,14 +378,15 @@ int main(int argc, char **argv) {
     }
   }
 
-  // 回归（2026-09-16 13:40 实车）：车停在比要求净空更窄的通道里时，三层兜底
-  // （正常路径 / 局部绕行 / 完整停车前缀）会全部失败，车原地不动。
+  // 【2026-09-17 语义变更：种子门只查"堵没堵死"，不再查净空】
   //
-  // 场景：0.50 m 宽走廊（中线净空 0.275 m < collision_dist 0.30 m），全局折线沿走廊。
-  //   - pathClear 失败：离开起点 0.30 m 之后必须满足完整 0.30 m；
-  //   - 绕行 A* 失败：走廊里没有任何一格净空 > 0.30 m；
-  //   - 完整停车前缀失败：安全段约 0.30 m，减去 0.15 m 收尾余量后不足 0.30 m。
-  // 第四层兜底必须给出一个"不比当前净空更差"的短前缀，让车能挪出去。
+  // 场景：0.50 m 宽走廊（中线净空 0.25 m < collision_dist 0.30 m），全局折线沿走廊。
+  // 这条折线在旧语义下会被种子门按净空否决 → 绕行（走廊里没有净空合格的格子）→ 停车前缀
+  // → 0.24 m 蠕行前缀；台架与实车上这就是"走一下停一下、平均 0.1~0.3 m/s"的来源。
+  //
+  // 新语义下它必须**原样交给 MINCO**：折线是自由的（isFree 全过），净空是轨迹的属性，
+  // 由 MINCO 的位置罚项去拉开，再由轨迹级三道门验收。种子门只把"贴墙"记进 dense_reject
+  // 作为现场证据。
   {
     constexpr double res = 0.05;
     auto query = std::make_shared<GridQuery>(80U, 60U, res);
@@ -402,52 +407,108 @@ int main(int argc, char **argv) {
     minco_planner::LocalPathProcessor processor;
     processor.configure(10.0, 2.0, 4.0, 0.15, 0.30,
                         rclcpp::get_logger("test_local_path_processor"));
-
-    // 先确认"三层兜底"在这个场景下确实全部失败：关掉第四层，种子必须无效。
-    processor.setEscapeOptions(false, 0.08, 0.05);
-    const auto without_escape = processor.buildSeed(corridor, current, context);
-    assert(!without_escape.valid);
-
-    // 打开第四层：必须给出短前缀，且它是能用的种子。
     processor.setEscapeOptions(true, 0.08, 0.05);
+
     const auto seed = processor.buildSeed(corridor, current, context);
-    assert(seed.used_escape_prefix);
-    assert(seed.stop_at_local_end);
     assert(seed.valid);
+    assert(!seed.used_escape_prefix);
+    assert(!seed.stop_at_local_end);
+    assert(!seed.used_dynamic_detour);
+    assert(!seed.repair_rejected);
     assert(seed.sparse_waypoints.size() >= 2U);
-    double escape_length = 0.0;
-    for (size_t i = 1U; i < seed.dense_path.size(); ++i) {
-      escape_length += (seed.dense_path[i] - seed.dense_path[i - 1U]).head<2>().norm();
-    }
-    // 长度上限就是一个车体半径：整段都落在近场豁免半径以内，不引入新的安全阈值。
-    assert(escape_length > 0.0);
-    assert(escape_length <= 0.30 + 1e-9);
-    // 起点仍是机器人实测位置，且末速度为零（stop_at_local_end）。
-    assert((seed.dense_path.front() - Eigen::Vector3d(0.23, 1.15, 0.0)).norm() < 1e-6);
-    assert((seed.dense_path.back() - seed.dense_path.front()).norm() > 0.0);
-    // 脱困前缀的每一段只需满足近场判据：不比机器人当前实测净空更差（减 0.02 m 抖动余量）。
-    const auto start_query = query->query(Eigen::Vector3d(0.23, 1.15, 0.0));
-    assert(start_query.ok);
-    const double near_required = std::max(0.0, start_query.distance - 0.02);
+    // 折线没有被改写：起点仍是全局折线的局部起点（离机器人最近的栅格顶点），
+    // 而不是被替换成停车/脱困前缀（后者的首点才会被改写成机器人实测位置）。
+    assert(!seed.dense_path.empty());
+    assert((seed.dense_path.front() - Eigen::Vector3d(0.23, 1.15, 0.0)).norm() < 0.10);
+    // "贴墙但没堵死"必须留下现场：clearance_only 为真，且不是 terrain 否决。
+    assert(seed.dense_reject.valid);
+    assert(seed.dense_reject.clearance_only);
+    assert(!seed.dense_reject.terrain_blocked);
+    // 走廊中线 0.25 m，扣掉近场放宽后要求更小，因此记录值必然 <= collision_dist。
+    assert(seed.dense_reject.clearance <= 0.30 + 1e-9);
+    // 硬判据（占据）仍然全程成立：每一段都还在自由格里。
     for (size_t i = 1U; i < seed.sparse_waypoints.size(); ++i) {
       assert(segmentHasClearance(query, seed.sparse_waypoints[i - 1U],
-                                 seed.sparse_waypoints[i], near_required));
+                                 seed.sparse_waypoints[i], 0.0));
     }
+
+    // 【2026-09-17 退路】同一条折线、同一个走廊，把种子门切回"净空硬否决"（软种子门连续
+    // 失败若干次后规划器会这么做，见 MincoPlanner::strict_seed_after_failures_）：
+    // 此时折线**不能**再原样交给 MINCO —— 那正是实车 2026-09-17 20:09 那次
+    // "种子 0.248 vs required 0.260 → MINCO 最好 0.246 → 连续 600 次失败、车原地不动" 的来源。
+    // 硬否决下必须落进三层兜底（ROGMap 绕行 / 完整停车前缀 / 短距离脱困前缀）之一，
+    // 或明确判为无效种子；净空判据本身一处都不放松。
+    const auto strict_seed = processor.buildSeed(corridor, current, context, {}, true);
+    const bool fell_back_to_repair_chain =
+      strict_seed.used_dynamic_detour || strict_seed.stop_at_local_end ||
+      strict_seed.used_escape_prefix || !strict_seed.valid;
+    assert(fell_back_to_repair_chain);
+    assert(strict_seed.dense_reject.valid);
+    // 否决原因仍然是"只差净空"，不是"被堵死"——两类现场必须继续分得开。
+    assert(strict_seed.dense_reject.clearance_only);
+    assert(!strict_seed.dense_reject.terrain_blocked);
   }
 
-  // 回归（2026-09-16 排障插桩）：`Live obstacle blocks the local route...` 必须能报出
-  // "四层各自死在哪一点"。
+  // 【2026-09-17 语义变更配套】路真的被堵死时，修复链必须照旧生效：
+  // 走廊中段整列封死（占据格，不是"净空差一点"）+ 车离封口只有 0.10 m
+  // ⇒ 绕行（目标侧与起点侧在栅格上不连通）、完整停车前缀（可用安全段 0.05 m 减 0.15 m
+  // 收尾余量 < 0.08 m 最小长度）逐层失败，第四层关闭时"四层全败"并清空种子。
+  // 这条用例锁住"只差净空"与"真的堵死"在结构与日志上是两类事。
+  {
+    constexpr double res = 0.05;
+    auto query = std::make_shared<GridQuery>(80U, 60U, res);
+    // 走廊：cell y ∈ [18, 28] 自由（0.55 m 宽），其余全为障碍。
+    for (unsigned int y = 0U; y < 60U; ++y) {
+      if (y >= 18U && y <= 28U)
+        continue;
+      for (unsigned int x = 0U; x < 80U; ++x)
+        query->block(x, y);
+    }
+    // 走廊中段整列封死：cell x ∈ [12, 16] ⇒ 世界 x ∈ [0.60, 0.85]。
+    for (unsigned int x = 12U; x <= 16U; ++x) {
+      for (unsigned int y = 18U; y <= 28U; ++y)
+        query->block(x, y);
+    }
+    auto context = makeContext(query);
+    const double center_y = (23.0 + 0.5) * res;   // 1.175
+    const auto corridor = straightGlobalPath(0.20, 3.80, center_y, res);
+    geometry_msgs::msg::PoseStamped current;
+    current.header.frame_id = "odom";
+    current.pose.position.x = 0.50;
+    current.pose.position.y = center_y;
+    current.pose.orientation.w = 1.0;
+
+    minco_planner::LocalPathProcessor processor;
+    processor.configure(10.0, 2.0, 4.0, 0.15, 0.30,
+                        rclcpp::get_logger("test_local_path_processor"));
+    processor.setEscapeOptions(false, 0.08, 0.05);
+
+    const auto seed = processor.buildSeed(corridor, current, context);
+    assert(!seed.valid);
+    assert(!seed.used_dynamic_detour);
+    assert(!seed.stop_at_local_end);
+    assert(!seed.used_escape_prefix);
+    assert(seed.dense_path.empty());
+
+    const auto &reject = seed.dense_reject;
+    assert(reject.valid);
+    // 硬否决：占据格，而不是"净空差几毫米"。判读器必须把这两类分开。
+    // （注意这条断言也锁住 note_reject 的优先级：先遇到的"贴墙点"不能把后面的
+    //   "堵死点"盖掉，否则现场会被误判成 clearance_only。）
+    assert(!reject.clearance_only);
+    assert(!reject.terrain_blocked);
+    // 占据格：判据把 clearance 记为 0（不是"差几毫米"）。
+    assert(reject.clearance <= 1e-9);
+    assert(minco_planner::classifySeedReject(reject, 0.125, 0.30, 0.02) ==
+           "GEOMETRY");
+  }
+
+  // 回归（2026-09-16 排障插桩，2026-09-17 按新语义改写）：`dense_reject` 必须报出
+  // "第一个净空不足点"的 (净空, 要求, 是否近场放宽)，且必须与轨迹级三道门用同一个有效阈值。
   //
-  // 背景：这条消息以前只说"全败了"，实车排障时无法区分两种完全不同的情形——
-  //   (a) 几何路线存在、只是每段都差几毫米过不了净空判据（门槛问题，该改判据）；
-  //   (b) 路本来就过不去，拒绝是正确行为（环境问题，不该动阈值）。
-  // 现在带上首个否决点的 (净空, 要求, 是否近场放宽) 之后可以直接分辨。
-  //
-  // 本用例构造 (b) 类现场：0.50 m 宽走廊、中线净空 0.25 m < collision_dist 0.30 m。
-  // 机器人起点净空 0.25 m < 0.30 m，因此起点 0.30 m 弧长内走"不比现在更差"的近场放宽
-  // （0.25 - 0.02 = 0.23 m）；一旦离开近场就必须满足完整 0.30 m，而那一段只有 0.25 m。
-  // 于是首个否决点必须出现在**近场之外**，且 reported required 必须是完整的 0.300，
-  // 不能是放宽后的 0.23。
+  // 【2026-09-17 语义变更】这个点**不再否决种子**（折线是自由的，净空由 MINCO 与轨迹级
+  // 三道门负责），所以本用例的断言从"种子无效"改成"种子有效 + 现场被记录"。
+  // 数值口径的断言全部保留：它们防的是"某一道门又自己写死一个数"。
   {
     constexpr double res = 0.05;
     const double center_y = 1.5;
@@ -471,24 +532,28 @@ int main(int argc, char **argv) {
     assert(start_query.ok);
     assert(std::abs(start_query.distance - 0.25) < 1e-6);
 
-    // 关掉第四层脱困前缀才能复现"四层全败"。开着它时 0.50 m 走廊反而会被救活成
-    // 一个 0.24 m 的 creep 前缀（见本文件上方那条用例）——也就是说实车日志里
-    // `Live obstacle blocks` 只在连脱困前缀都建不出来时才会出现，
-    // 那说明当时前方连 collision_dist 那么短的安全段都没有，比这条用例更贴死。
     processor.setEscapeOptions(false, 0.08, 0.05);
     const auto seed = processor.buildSeed(corridor, current, context);
-    // 走廊太窄：绕行、停车前缀都必须失败。
-    assert(!seed.valid);
+    // 走廊窄但自由：种子必须可用，且没有被改写成停车/脱困前缀。
+    assert(seed.valid);
     assert(!seed.used_dynamic_detour);
     assert(!seed.stop_at_local_end);
     assert(!seed.used_escape_prefix);
-    assert(seed.dense_path.empty());
+    assert(!seed.dense_path.empty());
 
     const auto &reject = seed.dense_reject;
     assert(reject.valid);
     assert(!reject.terrain_blocked);
-    // 首个否决点必须报出完整的 0.300 m 要求，而不是被近场放宽过的 0.23 m。
-    assert(std::abs(reject.required - 0.30) < 1e-9);
+    // 这是"只差净空"而不是"堵死"：判读器与日志必须能把它和 occupied 分开。
+    assert(reject.clearance_only);
+    // 【2026-09-17 统一四道门】记录的要求必须是**与发布前校验/20 Hz 监视/MPC 指令门同一个
+    // 有效阈值**：collision_dist 0.30 减 ESDF 抖动余量 0.02 = 0.28，而不是完整的 0.30。
+    // 四道门漂移的后果是规划放行、执行刹车（2026-09-17 实车 7 次 clearance 否决全落在
+    // 0.26~0.28 这条缝里）。
+    assert(std::abs(reject.required -
+                    mas2027_nav_executor::effectiveClearanceThreshold(0.30)) < 1e-9);
+    assert(std::abs(reject.required - 0.28) < 1e-9);
+    // 近场之外，所以不是被放宽过的值（放宽后会是 起点净空 - 0.02，明显更小）。
     assert(!reject.near_field_relaxed);
     // 该点净空只有走廊中线那 0.25 m。
     assert(std::abs(reject.clearance - 0.25) < 0.02);
@@ -523,8 +588,10 @@ int main(int argc, char **argv) {
 
     // 关键用例：该点落在**近场之内**（arc 0.10 < collision_dist 0.30），净空 0.295。
     //   近场规则：要求放宽成 起点净空 - slack = 0.31 - 0.02 = 0.29 → 0.295 能过；
-    //   种子门  ：起点 0.31 不 < 0.30，不放宽，仍按完整的 0.30 判 → 0.295 过不了。
+    //   种子门  ：起点 0.31 不 < 0.30，不放宽，按完整要求判 → 0.295 过不了。
     // 同一个点、两套判据给出相反结论，而机器人起点并不贴死 → 这是判据不一致。
+    // 【2026-09-17】四道门统一后这条已经**不该再在实车出现**（种子门也取有效阈值 0.28），
+    // 保留它是为了让判读器一旦再次检测到漂移就能立刻报出来，而不是静默照旧。
     info = minco_planner::SeedRejectInfo{};
     info.valid = true;
     info.clearance = 0.295;
@@ -533,12 +600,24 @@ int main(int argc, char **argv) {
     assert(minco_planner::classifySeedReject(info, 0.31, collision_dist, slack) ==
            "SEED_GATE_STRICTER");
 
-    // 同一对数字、不同的 arc：近场之外时"近场规则"退化为完整 0.30，0.295 过不了
-    // → 环境过不去，不是判据问题。这条同时锁住"近场放宽只作用于起点附近"。
+    // 【2026-09-17 四道门统一后语义变化】同一对数字、不同的 arc（近场之外）：
+    // 统一前"近场规则"在近场外退化为完整 0.30，0.295 过不了 → GEOMETRY；
+    // 统一后近场外的完整要求是**有效阈值 0.30 - 0.02 = 0.28**，0.295 能过，
+    // 于是这条否决只可能来自"某道门又比统一判据更严" → 正是判读器要报的漂移。
+    // 换言之：这一格从"环境过不去"变成了"判据不一致"的探针。
     info = minco_planner::SeedRejectInfo{};
     info.valid = true;
     info.clearance = 0.295;
-    info.required = 0.30;
+    info.required = 0.30;   // 只有当某道门仍用完整的 0.30 时才会记下这个值
+    info.arc_from_start = 0.50;
+    assert(minco_planner::classifySeedReject(info, 0.31, collision_dist, slack) ==
+           "SEED_GATE_STRICTER");
+
+    // 近场之外、且净空低于统一后的有效阈值 0.28 → 环境真的过不去，拒绝正确。
+    info = minco_planner::SeedRejectInfo{};
+    info.valid = true;
+    info.clearance = 0.27;
+    info.required = 0.28;
     info.arc_from_start = 0.50;
     assert(minco_planner::classifySeedReject(info, 0.31, collision_dist, slack) ==
            "GEOMETRY");

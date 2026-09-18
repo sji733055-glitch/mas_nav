@@ -6,6 +6,29 @@
 
 namespace mas2027_nav_executor {
 
+/// 【唯一定义处】ESDF 逐帧抖动余量，四道净空门必须共用同一个值。
+///
+/// 背景（审计 §1.1）：本工程有**四道**净空门，曾经用了**两套**有效阈值：
+///   1. 发布前校验  MincoPlanner::checkCollision(traj)            → required − 本容差
+///   2. 20 Hz 监视  MincoPlanner::checkCollision()                → required − 本容差
+///   3. MPC 指令门  checkCommandSafety()                          → 曾直接用 required（无容差）
+///   4. 局部种子门  LocalPathProcessor::segmentClear/cellTraversable → 曾直接用 required（无容差）
+/// 于是 3、4 比 1、2 严 2 cm：规划器按 0.26 判"能过"并发布轨迹（或生成种子），
+/// 执行器却按 0.28 否决每一条指令、种子门又按 0.28 否掉种子 → **规划放行、执行刹车**，
+/// 现场表现是"车一顿一顿、能听到反复启停"。
+/// 2026-09-17 实车日志直接坐实：`Braking: ... (reason=clearance value=0.263~0.280 threshold=0.280)`
+/// 共 7 次，**全部落在 [0.26, 0.28] 这条缝里**（即全部都是这两套阈值造成的假否决）。
+/// 数值依据：0.05 曾把有效硬阈值压到车体半宽以下并导致实车撞墙（2026-09-16），
+/// 0.02 既远大于该事故值，又能通过实测净空约 0.295 m 的窄道。抖动余量的量级应保持
+/// "几毫米~2 cm"，不要用接近车体半径的量。
+inline constexpr double kEsdfJitterTolerance = 0.02;
+
+/// 完整净空要求 → 各门实际使用的有效阈值。四道门都必须经此函数取值。
+inline double effectiveClearanceThreshold(double full_requirement)
+{
+  return std::max(0.0, full_requirement - kEsdfJitterTolerance);
+}
+
 /// 近场净空判据（轨迹安全检查、运行时监视、MPC 下一段指令检查共用）。
 ///
 /// 背景：所有净空检查都会从机器人**当前所在的位置**开始采样，而机器人已经站在这里了。

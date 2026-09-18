@@ -2,6 +2,7 @@
 #define MINCO_PLANNER__LOCAL_PATH_PROCESSOR_HPP_
 
 #include "minco_core/header.hpp"
+#include "mas2027_nav_executor/common/environment/clearance_gate.hpp"
 
 #include <string>
 
@@ -25,21 +26,28 @@ struct SeedRejectInfo
   double arc_from_start{0.0};  ///< 该点离规划起点的平面距离（近场是按弧长划分的）
   bool near_field_relaxed{false};  ///< required 是否来自近场放宽（而非完整 collision_dist）
   bool terrain_blocked{false};     ///< 是否死在 terrain_segment_free 而不是净空
+  /// 【2026-09-17】"只差净空"：该点**本身是自由格**（isFree 通过、不在 terrain 拒绝里），
+  /// 只是净空小于 required。段门（segmentClear）不再因为这一类失败而否决整条种子——见
+  /// 该函数头部注释：净空是**轨迹**的属性，原始折线的净空不代表 MINCO 优化后轨迹的净空。
+  /// 这个标志只用于日志（把"贴墙但能过"与"真的堵死"分开）。
+  bool clearance_only{false};
   /// 停车/脱困前缀专用：true 表示"第一个净空不足的采样点之前的可用安全段，减去收尾余量后
   /// 不足最小前缀长度"。此时否决的定义是"前方太短"而不是"净空不够"，`clearance` 仍会照实
   /// 记录那一点的净空（通常仍大于 required）。
   bool length_limited{false};
 };
 
-/// 自动判读"这条被否的路径到底说明了什么"。写进日志是为了不让人再手算两套判据的差异——
-/// 这里同时比较**种子门**（`local_path_processor.cpp` 的 segmentClear：只有起点净空严格小于
-/// collision_dist 才放宽，且放宽只作用于离起点 collision_dist 以内）与**脱困层/轨迹校验门**
-/// 的近场规则（近场外就是完整的 collision_dist）。两者的差异正是 `SEED_GATE_STRICTER`。
+/// 自动判读"这条被否的路径到底说明了什么"。写进日志是为了不让人再手算两套判据的差异。
 ///
-/// 返回值一览（`verdict=` 字段），共 5 种、全部可达：
+/// 【2026-09-17 之后的口径】种子门（`segmentClear`）已经**不再**用净空否决（只查占据/地形，
+/// 见 `enforce_clearance` 的说明），因此 `Live obstacle blocks the local route` 这条消息现在
+/// 只会出现在"路真的被堵死"时；`SEED_GATE_STRICTER` 随之变成**自检分支**——只有当某处又出现
+/// "某道门拿净空去否决种子/前缀"的回归时才会被报出来。判读器保留原样，正是为了那种回归。
+///
+/// 返回值一览（`verdict=` 字段）：
 ///   - `GEOMETRY`          该点连"近场规则"都过不了 → 几何真的过不去，拒绝是正确行为，
 ///                         别动阈值。机器人本来就贴死时也落在这里（原因见实现处注释）。
-///   - `SEED_GATE_STRICTER`该点靠近场规则能过、靠种子门那套更严的要求过不了，且机器人起点
+///   - `SEED_GATE_STRICTER`该点靠近场规则能过、靠更严的那套要求过不了，且机器人起点
 ///                         净空 ≥ collision_dist（没有"贴死"作为放宽理由）
 ///                         → **判据不一致**，该改判据。
 ///   - `PREFIX_TOO_SHORT`  该点其实满足判据，否决来自"安全段太短、前缀凑不够最小长度"
@@ -67,8 +75,9 @@ struct LocalPathSeed
   // 它整段落在近场豁免半径（collision_dist）以内、末速度为零，只用于把车从"贴住障碍停死"
   // 的状态里挪出来；实车表现是原地不动，见 docs/change-history.md 2026-09-16 13:40 那次运行。
   bool used_escape_prefix{false};
-  // 【排障用】四层兜底全败时，稠密种子判据首次否决的那一点。只有 used_* 全为假、
-  // dense_path 为空时有意义；调用方靠它区分"毫米级净空否决"与"物理阻断"。
+  // 【排障用】稠密种子判据首次否决的那一点。四层兜底全败（used_* 全为假、dense_path 为空）
+  // 时它说明"为什么全败"；【2026-09-17】种子门否决后又被绕行/前缀修复成功时同样会记录，
+  // 用于回答"这次为什么走了兜底"（配合 strict_seed_after_failures 的切换日志一起读）。
   SeedRejectInfo dense_reject;
   std::vector<Eigen::Vector3d> dense_path;
   std::vector<Eigen::Vector3d> sparse_waypoints;
@@ -92,13 +101,34 @@ public:
   /// （即整段都落在近场豁免半径内，不引入任何新的安全阈值）。
   void setEscapeOptions(bool enable, double min_length, double buffer);
 
+  /// `enforce_seed_clearance`（【2026-09-17 新增】，默认 false = 保持"软种子门"）：
+  ///   折线净空不足默认**不否决**种子（净空是轨迹的属性，交给 MINCO 与轨迹级三道门）。
+  ///   但现场存在一类"MINCO 永远修不好"的种子：折线本身就是唯一通路，且它比 required 窄
+  ///   几毫米（实车 2026-09-17 20:09：种子 0.248 / 轨迹最好 0.246 vs required 0.260）。
+  ///   此时软种子门会让规划器每 0.5 s 重复同一个不可能成功的优化，`/opt_path` 一直为空、
+  ///   车原地不动（日志只有 `Local seed is tight but not blocked` + `MINCO path generation
+  ///   failed` 刷屏）——而同一处代码在"净空硬否决"下会走**绕行 → 停车前缀 → 脱困前缀**
+  ///   三层兜底（旧行为，实车能走）。因此 MINCO 连续失败若干次后，调用方应把本项置 true
+  ///   退回旧行为，而不是无限重试。true 时语义与停车/脱困前缀一致：净空不足即否决，
+  ///   并继续尝试三层兜底；**三道轨迹级净空门一处都不放松**。
   LocalPathSeed buildSeed(const std::vector<geometry_msgs::msg::PoseStamped> & global_path,
     const geometry_msgs::msg::PoseStamped & current_pose,
     const PlannerModeContext & mode_context,
     const std::function<bool(const Eigen::Vector3d &, const Eigen::Vector3d &)> &
-      terrain_segment_free = {}) const;
+      terrain_segment_free = {},
+    bool enforce_seed_clearance = false) const;
 
 private:
+  /// 种子 / 局部绕行 / 停车前缀三类判据共用的「完整净空要求」。
+  /// 取 collision_dist_ 减 ESDF 抖动余量（clearance_gate.hpp 的 effectiveClearanceThreshold），
+  /// 与发布前校验、20 Hz 监视、MPC 指令门**必须是同一个有效阈值**——四道门不一致时，
+  /// 规划放行、执行刹车（2026-09-17 实车 7 次否决全部落在 0.26~0.28 这条缝里）。
+  /// 近场半径仍用 collision_dist_（车体安全半径），与本值无关。
+  double fullClearanceRequirement() const
+  {
+    return mas2027_nav_executor::effectiveClearanceThreshold(collision_dist_);
+  }
+
   std::vector<Eigen::Vector3d> extractLocalPath(
     const std::vector<geometry_msgs::msg::PoseStamped> & global_path,
     const Eigen::Vector3d & cur_pos) const;
@@ -108,6 +138,12 @@ private:
 
   /// 最后一个参数是【排障用】可选输出：传入非空指针时，在返回 false 之前填入"第一次否决"
   /// 的那一点（净空 / 要求 / 是否近场放宽 / 是否死在 terrain）。nullptr 表示不需要，零开销。
+  ///
+  /// 【2026-09-17】`enforce_clearance` 决定净空不足算不算否决：
+  ///   - false（种子/绕行/稀疏复核用）：只有占据、地形、查询无效才算否决。净空是**轨迹**的
+  ///     属性，交给 MINCO 与轨迹级三道门；这也是旧工程 mas_nav_2027 `isLineFree` 的口径。
+  ///   - true（停车/脱困前缀用）：净空不足即否决。前缀末端是"车要停在哪里"，必须本身满足
+  ///     净空，否则连停车轨迹都会被发布前校验拒掉，车反而失去可执行指令。
   bool segmentClear(const std::shared_ptr<rog_map::MapQueryInterface> & query,
     const Eigen::Vector3d & from,
     const Eigen::Vector3d & to,
@@ -116,7 +152,8 @@ private:
     bool start_clearance_ok,
     const std::function<bool(const Eigen::Vector3d &, const Eigen::Vector3d &)> &
       terrain_segment_free,
-    SeedRejectInfo * reject_info = nullptr) const;
+    SeedRejectInfo * reject_info = nullptr,
+    bool enforce_clearance = false) const;
 
   bool pathClear(const std::vector<Eigen::Vector3d> & path,
     const Eigen::Vector3d & planning_start,
@@ -125,7 +162,8 @@ private:
     bool start_clearance_ok,
     const std::function<bool(const Eigen::Vector3d &, const Eigen::Vector3d &)> &
       terrain_segment_free,
-    SeedRejectInfo * reject_info = nullptr) const;
+    SeedRejectInfo * reject_info = nullptr,
+    bool enforce_clearance = false) const;
 
   bool searchDynamicDetour(const Eigen::Vector3d & start,
     const Eigen::Vector3d & goal,

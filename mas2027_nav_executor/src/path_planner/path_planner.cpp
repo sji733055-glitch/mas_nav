@@ -1,5 +1,6 @@
 #include "mas2027_nav_executor/path_planner/path_planner.hpp"
 
+#include <cmath>
 #include <stdexcept>
 
 #include "rclcpp/rclcpp.hpp"
@@ -11,9 +12,12 @@
 namespace mas2027_nav_executor {
 
 PathPlanner::PathPlanner(std::shared_ptr<TerrainGrid> terrain, double odom_timeout_s,
-  const std::string & odom_frame)
+  const std::string & odom_frame, double dynamic_map_timeout_s)
 : terrain_(std::move(terrain)), odom_timeout_s_(odom_timeout_s)
 {
+  if (std::isfinite(dynamic_map_timeout_s) && dynamic_map_timeout_s > 0.0) {
+    dynamic_map_timeout_s_ = dynamic_map_timeout_s;
+  }
   node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("nav_executor_planner");
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(node_->get_clock());
   tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
@@ -68,10 +72,14 @@ bool PathPlanner::acceptGoal(const geometry_msgs::msg::PoseStamped & goal)
     return false;
   }
   const auto dynamic = terrain_->dynamicSnapshot();
+  // 阈值必须给足余量（默认 1.5 s = 3 倍发布周期）。曾经硬编码 0.5 s，与 map_server 旁路模式下
+  // 500 ms 的"空图心跳"零余量，导致运行中途点目标被静默丢弃（实测 age 恒在 0.51 附近）。
   if (!dynamic ||
-    std::abs((node_->now() - rclcpp::Time(dynamic->grid.header.stamp)).seconds()) > 0.5)
+    std::abs((node_->now() - rclcpp::Time(dynamic->grid.header.stamp)).seconds()) >
+    dynamic_map_timeout_s_)
   {
-    RCLCPP_WARN(node_->get_logger(), "Ignoring goal until a fresh dynamic map is ready");
+    RCLCPP_WARN(node_->get_logger(),
+      "Ignoring goal until a fresh dynamic map is ready (age limit %.2f s)", dynamic_map_timeout_s_);
     return false;
   }
   const auto query = rog_map_->queryInterface();
@@ -89,11 +97,19 @@ bool PathPlanner::acceptGoal(const geometry_msgs::msg::PoseStamped & goal)
     planning_frame = "odom";
   }
 
-  geometry_msgs::msg::PoseStamped goal_in_planning = goal;
+  // 远端操作者（Foxglove 等）发布目标时用的是客户端自己的时钟，与本机存在毫秒级偏差时，
+  // tf2 会因"请求时间在未来"直接抛 extrapolation into the future 而丢弃目标
+  // （2026-09-17 实测：笔记本快约 330 ms，Foxglove 点击的目标 100% 被静默忽略）。
+  // 人工点击的目标"什么时候点的"对规划没有意义，所以查询前把时间戳归零：
+  // tf2 把 0 视为"取最新可用 TF"，从此免疫两端时钟偏差。
+  geometry_msgs::msg::PoseStamped goal_query = goal;
+  goal_query.header.stamp = rclcpp::Time(0, 0, node_->get_clock()->get_clock_type());
+
+  geometry_msgs::msg::PoseStamped goal_in_planning = goal_query;
   const std::string source = goal.header.frame_id.empty() ? planning_frame : goal.header.frame_id;
   if (source != planning_frame) {
     try {
-      goal_in_planning = tf_buffer_->transform(goal, planning_frame, tf2::durationFromSec(0.2));
+      goal_in_planning = tf_buffer_->transform(goal_query, planning_frame, tf2::durationFromSec(0.2));
     } catch (const tf2::TransformException & ex) {
       RCLCPP_WARN(node_->get_logger(),
         "Ignoring goal: cannot transform from %s to %s (%s)",
@@ -103,6 +119,10 @@ bool PathPlanner::acceptGoal(const geometry_msgs::msg::PoseStamped & goal)
   } else {
     goal_in_planning.header.frame_id = planning_frame;
   }
+
+  // tf2 的 transform() 是否把输出时间戳改写成查询时刻取决于实现，这里显式再归零一次，
+  // 保证第二次（转到地形图坐标系）查询同样走"最新 TF"。
+  goal_in_planning.header.stamp = goal_query.header.stamp;
 
   geometry_msgs::msg::PoseStamped goal_in_map;
   try {

@@ -75,9 +75,12 @@ int main(int argc, char ** argv)
   const std::vector<minco_controller::ReferencePoint> reference;
   const rclcpp::Time stamp(grid.header.stamp);
   using mas2027_nav_executor::ExecutorStatus;
+  // 生产默认值（node.dynamic_map_timeout_s）。
+  constexpr double kDynamicMapTimeoutS = 1.5;
   const auto check = [&]() {
     return mas2027_nav_executor::checkCommandSafety(
-      terrain, query, tf, "odom", 0.30, 0.05, current, command, reference, stamp);
+      terrain, query, tf, "odom", 0.30, kDynamicMapTimeoutS, 0.05, current, command, reference,
+      stamp);
   };
   assert(check() == ExecutorStatus::PUBLISHED);
 
@@ -91,7 +94,8 @@ int main(int argc, char ** argv)
   forward.vx = 1.0;
   const auto check_forward = [&]() {
     return mas2027_nav_executor::checkCommandSafety(
-      terrain, query, tf, "odom", 0.30, 0.05, current, forward, reference, stamp);
+      terrain, query, tf, "odom", 0.30, kDynamicMapTimeoutS, 0.05, current, forward, reference,
+      stamp);
   };
   query->distance = 0.28;
   query->slope_x = -0.6;
@@ -101,6 +105,48 @@ int main(int argc, char ** argv)
   query->distance = 0.28;
   query->slope_x = 0.6;
   assert(check_forward() == ExecutorStatus::PUBLISHED);
+
+  // 3b) 【2026-09-17 四道门统一】指令门必须和发布前校验/20 Hz 监视/局部种子门取同一个
+  // 有效阈值：rog_map_clearance(0.30) − kEsdfJitterTolerance(0.02) = 0.28。
+  // 构造：起点净空 0.45，朝障碍方向 1.0 m/s，净空随 +x 以 0.46/m 下降 ⇒ 前视 0.35 s 处
+  // （弧长 0.35 m，**已在近场半径 0.30 之外**）净空降到 ≈0.289，正好落在 [0.28, 0.30]
+  // 这条缝里 —— 统一前指令门按完整的 0.30 会否决（实车日志里 7 次 clearance 否决值
+  // 0.263~0.280 全是这一条），统一后必须放行。
+  {
+    minco_controller::Control fast;
+    fast.vx = 1.0;
+    const auto check_fast = [&]() {
+      return mas2027_nav_executor::checkCommandSafety(
+        terrain, query, tf, "odom", 0.30, kDynamicMapTimeoutS, 0.05, current, fast, reference,
+        stamp);
+    };
+    query->distance = 0.45;
+    query->slope_x = -0.46;
+    assert(check_fast() == ExecutorStatus::PUBLISHED);
+    // 但真的压到有效阈值以下仍必须拦下，别把"统一"写成放水：
+    // 起点 0.30 时前视末端净空 ≈0.14，远低于 0.28。
+    query->distance = 0.30;
+    assert(check_fast() == ExecutorStatus::DYNAMIC_BLOCKED);
+    query->slope_x = 0.0;
+  }
+
+  // 4) 动态层新鲜度阈值必须留余量，且阈值来自参数而不是硬编码。
+  // 现场（2026-09-17）：map_server 在 bypass_dynamic_obstacle:=True 下由 500 ms 定时器发
+  // 全 0 空图，旧硬编码 0.5 s 与发布周期零余量，实测 age 恒在 0.509~0.521 ⇒ 每个周期末尾
+  // 必有一拍清零指令 + 丢 MPC 热启动，车"一卡一卡"。这里锁住：0.51 s 必须放行。
+  query->distance = 1.0;
+  query->slope_x = 0.0;
+  const auto check_age = [&](double age_s, mas2027_nav_executor::CommandSafetyDetail * detail) {
+    return mas2027_nav_executor::checkCommandSafety(
+      terrain, query, tf, "odom", 0.30, kDynamicMapTimeoutS, 0.05, current, command, reference,
+      stamp + rclcpp::Duration::from_seconds(age_s), detail);
+  };
+  mas2027_nav_executor::CommandSafetyDetail detail;
+  assert(check_age(0.51, &detail) == ExecutorStatus::PUBLISHED);
+  assert(check_age(2.0, &detail) == ExecutorStatus::TERRAIN_BLOCKED);
+  assert(std::string(detail.reason) == "dynamic_stale");
+  assert(detail.value == 2.0);
+  assert(detail.threshold == kDynamicMapTimeoutS);
 
   rclcpp::shutdown();
 }

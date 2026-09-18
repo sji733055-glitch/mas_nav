@@ -21,7 +21,7 @@ class PathPlanner final
 {
 public:
   PathPlanner(std::shared_ptr<TerrainGrid> terrain, double odom_timeout_s,
-    const std::string & odom_frame);
+    const std::string & odom_frame, double dynamic_map_timeout_s);
   ~PathPlanner();
   bool acceptGoal(const geometry_msgs::msg::PoseStamped & goal);
   bool acceptsTrajectory(const rclcpp::Time & stamp) const
@@ -43,6 +43,8 @@ private:
   rclcpp::TimerBase::SharedPtr task_timer_;
   std::shared_ptr<TerrainGrid> terrain_;
   double odom_timeout_s_;
+  /// 目标接纳时对动态层新鲜度的要求（秒），见 node.dynamic_map_timeout_s。
+  double dynamic_map_timeout_s_{1.5};
 };
 
 }  // namespace mas2027_nav_executor
