@@ -1,0 +1,24 @@
+/**:
+  ros__parameters:
+    mpc:
+      dt: 0.05
+      lookahead_time: 2.0
+      control_delay_compensation: 0.05
+      # 线速度死区：低于该值时 path_executor 只发角速度、把线速度清零
+      # （path_executor.cpp 中 hypot(vx,vy) < deadzone_speed 则不写线速度）。
+      # 0.1 m/s 会让低速段「给一点速度就被清掉」，表现为起步顿挫、贴障时挪不动；
+      # 降到 0.02 保留消抖作用，同时让车能平滑起步与缓行。
+      deadzone_speed_threshold: 0.02
+      weights:
+        state: [3.0, 3.0, 2.0]
+        command: [1.5, 1.5, 1.0]
+      constraints:
+        velocity:
+          x: {min: -3.0, max: 3.0}
+          y: {min: -3.0, max: 3.0}
+          omega: {min: -2.0, max: 2.0}
+        acceleration:
+          enable: true
+          x: {min: -4.0, max: 4.0}
+          y: {min: -4.0, max: 4.0}
+          omega: {min: -4.0, max: 4.0}

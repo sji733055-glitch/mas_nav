@@ -33,7 +33,6 @@ find_package(OpenMP)
 
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
-find_package(nav2_util REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
@@ -75,7 +74,6 @@ target_include_directories(${library_name}
 ament_target_dependencies(${library_name}
         rclcpp
         rclcpp_lifecycle
-        nav2_util
         std_msgs
         sensor_msgs
         geometry_msgs
@@ -116,33 +114,6 @@ install(TARGETS rog_map_node
         DESTINATION lib/${PROJECT_NAME}
 )
 
-# 本仓库新增：把 ProjectionLayer 的二维分类结果转成 Nav2 代价地图能吃的点云。
-# 不链接 ${library_name}，只依赖消息类型，所以和上游库完全解耦。
-# 源码同样单独放目录，不会被上面收集库源码的 glob 命中。
-add_executable(layer_value_to_cloud
-        src/rog_map_bridge/layer_value_to_cloud.cpp
-)
-
-target_include_directories(layer_value_to_cloud
-        PRIVATE
-                ${PCL_INCLUDE_DIRS}
-)
-
-target_link_libraries(layer_value_to_cloud
-        ${PCL_LIBRARIES}
-)
-
-ament_target_dependencies(layer_value_to_cloud
-        rclcpp
-        nav_msgs
-        sensor_msgs
-        pcl_conversions
-)
-
-install(TARGETS layer_value_to_cloud
-        DESTINATION lib/${PROJECT_NAME}
-)
-
 install(TARGETS ${library_name}
         ARCHIVE DESTINATION lib
         LIBRARY DESTINATION lib
@@ -153,16 +124,16 @@ install(DIRECTORY include/
         DESTINATION include
 )
 
-install(DIRECTORY config/
-        DESTINATION share/${PROJECT_NAME}/config
-)
+# 2026-09-18：删除 install(DIRECTORY config/ ...)。config/ 下原本只有 ROS1 时代
+# dynamic_reconfigure 的 visualization.cfg，全仓库无任何引用，已随之删除；
+# 目录空了之后这条 install 会在 configure 阶段直接报错。ROGMap 的参数统一由
+# nav_executor 的 planner.rog_map.* 提供（见 mas2027_nav_executor/config/planner_params.yaml）。
 
 ament_export_include_directories(include)
 ament_export_libraries(${library_name})
 ament_export_dependencies(
         rclcpp
         rclcpp_lifecycle
-        nav2_util
         std_msgs
         sensor_msgs
         geometry_msgs

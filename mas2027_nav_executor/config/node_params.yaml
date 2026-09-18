@@ -1,0 +1,55 @@
+/**:
+  ros__parameters:
+    node:
+      control_rate_hz: 20.0
+      planner_frequency: 20.0
+      trajectory_timeout_s: 0.6
+      odom_timeout_s: 0.5
+      # MPC 下一段指令（未来 0.35 s）在 ROGMap ESDF 上要求的最小净空，应与
+      # planner.minco_optimizer.collision_dist 保持一致。机器人当前所在位置附近
+      # （弧长等于该值以内）只要求不比当前实测净空更差，避免贴墙停车后 cmd_vel 恒为 0。
+      rog_map_clearance: 0.28
+      # 动态层新鲜度上限（秒），同时管两处硬门：
+      #   command_safety.cpp 的 dynamic_stale（能否发指令）与 path_planner.cpp 的目标接纳。
+      # 【2026-09-17 实测】原来是硬编码 0.5 s，而 map_server 在 bypass_dynamic_obstacle:=True
+      # （本仓库 launch 的默认值）下**不订阅点云**，只由 500 ms 定时器发一帧全 0 空图，
+      # 时间戳取发布时刻 ⇒ 发布周期与判据零余量。20 Hz 控制下每个周期末尾必有一拍读到
+      # 0.509~0.521 > 0.500：整条速度指令被清零、MPC 热启动被 resetLastControl() 丢掉。
+      # 现场表现就是"车一卡一卡"，日志里 "Braking: ... reason=dynamic_stale value=0.51 threshold=0.50"
+      # 每 2 s 一条（WARN 节流上限）。取 3 倍发布周期 = 1.5 s。
+      # ⚠️ 本项只放宽"地图新鲜度"，不触碰任何净空阈值；实时避障仍由 ROGMap（20 Hz）负责。
+      # 若将来 map_server 的旁路关闭、动态层承载真实障碍，可按其实际延迟回调（不要低于 3 倍发布周期）。
+      dynamic_map_timeout_s: 1.5
+      output_in_body_frame: true
+      frames:
+        odom: odom
+      topics:
+        goal_sub: /goal_pose
+        odom_sub: /Odometry
+        trajectory_sub: /opt_path
+        spin_cmd_sub: /cmd_spin
+        global_path_pub: /nav_executor/global_path
+        # 注意上面这条发的是 MINCO 轨迹（名字是历史遗留，smoke_goal.py 靠它数轨迹点数），
+        # 下面两条才是全局搜索（SMAC 2D / Astar）真正的折线，专门给 RViz 看。
+        global_plan_pub: /nav_executor/global_plan
+        global_plan_marker_pub: /nav_executor/debug/global_plan
+        minco_trajectory_pub: /nav_executor/debug/minco_trajectory
+        # RViz 规划约束图：100 当前不可通行，50 仅限指定方向通过；不显示预测帧。
+        planning_constraints_pub: /planning_constraints
+        planning_constraints_marker_pub: /planning_constraints_markers
+        dynamic_obstacle_marker_pub: /nav_executor/debug/dynamic_obstacles
+        # 独立执行器直接输出到底盘入口。
+        cmd_vel_pub: /cmd_vel
+        terrain_cost_sub: /cost_map
+        terrain_direction_sub: /direction_map
+        dynamic_cost_map_sub: /dynamic_cost_map
+      visualization:
+        velocity_color_min: 0.0
+        velocity_color_max: 3.0
+        # 全局搜索折线的 RViz 样式。线宽是给「一眼看清全局拓扑」用的：MINCO 轨迹默认 0.07 m
+        # 且按速度染色，两者叠在一起时全局折线必须更粗、颜色更跳，否则分不出来。
+        global_plan_publish_hz: 5.0
+        global_plan_line_width: 0.15
+        global_plan_color_r: 0.0
+        global_plan_color_g: 1.0
+        global_plan_color_b: 1.0

@@ -68,7 +68,7 @@ flowchart LR
 | `/rog_map/layer_value` | 动态与 PGM 静态先验融合后的二维障碍投影 |
 | `/rog_map/layer_value_dynamic` | 仅在线三维感知生成的动态二维障碍投影 |
 | `/rog_map/layer_value_static` | 仅 PGM 静态先验在当前 ROGMap 网格上的二维障碍投影 |
-| `/rog_map/layer_type` | 四类投影结果；RViz Map 使用 `costmap` 配色显示 UNKNOWN/FREE/PASSABLE/OCCUPIED |
+| `/rog_map/layer_type` | 四类投影结果，按 OccupancyGrid 数值编码：`-1`=UNKNOWN、`33`=FREE、`66`=PASSABLE、`100`=OCCUPIED；RViz Map 使用 `costmap` 配色显示四档 |
 | `/rog_map/layer_confidence` | 分类置信度 |
 | `/rog_map/layer_height_delta` | 柱内高度变化 |
 | `/rog_map/field` | 势场/距离场诊断 |

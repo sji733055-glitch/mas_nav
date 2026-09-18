@@ -12,7 +12,7 @@ endif()
 find_package(ament_cmake_auto REQUIRED)
 find_package(OpenMP REQUIRED)
 find_package(Eigen3 REQUIRED)
-find_package(PCL REQUIRED COMPONENTS common io)
+find_package(PCL REQUIRED QUIET COMPONENTS common io)
 
 ament_auto_find_build_dependencies()
 
@@ -48,6 +48,7 @@ rclcpp_components_register_node(${PROJECT_NAME}
 )
 
 ament_auto_package(
+  USE_SCOPED_HEADER_INSTALL_DIR
   INSTALL_TO_SHARE
   config
   launch

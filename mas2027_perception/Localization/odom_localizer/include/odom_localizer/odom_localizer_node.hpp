@@ -87,7 +87,6 @@ private:
     RegistrationMetrics & metrics,
     std::string & reason) const;
   bool apply_registration_update(const Eigen::Isometry3d & transform);
-  Eigen::Isometry3d maybe_lock_z(const Eigen::Isometry3d & transform) const;
   void publish_transform();
   void maybe_publish_prior_cloud();
 
@@ -135,7 +134,8 @@ private:
   double ema_ratio_{0.6};
   double max_translation_step_{0.3};
   double max_rotation_step_{0.15};
-  bool lock_z_{true};
+  bool publish_tf_direct_{true};
+  std::string map_to_odom_topic_{"/tf_maintainer/map_to_odom"};
 
   small_gicp::PointCloud::Ptr map_cloud_;
   std::shared_ptr<small_gicp::KdTree<small_gicp::PointCloud>> map_kd_tree_;
@@ -155,6 +155,7 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr registered_cloud_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initial_pose_sub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr prior_cloud_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::TransformStamped>::SharedPtr map_to_odom_pub_;
   rclcpp::TimerBase::SharedPtr publish_timer_;
   rclcpp::TimerBase::SharedPtr registration_timer_;
 };

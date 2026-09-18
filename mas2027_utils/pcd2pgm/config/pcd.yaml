@@ -1,6 +1,6 @@
 /pcd2pgm:
   ros__parameters:
-    file_directory: /home/ros2_ws/src/mas2027_nav_bringup/pcd/
+    file_directory: $(find-pkg-share mas2027_nav_bringup)/pcd/
     file_name: lab3
     flag_pass_through: false   # false = 保留 [thre_z_min, thre_z_max] 之间的点
     map_resolution: 0.05       # 与现有 Nav2 地图一致

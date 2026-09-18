@@ -25,7 +25,7 @@
     # bringup/pcd/<name>.pcd is already this frame. Raw /map_save scan.pcd is
     # still LIO-internal world; do not point prior_pcd_file at that file.
     map:
-      prior_pcd_file: "/home/ros2_ws/src/mas2027_nav_bringup/pcd/lab3.pcd"
+      prior_pcd_file: "$(find-pkg-share mas2027_nav_bringup)/pcd/lab3.pcd"
       downsample_resolution: 0.05
       covariance_neighbors: 20
       publish_prior_cloud: true
@@ -65,7 +65,9 @@
       ema_ratio: 0.6
       max_translation_step: 0.3
       max_rotation_step: 0.15
-      # Dual-lidar live cloud vs single-lidar lab3.pcd biases GICP in z and
-      # lifts the robot above the prior map. Ground vehicle: pin map->odom z
-      # to startup.initial_transform (0). Remake the PCD then this can stay on.
-      lock_z: true
+
+    # 默认由定位器直发 map→odom，保持既有启动方式。独立 executor 模式设
+    # publish_direct=false，再由 tf_maintainer 成为该 TF 边的唯一发布者。
+    tf:
+      publish_direct: true
+      transform_topic: /tf_maintainer/map_to_odom

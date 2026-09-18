@@ -144,12 +144,12 @@ def first_visible(rotation, azimuth_deg, dz, limit=10.0):
 
 
 def find_urdf():
-    """源码树、容器挂载、以及从 install/lib 回退到 /home/ros2_ws/src。"""
+    """源码树，以及从 install/lib 回退到仓库根。"""
     here = os.path.dirname(os.path.abspath(__file__))
     candidates = (
         os.path.join(here, "..", "..", URDF_REL_PATH),
-        os.path.join("/home/ros2_ws/src", URDF_REL_PATH),
-        os.path.join(here, "..", "..", "..", "src", URDF_REL_PATH),
+        os.path.join("/home/mas/mas_nav_2027_native", URDF_REL_PATH),
+        os.path.join(here, "..", "..", "..", URDF_REL_PATH),
     )
     for path in candidates:
         path = os.path.normpath(path)
@@ -347,7 +347,7 @@ def report(joints, urdf, gravity_by_side=None):
               % ((LIDARS[side][1],) + tidy(xyz) + tidy(rpy)))
     extrinsic = relative_extrinsic(joints["right"], joints["left"])
     print("  mas2027_nav_bringup/config/small_point_lio_params.yaml")
-    print("  （同一份也要写进 mas2027_perception/mid360_driver/config/params.yaml）")
+    print("  （2026-09-18 起这是唯一真源：mid360_driver/config/params.yaml 已删除）")
     print("    merge_extrinsic_back_to_front: [%.6f, %.6f, %.6f, %.6f, %.6f, %.6f]" % tidy(extrinsic))
     print("    # = T_lidar_link⁻¹·T_lidar_back，由上面两个关节算出，不是手推的手性对称")
     print("    # 相对旋转 roll %+.2f°（两侧倾角之差）  pitch %+.2f°  yaw %+.2f°"

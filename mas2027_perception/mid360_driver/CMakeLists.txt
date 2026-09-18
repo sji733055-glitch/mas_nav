@@ -29,9 +29,19 @@ target_link_options(${PROJECT_NAME} PRIVATE
 target_compile_options(${PROJECT_NAME}_node PRIVATE $<$<CONFIG:Debug>:-fsanitize=address,undefined>)
 target_link_options(${PROJECT_NAME}_node PRIVATE $<$<CONFIG:Debug>:-fsanitize=address,undefined>)
 
+# 2026-09-18：删除 INSTALL_TO_SHARE config launch。config/params.yaml 与 launch/mid360_driver.launch.py
+# 是 bringup 那份配置的重复来源（validate_crc 等取值相反），且该 launch 从 share 目录 glob 配置、
+# 本包又从不安装它（等于用默认参数起节点），全仓库无引用，已一并删除。
+# 雷达与融合参数以 mas2027_nav_bringup/config/small_point_lio_params.yaml 为唯一真源。
 ament_auto_package(
   USE_SCOPED_HEADER_INSTALL_DIR
-  INSTALL_TO_SHARE
-  config
-  launch
 )
+
+if(BUILD_TESTING)
+  enable_testing()
+  # 单雷达降级的纯逻辑单测（外参变换 / IMU 换源 / 在线判据）。
+  # 端到端（假雷达 + 真实节点 + 真实话题）见 test/integration_degrade_check.py，不挂 CTest。
+  add_executable(test_merge_failover test/test_merge_failover.cpp src/merge_failover.cpp)
+  target_include_directories(test_merge_failover PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  add_test(NAME merge_failover COMMAND test_merge_failover)
+endif()

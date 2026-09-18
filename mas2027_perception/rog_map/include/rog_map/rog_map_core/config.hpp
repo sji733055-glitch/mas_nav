@@ -26,7 +26,6 @@
 #include <cmath>
 #include <stdexcept>
 
-#include <nav2_util/node_utils.hpp>
 #include <rclcpp/rclcpp.hpp>
 
 #include <rog_map/rog_map_core/common_lib.hpp>
@@ -76,7 +75,9 @@ public:
   {
     auto load = [&node, &prefix](const string & key, auto & value) {
       const string param_name = prefix + "." + key;
-      nav2_util::declare_parameter_if_not_declared(node, param_name, rclcpp::ParameterValue(value));
+      if (!node->has_parameter(param_name)) {
+        node->declare_parameter(param_name, rclcpp::ParameterValue(value));
+      }
       if (!node->get_parameter(param_name, value)) {
         RCLCPP_WARN(node->get_logger(),
           "[ROGMap Config] parameter '%s' not found after declaration, using default.",
@@ -87,7 +88,9 @@ public:
     auto loadVec3 = [&node, &prefix](const string & key, const vector<double> & default_value) {
       vector<double> values = default_value;
       const string param_name = prefix + "." + key;
-      nav2_util::declare_parameter_if_not_declared(node, param_name, rclcpp::ParameterValue(values));
+      if (!node->has_parameter(param_name)) {
+        node->declare_parameter(param_name, rclcpp::ParameterValue(values));
+      }
       if (!node->get_parameter(param_name, values)) {
         RCLCPP_WARN(node->get_logger(),
           "[ROGMap Config] parameter '%s' not found after declaration, using default vector.",
@@ -102,7 +105,9 @@ public:
     auto loadVec2 = [&node, &prefix](const string & key, const vector<double> & default_value) {
       vector<double> values = default_value;
       const string param_name = prefix + "." + key;
-      nav2_util::declare_parameter_if_not_declared(node, param_name, rclcpp::ParameterValue(values));
+      if (!node->has_parameter(param_name)) {
+        node->declare_parameter(param_name, rclcpp::ParameterValue(values));
+      }
       if (!node->get_parameter(param_name, values)) {
         RCLCPP_WARN(node->get_logger(),
           "[ROGMap Config] parameter '%s' not found after declaration, using default vector.",
@@ -368,6 +373,12 @@ public:
     decay_active_list_en = true;
     dirty_column_en = false;
     dirty_full_ratio = 0.30;
+    // 周期性全量重投影的安全网（秒）。0 = 关闭（沿用上游行为：只在脏列超比例时回退全量）。
+    // 背景：dirty_full_ratio 的定位是"脏列太多时全量反而更快"，但它实际上会让增量路径
+    // 在稠密点云下**永远不生效**——实测 96k 点/帧时 dirty_column_count 稳定在 ~19700/40401
+    // (49%)，恒大于 0.30 阈值，77/77 次更新全部走全量。把阈值调高后必须有一个与"脏列多少"
+    // 无关的兜底，否则一旦某列因为未预期的原因长期没被标脏，二维图会一直保留旧分类。
+    dirty_full_period_s = 0.0;
     performance_enable = true;
     performance_detailed_csv_enable = false;
     performance_detailed_csv_path = "/tmp/rog_map_perf_detailed.csv";
@@ -391,6 +402,7 @@ public:
     load("decay.active_list_enable", decay_active_list_en);
     load("performance.dirty_column_enable", dirty_column_en);
     load("performance.dirty_full_ratio", dirty_full_ratio);
+    load("performance.dirty_full_period_s", dirty_full_period_s);
     load("performance.enable", performance_enable);
     load("performance.detailed_csv_enable", performance_detailed_csv_enable);
     load("performance.detailed_csv_path", performance_detailed_csv_path);
@@ -551,6 +563,7 @@ public:
   int raycast_num_threads{4};
   bool dirty_column_en{false};
   double dirty_full_ratio{0.30};
+  double dirty_full_period_s{0.0};
   double field_update_rate{20.0};
   bool performance_enable{true};
   bool performance_detailed_csv_enable{false};

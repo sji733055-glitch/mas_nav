@@ -6,35 +6,15 @@
 # gravity，再让云台自旋测两台的水平安装偏移。测完把起的进程全收掉。
 #
 # 用法（车停在水平地面。看到「开始匀速转云台」再动手：底盘刹住，只转云台，匀速 1-2 圈）：
-#   宿主机或容器里都可以：
 #     bash mas2027_nav_bringup/scripts/measure_lidar_mount.sh
-#   已经在容器里：
-#     bash /home/ros2_ws/src/mas2027_nav_bringup/scripts/measure_lidar_mount.sh
 #
-# 测安装要独占雷达 UDP，导航栈必须先停。容器和宿主机共享 PID namespace，
-# 所以只按记下来的 PID 收，绝不 pkill -f。
+# 测安装要独占雷达 UDP，导航栈必须先停。只按记下来的 PID 收，绝不 pkill -f。
 
 set -u
 
-CONTAINER_SRC=/home/ros2_ws/src/mas2027_nav_bringup
-SCRIPT_IN_CONTAINER=$CONTAINER_SRC/scripts/measure_lidar_mount.sh
-
-# 宿主机上没有 Humble / 容器工作区时，转进 mas_nav 再跑自己。
-if [ ! -f /opt/ros/humble/setup.bash ] || [ ! -d "$CONTAINER_SRC" ]; then
-    if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx mas_nav; then
-        echo "容器 mas_nav 没在跑。在仓库根目录先：docker compose up -d"
-        exit 1
-    fi
-    echo "在宿主机上，转进容器 mas_nav ……"
-    if [ -t 0 ]; then
-        exec docker exec -it mas_nav bash "$SCRIPT_IN_CONTAINER" "$@"
-    fi
-    exec docker exec -i mas_nav bash "$SCRIPT_IN_CONTAINER" "$@"
-fi
-
-WS=/home/ros2_ws
-SRC=$CONTAINER_SRC
 HERE=$(cd "$(dirname "$0")" && pwd)
+SRC=$(cd "$HERE/.." && pwd)
+WS=$(cd "$SRC/.." && pwd)
 MEASURE_PY=$HERE/measure_lidar_mount.py
 [ -f "$MEASURE_PY" ] || MEASURE_PY=$SRC/scripts/measure_lidar_mount.py
 PARAMS=$SRC/config/small_point_lio_params.yaml
@@ -79,15 +59,16 @@ mkdir -p "$LOG_DIR"
 # ROS 的 setup.bash 会读未定义变量，source 期间关掉 set -u
 set +u
 # shellcheck disable=SC1091
-source /opt/ros/humble/setup.bash
+source /opt/ros/jazzy/setup.bash
 # shellcheck disable=SC1091
 source "$WS/install/setup.bash"
 set -u
 
 ros2 pkg prefix mid360_driver >/dev/null 2>&1 \
-    || die "没 source 到 mid360_driver。在容器里先：
-       cd /home/ros2_ws && colcon build --packages-select mid360_driver small_point_lio mas2027_nav_bringup mas2027_robot_description --symlink-install
-       然后 source /home/ros2_ws/install/setup.bash"
+    || die "没 source 到 mid360_driver。在仓库根目录先：
+       source /opt/ros/jazzy/setup.bash
+       colcon build --packages-select mid360_driver small_point_lio mas2027_nav_bringup mas2027_robot_description --symlink-install
+       source install/setup.bash"
 ros2 pkg prefix small_point_lio >/dev/null 2>&1 \
     || die "没 source 到 small_point_lio，先把 LIO 编进 install"
 

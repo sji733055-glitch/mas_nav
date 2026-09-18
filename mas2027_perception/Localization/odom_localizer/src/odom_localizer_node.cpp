@@ -118,7 +118,9 @@ OdomLocalizerNode::OdomLocalizerNode(const rclcpp::NodeOptions & options)
   map_to_odom_filter_ = std::make_unique<EMAIsometry>(ema_ratio_);
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
-  tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(this);
+  if (publish_tf_direct_) {
+    tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(this);
+  }
   load_map();
   create_interfaces();
   initialize_transform(initial_transform_, "startup.initial_transform");
@@ -188,7 +190,8 @@ void OdomLocalizerNode::load_parameters()
   max_translation_step_ =
     declare_parameter<double>("update.max_translation_step", max_translation_step_);
   max_rotation_step_ = declare_parameter<double>("update.max_rotation_step", max_rotation_step_);
-  lock_z_ = declare_parameter<bool>("update.lock_z", lock_z_);
+  publish_tf_direct_ = declare_parameter<bool>("tf.publish_direct", publish_tf_direct_);
+  map_to_odom_topic_ = declare_parameter<std::string>("tf.transform_topic", map_to_odom_topic_);
 
   if (num_threads_ < 1) {
     throw std::runtime_error("general.num_threads must be >= 1");
@@ -243,6 +246,9 @@ void OdomLocalizerNode::create_interfaces()
     maybe_publish_prior_cloud();
   }
 
+  map_to_odom_pub_ = create_publisher<geometry_msgs::msg::TransformStamped>(
+    map_to_odom_topic_, rclcpp::QoS(1).transient_local());
+
   const auto publish_period = std::chrono::duration_cast<std::chrono::nanoseconds>(
     std::chrono::duration<double>(1.0 / publish_rate_hz_));
   publish_timer_ = create_wall_timer(publish_period, [this]() { publish_timer_callback(); });
@@ -263,31 +269,17 @@ Eigen::Isometry3d OdomLocalizerNode::get_current_map_to_odom() const
   return map_to_odom_filter_->value();
 }
 
-Eigen::Isometry3d OdomLocalizerNode::maybe_lock_z(const Eigen::Isometry3d & transform) const
-{
-  if (!lock_z_) {
-    return transform;
-  }
-  Eigen::Isometry3d out = transform;
-  Eigen::Vector3d translation = out.translation();
-  translation.z() = initial_transform_.translation().z();
-  out.translation() = translation;
-  return out;
-}
-
 void OdomLocalizerNode::initialize_transform(const Eigen::Isometry3d & transform, const char * reason)
 {
-  const Eigen::Isometry3d constrained = maybe_lock_z(transform);
   {
     std::lock_guard<std::mutex> lock(transform_state_mutex_);
-    map_to_odom_filter_->initialize(constrained);
+    map_to_odom_filter_->initialize(transform);
     last_accepted_registration_transform_ = std::nullopt;
     has_successful_registration_ = false;
   }
   RCLCPP_INFO(
-    get_logger(), "Initialized map->odom from %s: %s%s",
-    reason, transform_to_string(constrained).c_str(),
-    lock_z_ ? " (z locked)" : "");
+    get_logger(), "Initialized map->odom from %s: %s",
+    reason, transform_to_string(transform).c_str());
 }
 
 void OdomLocalizerNode::registered_cloud_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
@@ -524,16 +516,15 @@ bool OdomLocalizerNode::evaluate_registration_result(
 
 bool OdomLocalizerNode::apply_registration_update(const Eigen::Isometry3d & transform)
 {
-  const Eigen::Isometry3d constrained = maybe_lock_z(transform);
   {
     std::lock_guard<std::mutex> lock(transform_state_mutex_);
     if (!has_successful_registration_) {
-      map_to_odom_filter_->initialize(constrained);
-      last_accepted_registration_transform_ = constrained;
+      map_to_odom_filter_->initialize(transform);
+      last_accepted_registration_transform_ = transform;
       has_successful_registration_ = true;
       RCLCPP_INFO(
-        get_logger(), "Accepted first successful registration directly: %s%s",
-        transform_to_string(constrained).c_str(), lock_z_ ? " (z locked)" : "");
+        get_logger(), "Accepted first successful registration directly: %s",
+        transform_to_string(transform).c_str());
       return true;
     }
   }
@@ -544,11 +535,11 @@ bool OdomLocalizerNode::apply_registration_update(const Eigen::Isometry3d & tran
   {
     std::lock_guard<std::mutex> lock(transform_state_mutex_);
     previous = *last_accepted_registration_transform_;
-    translation_delta = translation_distance(constrained, previous);
-    rotation_delta = rotation_distance(constrained, previous);
+    translation_delta = translation_distance(transform, previous);
+    rotation_delta = rotation_distance(transform, previous);
     if (translation_delta <= max_translation_step_ && rotation_delta <= max_rotation_step_) {
-      map_to_odom_filter_->update(constrained);
-      last_accepted_registration_transform_ = constrained;
+      map_to_odom_filter_->update(transform);
+      last_accepted_registration_transform_ = transform;
     }
   }
 
@@ -579,7 +570,10 @@ void OdomLocalizerNode::publish_transform()
   msg.header.frame_id = map_frame_;
   msg.child_frame_id = odom_frame_;
   msg.transform = tf2::eigenToTransform(get_current_map_to_odom()).transform;
-  tf_broadcaster_->sendTransform(msg);
+  map_to_odom_pub_->publish(msg);
+  if (tf_broadcaster_) {
+    tf_broadcaster_->sendTransform(msg);
+  }
 }
 
 void OdomLocalizerNode::maybe_publish_prior_cloud()

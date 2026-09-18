@@ -20,6 +20,14 @@ mid360_driver:
     # 两路由同一个 lidar_publish_time_interval 定时器切帧，所以差值主要来自两台雷达时钟偏移：
     # 上了 PTP 收到 5.0；现在没有 PTP（time_type=0，每个 IP 只在首包算一次 delta）留 50.0 容纳慢漂。
     merge_max_interval_ms: 50.0
+    # 单雷达降级：一台雷达掉线时用另一台继续发 /lidar，导航不断流（否则 /lidar 整段静默、
+    # LIO 无输入）。参考雷达（前雷达）IMU 掉线时，IMU 自动切到后雷达并换算到参考雷达系。
+    merge_stale_timeout_s: 0.5 # 某台雷达超过这么久没有点云就判为掉线，改用另一台单独发帧
+    merge_recover_hold_s: 0.5 # 掉线雷达恢复后需连续在线这么久，才重新参与双雷达配对（防边界抖动）
+    merge_imu_stale_timeout_s: 0.1 # 参考雷达 IMU 超过这么久没有数据就切换 IMU 来源
+    # 某台雷达静默超过这么久后允许重新锚定时间戳：水位线只在接受时前进，不重锚的话
+    # 一次超过 max_packet_time_jump 的断线（或雷达重启后内部时钟归零）会让它永远恢复不了。
+    packet_resync_silence: 1.0 # 单位秒，0 关闭重锚定
     validate_crc: false # 是否校验Livox数据包CRC32
     max_packet_time_jump: 0.5 # 单个雷达UDP包时间戳允许的最大跳变，单位秒
     max_packet_time_span: 0.1 # 单个雷达包/发布帧允许的最大点时间跨度，单位秒
@@ -35,8 +43,11 @@ small_point_lio:
     imu_topic: /mid360_driver/imu                     # IMU 话题名
     lidar_type: custom_mid360_driver                  # 雷达适配器：轻量 MID360 驱动
     lidar_frame: lidar_link                           # 雷达坐标系
-    odom_frame: odom                                  # Nav2 里程计父坐标系；/Odometry pose 和 TF 均使用此坐标系
-    base_frame: base_link                             # Nav2 机器人坐标系；/Odometry twist 在此坐标轴表达
+    odom_frame: odom                                  # /Odometry pose 和 TF 使用的里程计父坐标系
+    base_frame: base_link                             # /Odometry twist 使用的机器人坐标轴
+    # 独立 nav_executor + tf_maintainer 启动时设为 false，由 tf_maintainer 从 /Odometry
+    # 唯一发布 odom→base_link；默认保留当前独立 LIO 启动行为。
+    publish_odom_tf: true
     align_odom_with_gravity: true                     # 用启动时静止估计的重力水平化 odom；初始位置和 yaw 为零，保留车体真实 roll/pitch
     save_pcd: false                                   # 是否缓存点云供 map_save 服务保存
 
@@ -97,21 +108,3 @@ small_point_lio:
 
     # 数据发布
     publish_odometry_without_downsample: false        # 是否发布未降采样的高频里程计，会增加计算开销
-
-# Nav2 固定朝向速度参考系
-# Nav2 使用 base_link_fake，控制速度经 velocity_smoother 发布到 /cmd_vel_nav_smoothed。
-# 本节点把平滑后的速度从 base_link_fake 旋转到真实 base_link，再通过 /cmd_vel 交给底盘。
-fake_vel_transform:
-  ros__parameters:
-    odom_topic: /Odometry                             # 必须包含 odom -> base_link 位姿
-    robot_base_frame: base_link                       # 随车体 yaw 转动的真实速度坐标系
-    fake_robot_base_frame: base_link_fake             # 与 base_link 同原点、yaw 固定在启动方向的 Nav2 坐标系
-    local_plan_topic: /local_plan                     # Nav2 controller 发布，用于给 Humble 的 Twist 补充时间参考
-    cmd_spin_topic: /cmd_spin                         # 叠加到底盘 angular.z 的独立自旋速度话题
-    input_cmd_vel_topic: /cmd_vel_nav_smoothed        # velocity_smoother 输出，表达在 base_link_fake 中
-    output_cmd_vel_topic: /cmd_vel                    # 转换到 base_link 后发送给底盘控制器
-    # 给 Nav2 用的里程计：位姿与 /Odometry 相同，twist 旋转到 base_link_fake 轴系。
-    # Nav2 不会变换 odom twist，直接当作 robot_base_frame(base_link_fake) 中的当前速度，
-    # 而 /Odometry 的 twist 在随车体转动的 base_link 中，两者相差一个车体 yaw，
-    output_odom_topic: /Odometry_world_fixed  # Nav2 里程计话题，位姿与 /Odometry 相同，twist 在 base_link_fake 中
-    init_spin_speed: 0.0                              # 未收到 /cmd_spin 时的默认自旋角速度，单位 rad/s
