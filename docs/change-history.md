@@ -2,6 +2,78 @@
 
 本文件记录由开发任务产生的代码、配置、脚本、资源和文档变更。新记录追加在最上方，不改写旧记录。
 
+## 2026-09-18 — 文档精简：根 `README.md` 压缩约一半篇幅（378 → 192 行）
+
+- 背景：上一条把 `docs/README.md` 合并进根 README 后篇幅到 378 行，用户要求"更精简"。
+- 改动（**纯文档，只动 `README.md`，事实与阈值一处未变**）：
+  1. 组件职责表由 4 列压成 2 列；"关键话题"表由 18 行并为 10 行（同向话题合并成一行）。
+  2. 净空判据一节的 `verdict=` 表改为一行内联枚举（结论不变：`GEOMETRY` 别动阈值、
+     `SEED_GATE_STRICTER` 判据不一致、`PREFIX_TOO_SHORT` 是长度问题、`TERRAIN`、`NONE`），
+     深度排障改为指向 `docs/refusal_triage_2026-09-16.md`。
+  3. 删除已进 change-history 的历史叙述：全向 Kino A\* 的失败数据与删除经过、
+     双重阈值事故的复盘细节、编译/启动的命令展开（`colcon build` 合成一行）。
+  4. 保留全部硬事实：`collision_dist`/`monitor_margin`/`replan_react_time`/`rog_map_clearance`
+     的 0.28/0/0/0.28、近场放宽与第四层兜底开关、`use_ros2_comm` 默认 `True`、
+     `ros2_comm` 不转发 `angular.z`、动态层默认旁路、`/nav_executor/global_path` 的历史遗留命名。
+- 验证：表格列数、代码块配对（7 对）、锚点与文件链接用脚本检查通过；README 引用的路径与
+  上一条记录相同（未新增引用），未重新编译、未上实车。
+
+## 2026-09-18 — 文档合并：`docs/README.md` 并入根 `README.md` 并按当前实现改写
+
+- 背景：用户要求"修改 readme 文档"，确认后指定"合并到根目录并进行现在代码的适配"。
+  `docs/README.md` 是 2026-09-12 重构期写的架构说明，此后一直没跟上代码：
+  2026-09-17 的 `docs/project_audit_2026-09-17.md` §3.10 已把它的漂移登记为"文档漂移"
+  （"HW 地形图不参与轨迹优化"、话题名少 `/debug`），本轮据此整改。
+- 改动（**纯文档，不改任何代码、配置、脚本**）：
+  1. 删除 `docs/README.md`，其仍然有效的内容（组件职责表、TF 约束、RViz 分组、
+     "独立执行器没有 Global/Local Costmap"、`ros2 topic` 快速检查）并入根 `README.md`；
+     根 README 开头补一句"本文件是链路、TF、话题与排障的唯一总说明"，
+     文末只保留 `docs/change-history.md` 与专题排障文档的指引。
+  2. 根 `README.md` 新增 `## 组件职责`（8 个组件的输入/输出/职责）、`## 关键话题`
+     （含类型与方向，标注 `/nav_executor/global_path` 这个历史遗留名字发的是 MINCO 轨迹）、
+     `## TF 约束`、`## 快速检查` 四节；原有的净空判据、`verdict=` 表、RViz 折线/轨迹
+     对照表、地图更新与烟测内容整体保留，只做归并和口径校正。
+  3. 按当前代码校正的**事实性错误**（逐条对照代码/配置取证）：
+     - "HW 地形图不参与轨迹优化，代价图/方向图只是观察通道" → 改为规划输入
+       （全局搜索、轨迹验收、MPC 制动都读 `node_params.yaml` 的 `terrain_cost_sub`/
+       `terrain_direction_sub`/`dynamic_cost_map_sub`）；
+     - `PathPlanner` 的"A* 搜索" → 全局主搜索为 SMAC 2D（`planner.use_smac: true`），
+       `false` 才退回 Astar；
+     - `MINCO Trajectory` 话题由 `/nav_executor/minco_trajectory` 更正为
+       `/nav_executor/debug/minco_trajectory`，并补上 `/opt_path` 与
+       `/nav_executor/debug/global_plan`、`/nav_executor/global_plan` 的区别；
+     - `node.rog_map_clearance` 默认值 0.30 → **0.28**（`node_params.yaml:11`，
+       与 `planner_params.yaml` 的 `collision_dist: 0.28` 一致；`collision_dist` 现值
+       0.28、`monitor_margin: 0.0`、`replan_react_time: 0.0` 一并写明）；
+     - TF 口径：`tf_maintainer` 同时发 `map→odom` 与 `odom→base_link`
+       （launch 里两个开关都为 `true`），不是只发其中一段；
+     - `use_ros2_comm` 的默认值已是 `True`（launch 注释：它是 `/cmd_vel` 的唯一消费者，
+       不启动会"有指令但车不动"），原文"首次上车建议保持 false"会误导，改为说明默认值
+       与关闭时机；
+     - 新增两条现场易错点：`ros2_comm` 的 UDP 协议只发 `vx`/`vy`/`nav_state`、**不转发
+       `angular.z`**；`terrain_map_server` 的动态层由 launch 的
+       `bypass_dynamic_obstacle: True` 默认旁路，`/dynamic_cost_map` 恒为全 0，
+       实时避障由 ROGMap 承担（烟测脚本不设该项、走代码默认 `false`，故烟测里动态层有内容）。
+- 验证（本轮只改 Markdown，未编译、未上实车）：
+  1. README 中引用的 17 个路径/脚本/config 全部 `test -e` 通过（含 `smoke_goal.py`、
+     `smoke_dynamic_cost_map.py`、`pgm_to_terrain_msgpack.py`、`save_pcd_and_make_map.sh`、
+     `clearance_gate.hpp` 等）。
+  2. 逐条对照代码取证：`node_params.yaml`（话题表、`rog_map_clearance: 0.28`、
+     `dynamic_map_timeout_s: 1.5`）、`planner_params.yaml`（`use_smac`、`tolerance: 0.3`、
+     `collision_dist: 0.28`、`monitor_margin: 0.0`、`replan_react_time: 0.0`、
+     `failure_log_*`、`stuck_escape`）、`mpc_params.yaml`（`omega` ±2 / ±4）、
+     `nav_executor_launch.py`（节点清单与开关默认值）、`tf_maintainer_node.cpp`
+     （两个 TF 发布开关）、`odom_localizer_node.hpp`（`/tf_maintainer/map_to_odom`）、
+     `map_server_node.cpp:67`（动态层旁路）、`ros2_comm.cpp:181-186`（只发 vx/vy/nav_state）。
+  3. README 里提到的 RViz 显示名与 `nav_executor_view.rviz` 的 `Name:` 字段逐一核对通过
+     （`Planning Constraints (raster diagnostic)`、`Dynamic Obstacles (cyan, current)`、
+     `Global Plan (SMAC search, thick)`、`MINCO Trajectory (Path)`、`ROGMAP` 等）。
+  4. `grep -rn "docs/README"` 全仓库仅剩新 README 里一句"已合并进来"的历史说明；
+     `docs/project_audit_2026-09-17.md` 是当日审计记录，按"不改写旧记录"保留原引用。
+- 未做 / 未验证：未运行 `colcon build`/`colcon test`（无代码改动）；未做 Markdown lint
+  （仓库无此 CI）；`docs/` 下其余专题文档（`*_triage_*.md`、`nav_tuning_*`、
+  `project_audit_*` 等）本轮未逐篇校对，仍按各自日期归档。
+
 ## 2026-09-18 — 清理批次②③：删死代码（STRICT 链、死字段、未调用搜索器）与重复的包内 launch/配置
 
 - 背景：承接同日的"冗余审计"（批次①见下一条）。用户要求"只要不影响原来的效果"就继续去冗余，
