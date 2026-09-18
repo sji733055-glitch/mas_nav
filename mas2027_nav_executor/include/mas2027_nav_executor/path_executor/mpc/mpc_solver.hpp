@@ -28,7 +28,7 @@ public:
     std::vector<State> * out_pred = nullptr);
 
   Eigen::Vector3d getLastControl() const { return last_u_global_; }
-  void resetLastControl() { last_u_global_.setZero(); has_last_u_ = false; }
+  void resetLastControl() { last_u_global_.setZero(); }
   /// 【2026-09-17】把加速度约束的锚点设成**实测车速**，而不是清零。
   ///
   /// 加速度约束是 a_min·dt <= u_0 - anchor <= a_max·dt，anchor 就是"上一步的速度"。
@@ -41,9 +41,7 @@ public:
   void setLastControl(const Eigen::Vector3d & control)
   {
     last_u_global_ = control;
-    has_last_u_ = true;
   }
-  bool hasLastControl() const { return has_last_u_; }
 
 private:
   // 构建离散线性模型：x_{k+1} = A x_k + B_k u_k
@@ -67,7 +65,6 @@ private:
 
   // 用于加速度约束的上一时刻 global 控制量
   Eigen::Vector3d last_u_global_{0.0, 0.0, 0.0};
-  bool has_last_u_{false};
 };
 
 }  // namespace minco_controller

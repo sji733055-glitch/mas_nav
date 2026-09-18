@@ -57,7 +57,6 @@ public:
     double clearance_optimizer_margin{0.05};
 
     VecDf magnitudeBounds, penaltyWeights;
-    int time_allocation_iters{5};
     int integral_res{16};
     double opt_accuracy{1e-4};
 

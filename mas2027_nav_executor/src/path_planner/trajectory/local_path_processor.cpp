@@ -100,8 +100,7 @@ LocalPathSeed LocalPathProcessor::buildSeed(
     const geometry_msgs::msg::PoseStamped &current_pose,
     const PlannerModeContext &mode_context,
     const std::function<bool(const Eigen::Vector3d &, const Eigen::Vector3d &)>
-        &terrain_segment_free,
-    bool enforce_seed_clearance) const {
+        &terrain_segment_free) const {
   LocalPathSeed seed;
   if (global_path.empty()) {
     return seed;
@@ -175,23 +174,10 @@ LocalPathSeed LocalPathProcessor::buildSeed(
   };
 
   if (!pathClear(checked_path, cur_pos, query, start_clearance,
-                 start_clearance_ok, terrain_segment_free, &dense_reject,
-                 enforce_seed_clearance)) {
+                 start_clearance_ok, terrain_segment_free, &dense_reject)) {
     // 排障用：不管后面有没有修复成功，都留下"种子门死在哪一点"。调用方（以及测试）靠它
     // 区分"毫米级净空否决"与"物理阻断"，因此必须在进兜底链之前就记下。
     seed.dense_reject = dense_reject;
-    if (enforce_seed_clearance && dense_reject.valid && dense_reject.clearance_only) {
-      // 硬否决只是因为"净空差一点"：说明这条走廊本身比 required 窄，是真实的通行性问题。
-      // 打出来是为了让现场看到"软种子门为什么被切换掉"，而不是只看到随后的绕行/前缀消息。
-      RCLCPP_WARN_THROTTLE(logger_, *rclcpp::Clock::make_shared(), 2000,
-                           "[MincoPlanner] Strict seed gate rejected the global "
-                           "corridor (closest clear=%.3f req=%.3f at (%.2f,%.2f) "
-                           "arc=%.2f); trying ROGMap detour / stopping prefix "
-                           "instead of handing it to MINCO.",
-                           dense_reject.clearance, dense_reject.required,
-                           dense_reject.point.x(), dense_reject.point.y(),
-                           dense_reject.arc_from_start);
-    }
     std::vector<Eigen::Vector3d> repaired;
     if (searchDynamicDetour(cur_pos, seed.dense_path.back(), query,
                             start_clearance, start_clearance_ok,
@@ -414,14 +400,14 @@ bool LocalPathProcessor::pathClear(
     double start_clearance, bool start_clearance_ok,
     const std::function<bool(const Eigen::Vector3d &, const Eigen::Vector3d &)>
         &terrain_segment_free,
-    SeedRejectInfo *reject_info, bool enforce_clearance) const {
+    SeedRejectInfo *reject_info) const {
   if (path.size() < 2U) {
     return false;
   }
   for (size_t i = 1U; i < path.size(); ++i) {
     if (!segmentClear(query, path[i - 1U], path[i], planning_start,
                       start_clearance, start_clearance_ok,
-                      terrain_segment_free, reject_info, enforce_clearance)) {
+                      terrain_segment_free, reject_info)) {
       return false;
     }
   }

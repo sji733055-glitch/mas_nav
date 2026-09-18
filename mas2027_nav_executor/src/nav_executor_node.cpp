@@ -114,7 +114,6 @@ public:
     config.dt = declare_parameter<double>("mpc.dt");
     config.lookahead_time = declare_parameter<double>("mpc.lookahead_time");
     config.horizon = std::max(1, static_cast<int>(std::ceil(config.lookahead_time / config.dt)));
-    config.planner_freq = planner_frequency_;
     config.vx_min = declare_parameter<double>("mpc.constraints.velocity.x.min");
     config.vx_max = declare_parameter<double>("mpc.constraints.velocity.x.max");
     config.vy_min = declare_parameter<double>("mpc.constraints.velocity.y.min");

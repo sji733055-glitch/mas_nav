@@ -347,7 +347,7 @@ def report(joints, urdf, gravity_by_side=None):
               % ((LIDARS[side][1],) + tidy(xyz) + tidy(rpy)))
     extrinsic = relative_extrinsic(joints["right"], joints["left"])
     print("  mas2027_nav_bringup/config/small_point_lio_params.yaml")
-    print("  （同一份也要写进 mas2027_perception/mid360_driver/config/params.yaml）")
+    print("  （2026-09-18 起这是唯一真源：mid360_driver/config/params.yaml 已删除）")
     print("    merge_extrinsic_back_to_front: [%.6f, %.6f, %.6f, %.6f, %.6f, %.6f]" % tidy(extrinsic))
     print("    # = T_lidar_link⁻¹·T_lidar_back，由上面两个关节算出，不是手推的手性对称")
     print("    # 相对旋转 roll %+.2f°（两侧倾角之差）  pitch %+.2f°  yaw %+.2f°"

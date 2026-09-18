@@ -295,7 +295,8 @@ bool GlobalPathSearcher::planExploration(const geometry_msgs::msg::PoseStamped &
       // speed 维 3.0/0.1 = 30 档 × 8 朝向 → 单节点最多 248 个后继，在有障碍的真实图上
       // 3 m 起大量方向无解、5 m 后几乎全灭，且每次失败都烧光 50 000 次扩展预算、耗时
       // 0.76~1.03 s（日志里"点目标→WARN"相隔 1.08 s 即此）；同一批目标空图上 8 m 也只要
-      // 45 ms，说明瓶颈是状态空间爆炸而非无解。该模块与 test_omni_kino_astar 保留备用。
+      // 45 ms，说明瓶颈是状态空间爆炸而非无解。该实现已于 2026-09-18 整条删除（生产从未
+      // 调用它，只剩启动日志里一个名字还留着误导）：要恢复请从 git 历史取回。
       // 另外本部署的 HW 方向层（lab3_terrain.msgpack 的 direction）实测全 0，因此 Kino 的
       // 逐边方向约束（transition()）当前不产生任何收益。
       auto terrain_query = std::make_shared<mas2027_nav_executor::TerrainMapQuery>(terrain_);

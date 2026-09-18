@@ -48,7 +48,7 @@ MPC 制动。全局折线进入 ROGMap 局部滑窗后，会先按与轨迹发�
 **任一雷达掉线时驱动进入单雷达模式**：仍用在线那台继续发帧（后雷达的点已在前雷达系），
 参考雷达 IMU 掉线时 IMU 自动切到另一台并换算到参考雷达系，所以 LIO 与导航不会断流；
 掉线雷达回来后自动恢复双雷达配对。超时与判据见
-`mas2027_perception/mid360_driver/config/params.yaml` 的 `merge_stale_timeout_s`、
+`mas2027_nav_bringup/config/small_point_lio_params.yaml` 的 `merge_stale_timeout_s`、
 `merge_recover_hold_s`、`merge_imu_stale_timeout_s`、`packet_resync_silence`
 （后者的作用是让掉线/重启过的雷达能重新锚定时间戳、不至于永久收不到数据）。
 
@@ -129,10 +129,11 @@ ROGMap 的先验图融合当前关闭，所以 `Static Layer Value`
 为避免车体振动导致静态目标被误判为运动，已移除目标跟踪与未来障碍预测；
 这两段是针对全向底盘的适配，不是原样复制 HW 的前向曲率运动原语、指导走廊、
 台阶速度窗或后置 MINCO 的完整速度优化器；因此仍不是 HW 规划/执行算法的完整等价实现。
-早先自研的「全向 Kino A\*」（`path_planner/search/omni_kino_astar.*`，状态含位置、
+早先自研的「全向 Kino A\*」（原 `path_planner/search/omni_kino_astar.*`，状态含位置、
 运动方向与速度档）已**移出关键路径**：现场实测它在真实 lab3 图上 3 m 起大量方向无解、
 5 m 后几乎全灭，每次失败烧光 50 000 次扩展预算、耗时 0.76~1.03 s，瓶颈是状态空间爆炸
-而非无解。模块与 `test_omni_kino_astar` 保留备用，现已无生产调用点。
+而非无解。该实现与 `test_omni_kino_astar` 已于 2026-09-18 整条删除（无任何生产调用点，
+只剩启动日志里一个名字还留着误导）；当前全局主搜索是 SMAC 2D，`use_smac:=false` 时退回 Astar。
 `lab3_terrain.msgpack`
 由 PGM 生成，只有平地/障碍，**没有**坡道、台阶及方向数据；需要标注真实语义地图
 才能验证方向通行效果。方向层当前实测全 0，因此 `TerrainMapQuery` 交给全局搜索的

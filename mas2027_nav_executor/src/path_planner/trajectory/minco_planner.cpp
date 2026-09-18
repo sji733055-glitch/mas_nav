@@ -187,21 +187,18 @@ void MincoPlanner::initPlannerMode(
   output_frame_ = mode_context_->outputFrame();
   map_frame_ = mode_context_->mapFrame();
   rog_frame_ = mode_context_->rogFrame();
-  global_frame_ = output_frame_;
   map_ = mode_context_->dynamicQuery();
 
+  // 打印实际配置的 planner_mode（原来硬编码 "EXPLORATION"，排障时会误导）。
+  // 全局搜索器的名字在 use_smac 读取之后打印，见 configure()。
   RCLCPP_INFO(logger_,
     "[MincoPlanner] planner_mode=%s",
-    "EXPLORATION");
+    mode_params_.planner_mode.c_str());
   RCLCPP_INFO(logger_,
     "[MincoPlanner] planning_frame=%s output_frame=%s map_query_frame=%s",
     planning_frame_.c_str(),
     output_frame_.c_str(),
     rog_frame_.c_str());
-  RCLCPP_INFO(logger_,
-    "[MincoPlanner] global_search=%s dynamic_query=%s",
-    "OmniKinoAstar",
-    "ROGMap");
 }
 
 // -----------------------------------------------------------------------------
@@ -260,7 +257,6 @@ void MincoPlanner::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & pa
     node, prefix + "global_frame", rclcpp::ParameterValue(configured_global_frame));
   node->get_parameter(prefix + "global_frame", configured_global_frame);
 
-  global_frame_ = configured_global_frame;
   if (!ensureMapAvailable()) {
     throw std::runtime_error("TerrainMapQuery must be injected before MincoPlanner::configure");
   }
@@ -277,6 +273,12 @@ void MincoPlanner::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & pa
   // use_smac=false 时退回 Astar（NavFn 波前），与旧工程同一开关语义。
   declareParameterIfMissing(node, prefix + "use_smac", rclcpp::ParameterValue(true));
   node->get_parameter(prefix + "use_smac", use_smac_);
+  // 实际生效的全局搜索器。原来这条日志硬编码 "OmniKinoAstar"，而该实现已于 2026-09-18 删除
+  // （生产从未调用），排障时会让人去找一个不存在的搜索器。
+  RCLCPP_INFO(logger_,
+    "[MincoPlanner] global_search=%s dynamic_query=%s",
+    use_smac_ ? "SMAC2D" : "Astar",
+    "ROGMap");
 
   // SMAC 的 ESDF 势场软代价。四项默认值与 mas_nav_2027 nav2_params.yaml 的 smac_2d 段一致。
   // 本工程的 ESDF 来自 TerrainMapQuery 烘焙的二维距离场（上限 3.0 m），量纲与旧工程 ROGMap 一致。
@@ -305,10 +307,6 @@ void MincoPlanner::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & pa
   declareParameterIfMissing(
     node, prefix + "odom_topic", rclcpp::ParameterValue(odom_topic));
   node->get_parameter(prefix + "odom_topic", odom_topic);
-
-  declareParameterIfMissing(
-    node, prefix + "minco_optimizer.opt_freq", rclcpp::ParameterValue(20.0));
-  node->get_parameter(prefix + "minco_optimizer.opt_freq", opt_freq_);
 
   declareParameterIfMissing(
     node, prefix + "minco_optimizer.lookahead_dist", rclcpp::ParameterValue(5.0));
@@ -411,16 +409,10 @@ void MincoPlanner::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & pa
     escape_buffer_ = 0.05;
   }
 
-  // 默认保持旧工程语义：种子折线的净空不足不做硬否决，由优化后轨迹门把关。
-  // 实车证明连续失败后切硬门会在近场微小净空差上锁死；保留参数仅供专项诊断。
-  declareParameterIfMissing(
-    node, prefix + "minco_optimizer.strict_seed_after_failures",
-    rclcpp::ParameterValue(static_cast<int64_t>(0)));
-  node->get_parameter(prefix + "minco_optimizer.strict_seed_after_failures",
-    strict_seed_after_failures_);
-  if (strict_seed_after_failures_ < 0) {
-    strict_seed_after_failures_ = 0;
-  }
+  // 种子门只按"占据 / 地形 / 查询失效"否决；折线净空不足不否决种子（见
+  // local_path_processor.cpp 的 segmentClear），净空由优化后的三道轨迹级门把关。
+  // 曾经有过"连续失败 N 次就切回净空硬否决"的实验开关，实车证明它会在近场
+  // （clear 0.244~0.250 / req 0.260）把种子永久拒掉，2026-09-18 已整条删除。
 
   declareParameterIfMissing(
     node, prefix + "minco_optimizer.max_velocity", rclcpp::ParameterValue(2.0));
@@ -454,10 +446,6 @@ void MincoPlanner::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & pa
   declareParameterIfMissing(
     node, prefix + "minco_optimizer.enable_yaw_opt", rclcpp::ParameterValue(true));
   node->get_parameter(prefix + "minco_optimizer.enable_yaw_opt", use_yaw_opt_);
-
-  declareParameterIfMissing(
-    node, prefix + "minco_optimizer.time_allocation_iters", rclcpp::ParameterValue(15));
-  node->get_parameter(prefix + "minco_optimizer.time_allocation_iters", minco_config.time_allocation_iters);
 
   declareParameterIfMissing(
     node, prefix + "minco_optimizer.penalty_weight_time", rclcpp::ParameterValue(0.01));
@@ -611,9 +599,6 @@ void MincoPlanner::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & pa
   opt_path_pub_ = node->create_publisher<interfaces::msg::MpcPositionCommand>(
     "/opt_path", rclcpp::QoS(rclcpp::KeepLast(1)));
 
-  backup_path_pub_ = node->create_publisher<interfaces::msg::MpcPositionCommand>(
-    "/backup_path", rclcpp::QoS(rclcpp::KeepLast(1)));
-
   // 调试可视化：备份安全盒（SFC）。QoS 与 /nav_executor/debug/minco_trajectory 保持一致，
   // 用 transient_local 让中途启动的 RViz 也能收到最后一帧。
   safe_corridor_pub_ = node->create_publisher<visualization_msgs::msg::MarkerArray>(
@@ -695,7 +680,6 @@ void MincoPlanner::cleanup()
   backup_opt_.reset();
   yaw_opt_.reset();
   opt_path_pub_.reset();
-  backup_path_pub_.reset();
   safe_corridor_pub_.reset();
   odom_sub_.reset();
   map_.reset();
@@ -987,14 +971,6 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
     }
   }
   auto finish = [&](bool success, const std::string & reason) {
-    // 连续失败计数：软种子门（见成员注释）靠它决定何时切回"净空硬否决"。
-    // 只统计**局部规划**是否产出可发布轨迹；一次成功即复位（含绕行/停车前缀这类兜底成功）。
-    if (success) {
-      consecutive_local_failures_ = 0;
-      strict_seed_active_ = false;
-    } else {
-      ++consecutive_local_failures_;
-    }
     if (!success) {
       // 失败原因必须能在实车上直接读到，否则"规划一直失败"就只能靠猜。
       // 原实现整条日志 2 s 节流：实测 350 次失败只留下 139 条原因，其中 76 次
@@ -1101,21 +1077,8 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
       return finish(false, "TERRAIN_TF_UNAVAILABLE");
     }
   }
-  // 软种子门的退路：连续失败够多就把种子门切回"净空硬否决"，让绕行 / 停车前缀 / 脱困前缀
-  // 三层兜底接上（旧行为）。切换只影响"折线净空不足算不算否决"，三道轨迹级净空门不受影响。
-  const bool strict_seed =
-    strict_seed_after_failures_ > 0 &&
-    consecutive_local_failures_ >= static_cast<uint64_t>(strict_seed_after_failures_);
-  if (strict_seed && !strict_seed_active_) {
-    strict_seed_active_ = true;
-    RCLCPP_WARN(logger_,
-      "Local seed gate switched to STRICT clearance after %llu consecutive "
-      "planning failures: tight seeds will no longer be handed to MINCO; "
-      "falling back to ROGMap detour / stopping prefix / escape prefix.",
-      static_cast<unsigned long long>(consecutive_local_failures_));
-  }
   const LocalPathSeed seed = local_path_processor_->buildSeed(
-    global_path_snapshot, current_pose, *mode_context_, terrain_segment_free, strict_seed);
+    global_path_snapshot, current_pose, *mode_context_, terrain_segment_free);
   if (visualizer_) {
     if (!seed.dense_path.empty()) {
       visualizer_->updateLocalEndPoint(seed.dense_path.back(), seed.local_end_is_goal);
@@ -2202,16 +2165,6 @@ void MincoPlanner::invalidateGlobalPath()
 double MincoPlanner::nowSeconds() const
 {
   return rclcpp::Clock().now().seconds();
-}
-
-double MincoPlanner::getTrajectoryRemainTime() const
-{
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (!has_last_traj_) {
-    return 0.0;
-  }
-  double passed_time = nowSeconds() - last_traj_.start_WT;
-  return std::max(0.0, last_traj_.getTotalDuration() - passed_time);
 }
 
 bool MincoPlanner::getRobotPose(geometry_msgs::msg::PoseStamped & pose) const

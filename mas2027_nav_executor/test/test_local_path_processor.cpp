@@ -432,21 +432,10 @@ int main(int argc, char **argv) {
                                  seed.sparse_waypoints[i], 0.0));
     }
 
-    // 【2026-09-17 退路】同一条折线、同一个走廊，把种子门切回"净空硬否决"（软种子门连续
-    // 失败若干次后规划器会这么做，见 MincoPlanner::strict_seed_after_failures_）：
-    // 此时折线**不能**再原样交给 MINCO —— 那正是实车 2026-09-17 20:09 那次
-    // "种子 0.248 vs required 0.260 → MINCO 最好 0.246 → 连续 600 次失败、车原地不动" 的来源。
-    // 硬否决下必须落进三层兜底（ROGMap 绕行 / 完整停车前缀 / 短距离脱困前缀）之一，
-    // 或明确判为无效种子；净空判据本身一处都不放松。
-    const auto strict_seed = processor.buildSeed(corridor, current, context, {}, true);
-    const bool fell_back_to_repair_chain =
-      strict_seed.used_dynamic_detour || strict_seed.stop_at_local_end ||
-      strict_seed.used_escape_prefix || !strict_seed.valid;
-    assert(fell_back_to_repair_chain);
-    assert(strict_seed.dense_reject.valid);
-    // 否决原因仍然是"只差净空"，不是"被堵死"——两类现场必须继续分得开。
-    assert(strict_seed.dense_reject.clearance_only);
-    assert(!strict_seed.dense_reject.terrain_blocked);
+    // 【2026-09-18】这里原本还有一段"把种子门切回净空硬否决"的对照用例
+    // （buildSeed(..., enforce_seed_clearance=true)）。实车证明该硬门会在近场把种子永久拒掉
+    // （2026-09-17 21:05/21:07 两次运行），整条开关已于 2026-09-18 删除，故对照用例一并移除；
+    // 停车前缀仍在用硬口径（见 segmentClear 的 enforce_clearance），由下一条"真的堵死"用例覆盖。
   }
 
   // 【2026-09-17 语义变更配套】路真的被堵死时，修复链必须照旧生效：

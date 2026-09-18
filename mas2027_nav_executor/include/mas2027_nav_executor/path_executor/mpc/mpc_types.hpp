@@ -40,7 +40,6 @@ struct MPCConfig
 {
   // 采样周期与预测步长
   double dt{0.05};
-  double planner_freq{20.0};
   double lookahead_time{0.5};
 
   int horizon{10};
@@ -72,7 +71,6 @@ struct MPCConfig
 
   // qpOASES 求解器参数
   int max_working_set_recalculations{200};
-  int max_iterations{200};
   double eps_regularization{1e-9};
 };
 

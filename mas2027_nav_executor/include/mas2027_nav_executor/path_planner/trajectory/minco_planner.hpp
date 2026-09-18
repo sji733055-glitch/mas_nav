@@ -59,7 +59,6 @@ public:
   RecoverServer::Ptr recoveryServer() const { return recovery_server_; }
   double getForceReplanPeriod() const { return force_replan_period_sec_; }
   double nowSeconds() const;
-  double getTrajectoryRemainTime() const;
   bool isTrajectoryTimeExpired(double now_s) const;
   double getLookaheadDist() const { return lookahead_dist_; }
   bool getRobotPose(geometry_msgs::msg::PoseStamped & pose) const;
@@ -144,7 +143,6 @@ private:
     const std::string & planner_mode_param, const std::string & map_frame, const std::string & rog_frame);
   // === ROS 2 Interfaces (Publishers, Subscribers, Timers) ===
   rclcpp::Publisher<interfaces::msg::MpcPositionCommand>::SharedPtr opt_path_pub_;
-  rclcpp::Publisher<interfaces::msg::MpcPositionCommand>::SharedPtr backup_path_pub_;
   /// 备份安全盒调试可视化，由 generateBackupTraj() 在每次重规划时刷新。
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr safe_corridor_pub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
@@ -156,7 +154,7 @@ private:
   rclcpp_lifecycle::LifecycleNode::WeakPtr node_;
   std::shared_ptr<rog_map::MapQueryInterface> map_;
   std::shared_ptr<rog_map::MapQueryInterface> rog_query_raw_;
-  std::string global_frame_, planning_frame_, output_frame_, map_frame_, rog_frame_, name_;
+  std::string planning_frame_, output_frame_, map_frame_, rog_frame_, name_;
   PlannerModeParams mode_params_;
 
   // === Configurations & Parameters ===
@@ -176,7 +174,6 @@ private:
   double exploration_boundary_sample_step_{0.1};
   double lidar_offset_x_{0.0};
   double lidar_offset_y_{-0.2};
-  double opt_freq_;
   double lookahead_dist_;
   double traj_goal_tolerance_{0.15};
   double collision_dist_{0.30};
@@ -248,17 +245,6 @@ private:
   bool escape_enable_{true};
   double escape_min_length_{0.08};
   double escape_buffer_{0.05};
-
-  // === 软种子门的退路：连续失败后切回"净空硬否决"（绕行 / 停车前缀 / 脱困前缀） ===
-  // 背景（2026-09-17 实车 20:09 那次）：种子门撤掉净空硬否决后，遇到"折线本身就是唯一通路、
-  // 但比 required 窄几毫米"的现场时，MINCO 每次都拿到同一个不可能成功的种子，于是
-  // `MINCO path generation failed; retrying` 以 2 Hz 刷屏、`/opt_path` 一直为空、车原地不动
-  // （那一次连续 600 次失败，目标 (7.16, 2.32) 永远到不了）。硬否决版本则会在同一处走三层
-  // 兜底把车带出去（旧行为，实车能走）。因此：连续失败达到 strict_seed_after_failures_ 次
-  // 就把种子门切回硬否决，成功一次即复位。0 表示关闭（永远用软种子门 = 回到本次改动之前）。
-  int64_t strict_seed_after_failures_{3};
-  uint64_t consecutive_local_failures_{0};
-  bool strict_seed_active_{false};
 
   mutable std::mutex path_mutex_;
   std::mutex perf_mutex_;

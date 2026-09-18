@@ -59,7 +59,6 @@
         robot_radius: 0.30
         extra_margin: 0.05
       minco_optimizer:
-        opt_freq: 20.0
         lookahead_dist: 10.0
         traj_goal_tolerance: 0.15
         enable_yaw_opt: true
@@ -166,12 +165,10 @@
           min_length: 0.08
           # 收尾余量：前缀在第一个净空不足的采样点之前这么多米处结束。
           buffer: 0.05
-        # 保持旧工程的种子语义：折线只因实际占据/地形/查询失效被硬否决，
-        # 净空不足交给 MINCO 优化和优化后的发布前/20 Hz/MPC 三道轨迹门把关。
-        # 2026-09-17 实车证明，连续 3 次失败后切回折线净空硬否决，会在
-        # clear=0.244~0.250 / req=0.260 的近场反复产生 LOCAL_SEED_INVALID，
-        # 车只能停住或短距离挪动。0 = 禁用该切换；轨迹级净空安全门不变。
-        strict_seed_after_failures: 0
+        # 种子门只按"实际占据 / 地形不允许 / 查询失效"硬否决；折线净空不足交给 MINCO 优化，
+        # 再由发布前 / 20 Hz 监视 / MPC 指令门按有效阈值验收。
+        # （2026-09-17 曾有过 strict_seed_after_failures 实验开关，实车证明它会在
+        #  clear=0.244~0.250 / req=0.260 的近场反复产生 LOCAL_SEED_INVALID，2026-09-18 整条删除。）
         # 机器人当前所在位置附近（弧长 collision_dist 以内）是它已经占住的地方，
         # 贴着墙停车时那里不可能满足完整净空，因此该段只要求「不比当前实测净空更差」，
         # 离开这段之后必须满足上面的 required。否则车停在墙边就再也发不出轨迹。

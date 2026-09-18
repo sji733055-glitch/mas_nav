@@ -101,22 +101,15 @@ public:
   /// （即整段都落在近场豁免半径内，不引入任何新的安全阈值）。
   void setEscapeOptions(bool enable, double min_length, double buffer);
 
-  /// `enforce_seed_clearance`（【2026-09-17 新增】，默认 false = 保持"软种子门"）：
-  ///   折线净空不足默认**不否决**种子（净空是轨迹的属性，交给 MINCO 与轨迹级三道门）。
-  ///   但现场存在一类"MINCO 永远修不好"的种子：折线本身就是唯一通路，且它比 required 窄
-  ///   几毫米（实车 2026-09-17 20:09：种子 0.248 / 轨迹最好 0.246 vs required 0.260）。
-  ///   此时软种子门会让规划器每 0.5 s 重复同一个不可能成功的优化，`/opt_path` 一直为空、
-  ///   车原地不动（日志只有 `Local seed is tight but not blocked` + `MINCO path generation
-  ///   failed` 刷屏）——而同一处代码在"净空硬否决"下会走**绕行 → 停车前缀 → 脱困前缀**
-  ///   三层兜底（旧行为，实车能走）。因此 MINCO 连续失败若干次后，调用方应把本项置 true
-  ///   退回旧行为，而不是无限重试。true 时语义与停车/脱困前缀一致：净空不足即否决，
-  ///   并继续尝试三层兜底；**三道轨迹级净空门一处都不放松**。
+  /// 折线净空不足**不否决**种子（净空是轨迹的属性，交给 MINCO 与轨迹级三道门），
+  /// 只有占据 / 地形 / 查询失效才硬否决；净空不足会记进 `seed.dense_reject.clearance_only`
+  /// 供日志与判读器使用。2026-09-17 曾有一个"连续失败后把本函数切回净空硬否决"的调用侧
+  /// 开关（`enforce_seed_clearance`），实车证明它会在近场把种子永久拒掉，2026-09-18 已删除。
   LocalPathSeed buildSeed(const std::vector<geometry_msgs::msg::PoseStamped> & global_path,
     const geometry_msgs::msg::PoseStamped & current_pose,
     const PlannerModeContext & mode_context,
     const std::function<bool(const Eigen::Vector3d &, const Eigen::Vector3d &)> &
-      terrain_segment_free = {},
-    bool enforce_seed_clearance = false) const;
+      terrain_segment_free = {}) const;
 
 private:
   /// 种子 / 局部绕行 / 停车前缀三类判据共用的「完整净空要求」。
@@ -142,7 +135,7 @@ private:
   /// 【2026-09-17】`enforce_clearance` 决定净空不足算不算否决：
   ///   - false（种子/绕行/稀疏复核用）：只有占据、地形、查询无效才算否决。净空是**轨迹**的
   ///     属性，交给 MINCO 与轨迹级三道门；这也是旧工程 mas_nav_2027 `isLineFree` 的口径。
-  ///   - true（停车/脱困前缀用）：净空不足即否决。前缀末端是"车要停在哪里"，必须本身满足
+  ///   - true（停车前缀用）：净空不足即否决。前缀末端是"车要停在哪里"，必须本身满足
   ///     净空，否则连停车轨迹都会被发布前校验拒掉，车反而失去可执行指令。
   bool segmentClear(const std::shared_ptr<rog_map::MapQueryInterface> & query,
     const Eigen::Vector3d & from,
@@ -155,6 +148,8 @@ private:
     SeedRejectInfo * reject_info = nullptr,
     bool enforce_clearance = false) const;
 
+  /// 始终按"软"口径逐段检查（`segmentClear(..., enforce_clearance=false)`）：
+  /// 只有占据 / 地形 / 查询失效才否决。停车前缀需要硬口径时直接调 `segmentClear`。
   bool pathClear(const std::vector<Eigen::Vector3d> & path,
     const Eigen::Vector3d & planning_start,
     const std::shared_ptr<rog_map::MapQueryInterface> & query,
@@ -162,8 +157,7 @@ private:
     bool start_clearance_ok,
     const std::function<bool(const Eigen::Vector3d &, const Eigen::Vector3d &)> &
       terrain_segment_free,
-    SeedRejectInfo * reject_info = nullptr,
-    bool enforce_clearance = false) const;
+    SeedRejectInfo * reject_info = nullptr) const;
 
   bool searchDynamicDetour(const Eigen::Vector3d & start,
     const Eigen::Vector3d & goal,

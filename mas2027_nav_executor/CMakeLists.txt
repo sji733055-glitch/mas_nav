@@ -54,7 +54,6 @@ add_library(${PROJECT_NAME}_planner STATIC
   ${minco_traj_sources}
   src/path_planner/search/astar.cpp
   src/path_planner/search/global_path_searcher.cpp
-  src/path_planner/search/omni_kino_astar.cpp
   src/path_planner/search/smac/smac_planner_2d_simple.cpp
   src/path_planner/trajectory/corridor_generator.cpp
   src/path_planner/trajectory/arc_length_speed_profile.cpp
@@ -105,7 +104,10 @@ ament_target_dependencies(${PROJECT_NAME}_node
 target_link_libraries(${PROJECT_NAME}_node ${PROJECT_NAME}_mpc ${PROJECT_NAME}_planner ${OpenCV_LIBS})
 
 install(TARGETS ${PROJECT_NAME}_node DESTINATION lib/${PROJECT_NAME})
-install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
+# 2026-09-18：包内 launch/nav_executor.launch.py 已删除（只起本节点、不拉 map_server，
+# 是个会静默跑在"没有地形图"状态的重复入口；生产唯一入口是
+# mas2027_nav_bringup/launch/nav_executor_launch.py）。故这里不再安装 launch 目录。
+install(DIRECTORY config DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   enable_testing()
@@ -125,12 +127,6 @@ if(BUILD_TESTING)
   target_include_directories(test_mpc_horizon PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
   target_link_libraries(test_mpc_horizon ${PROJECT_NAME}_mpc)
   add_test(NAME mpc_horizon COMMAND test_mpc_horizon)
-  add_executable(test_omni_kino_astar test/test_omni_kino_astar.cpp
-    src/path_planner/search/omni_kino_astar.cpp src/common/environment/terrain_grid.cpp)
-  target_include_directories(test_omni_kino_astar PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
-  target_link_libraries(test_omni_kino_astar Eigen3::Eigen)
-  ament_target_dependencies(test_omni_kino_astar nav_msgs sensor_msgs)
-  add_test(NAME omni_kino_astar COMMAND test_omni_kino_astar)
   add_executable(test_smac_planner_2d_simple test/test_smac_planner_2d_simple.cpp
     src/path_planner/search/smac/smac_planner_2d_simple.cpp
     src/common/environment/terrain_grid.cpp src/common/environment/terrain_map_query.cpp)

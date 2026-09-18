@@ -2,6 +2,64 @@
 
 本文件记录由开发任务产生的代码、配置、脚本、资源和文档变更。新记录追加在最上方，不改写旧记录。
 
+## 2026-09-18 — 清理批次②③：删死代码（STRICT 链、死字段、未调用搜索器）与重复的包内 launch/配置
+
+- 背景：承接同日的"冗余审计"（批次①见下一条）。用户要求"只要不影响原来的效果"就继续去冗余，
+  工具包（`mas2027_utils/*`、`pcd2ele`/`pcd2esdf`、`map_edit` gitlink）不动。
+- 改动（删除或等价重写，全部落在默认配置下**不可达**的路径上；阈值与三道轨迹级净空门一处未动）：
+  1. **STRICT 种子门整条链**：`config/planner_params.yaml` 的 `strict_seed_after_failures`；
+     `minco_planner.{hpp,cpp}` 的三个成员、连续失败计数、切换 WARN 与传参；
+     `local_path_processor.{hpp,cpp}` 的 `buildSeed(..., enforce_seed_clearance)` 与硬否决分支；
+     `test_local_path_processor.cpp` 的对照用例。**保留**停车前缀仍在用的
+     `segmentClear(..., enforce_clearance)`；`pathClear` 不再透传该参数（4 个调用点本来就都用软口径）。
+  2. **死字段 / 死参数**：`MincoPlanner::getTrajectoryRemainTime()`、`opt_freq_`（连带 YAML 的
+     `minco_optimizer.opt_freq`）、`global_frame_`、`backup_path_pub_`（`/backup_path` 无订阅者、
+     建了发布器却从不发布）、`minco_optimizer.time_allocation_iters`（读出后无人使用）、
+     `mpc_types` 的 `planner_freq` / `max_iterations`（MPC 求解器从未读取）、
+     `MpcSolver::has_last_u_` 与 `hasLastControl()`（只写不读，唯一读者是测试断言）。
+  3. **未调用的搜索器**：`path_planner/search/omni_kino_astar.{hpp,cpp}` + `test/test_omni_kino_astar.cpp`
+     及对应 CMake 目标（生产零调用点，`global_path_searcher.cpp` 的说明注释同步更新）。
+  4. **两条误导日志**（只改文案/取值来源，不改逻辑）：启动日志的 `planner_mode` 改为打印实际参数
+     （原来硬编码 `"EXPLORATION"`）、`global_search` 改为打印真正生效的搜索器
+     （`SMAC2D` / `Astar`，原来硬编码 `"OmniKinoAstar"`）。当前 YAML 就是 `EXPLORATION`，
+     因此现场日志除搜索器名字外与改动前一致。
+  5. **重复入口与重复配置**：删 `mas2027_nav_executor/launch/nav_executor.launch.py`
+     （与 bringup 的 `nav_executor_launch.py` 重复，且只起执行器、不拉 map_server，
+     会静默跑在"没有地形图"的状态）；删 `mid360_driver/launch/mid360_driver.launch.py`
+     与其 `config/params.yaml`（与 bringup 的 `small_point_lio_params.yaml` 取值相反——
+     `validate_crc` true/false、`lidar_frame`/`min_distance`/`gravity` 全不同，
+     且该 launch 从 share 里 glob 一个本包**从不安装**的配置，等于用默认参数起节点）。
+     真源统一为 `mas2027_nav_bringup/config/small_point_lio_params.yaml`。
+  6. **连带修正**（注释/文案，无行为）：两处安装规则随目录删除调整，否则 configure/install
+     阶段直接报错——`mid360_driver/CMakeLists.txt` 去掉 `INSTALL_TO_SHARE config launch`、
+     `mas2027_nav_executor/CMakeLists.txt` 的 `install(DIRECTORY config launch ...)` 改为只装 `config`；
+     `README.md` 与 `scripts/measure_lidar_mount.py` 里指向已删文件的路径改为指向唯一真源。
+- 验证：
+  1. 全工作区 `colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release`：
+     **15 个包全部通过**。（中途 `mid360_driver` 因 `INSTALL_TO_SHARE` 指向已删目录失败过一次，
+     修正后通过——这也是本次唯一一次构建失败。）
+  2. `colcon test --packages-select mas2027_nav_executor mid360_driver`：`mas2027_nav_executor`
+     **8/8 通过**（原 9 项，删掉的正是 `omni_kino_astar` 那项）、`mid360_driver` 通过。
+     全工作区 `colcon test` 仍有**与本次无关的既有 lint 噪声**（`small_point_lio` 的
+     cpplint/flake8/lint_cmake 等 700+ 条），改动前后一致。
+  3. 端到端 `test/smoke_goal.py`（真实 map_server + nav_executor + lab3 地图/PCD，隔离域 231）：
+     `goal smoke passed: 52 trajectory poses, 48 global plan poses, marker width 0.150 m`
+     —— 与批次①之后、本次改动之前的输出**逐字一致**。
+  4. 等价性依据：被删代码在默认配置下均不可达（`strict_seed_after_failures` 已是 0、
+     `has_last_u_` 无读者、`/backup_path` 无发布/订阅、`omni_kino_astar` 无调用点、
+     `opt_freq`/`time_allocation_iters`/`planner_freq`/`max_iterations` 无读者）。
+- 未做 / 未验证：
+  1. 未上实车；未做改前/改后的闭环台架 A/B——台架本身双峰（见 `bench_closed_loop.py` 的说明），
+     单次对照不可判读，故判断依据是"删除项不可达 + 冒烟输出逐字一致"。
+  2. **有意保留**：`astar.cpp`（`use_smac:=false` 的合法备选搜索器）、
+     `odom_localizer/launch/odom_localizer.launch.py`（自洽可用的独立入口，非重复）、
+     `minco_utils.cpp` 里 vendored 的 `publishBackupTrajectory`（上游代码，未改 vendor）。
+  3. **4 份净空判据实现的合并未做**（`trajectory_safety_checker` / `local_path_processor::segmentClear`
+     / `command_safety` / `minco_planner::checkCollision`）：那是会改变行为的重构，需要专项提交
+     加台架/实车验证，不符合本轮"不影响原来的效果"的前提。这是结构性重复里唯一还没治的一项。
+  4. 工具包（`mas2027_utils/*`、`pcd2ele`/`pcd2esdf` 无消费者、`map_edit` gitlink、
+     `save_pcd_and_make_map.sh` 的失效提示）按用户要求未动。
+
 ## 2026-09-18 — 清理批次①（零行为改动）：删 vendor 未编译子树、未引用资产与构建残留
 
 - 背景：用户问"本项目有什么冗余"。逐项取证后按"零风险批次"执行——**不涉及任何运行时行为、

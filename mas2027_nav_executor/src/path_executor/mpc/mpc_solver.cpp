@@ -347,7 +347,6 @@ bool MpcSolver::solve(const State & curr,
 
   // 记录上一帧全局速度，用于平滑加速度
   last_u_global_ = u0_global;
-  has_last_u_ = true;
 
   // 直接输出全局速度
   out_u.vx = u0_global.x();

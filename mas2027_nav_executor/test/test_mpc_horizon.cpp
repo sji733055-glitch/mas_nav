@@ -97,14 +97,12 @@ int main()
     minco_controller::State rest;          // 车在原点、静止
     minco_controller::MpcSolver anchor_solver(cruise);
 
-    assert(!anchor_solver.hasLastControl());
     assert(anchor_solver.solve(rest, cruise_ref, command));
     // 锚点清零（等价于"以为车停着"）：第一拍只能到 a_max·dt = 0.2 m/s。
     assert(command.vx <= 4.0 * cruise.dt + 1e-6);
 
     // 锚到实测车速 1.5 m/s：第一拍可以到 1.5 + a_max·dt = 1.7 m/s。
     anchor_solver.setLastControl(Eigen::Vector3d(1.5, 0.0, 0.0));
-    assert(anchor_solver.hasLastControl());
     assert(anchor_solver.solve(rest, cruise_ref, command));
     assert(command.vx >= 1.5);
     assert(command.vx <= 1.5 + 4.0 * cruise.dt + 1e-6);
