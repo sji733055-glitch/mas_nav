@@ -2,6 +2,51 @@
 
 本文件记录由开发任务产生的代码、配置、脚本、资源和文档变更。新记录追加在最上方，不改写旧记录。
 
+## 2026-09-18 — 清理批次①（零行为改动）：删 vendor 未编译子树、未引用资产与构建残留
+
+- 背景：用户问"本项目有什么冗余"。逐项取证后按"零风险批次"执行——**不涉及任何运行时行为、
+  不删任何被编译或被引用的文件**；结构性问题（感知配置双真源、包内 launch、4 份净空判据）
+  与代码死代码（STRICT 链、旧死字段）留待批次②③。
+- 改动（全部为删除 + 一处删除后的连带修正）：
+  1. `mas2027_nav_executor/vendor/mpc/qpOASES/{examples,testing,interfaces,doc}`：CMake 只
+     `file(GLOB qpOASES/src/*.cpp)` 加 `include/`，这四个子树（matlab/octave/simulink/CUTEst
+     绑定 + `doc/manual.pdf` 0.79 MB）从不参与构建，合计约 2.4 MB。
+  2. `mas2027_nav_executor/vendor/minco/include/{cereal,fmt}`：以全部被编译源为起点做 include
+     闭包（87 个文件）后，落在 cereal/fmt 下的文件数为 **0**，合计约 2.16 MB。
+  3. `mas2027_robot_description/meshes/LakiBeam.STL`：在 urdf/xacro/xml/py 中 0 引用，3.87 MB。
+  4. `mas2027_perception/Odometry/small_point_lio/config/unilidar_l2.yaml`：本车为 mid360，0 引用。
+  5. `mas2027_perception/rog_map/config/visualization.cfg`：ROS1 `dynamic_reconfigure` 残留，0 引用；
+     `config/` 随之空掉，故同步删除 `rog_map/CMakeLists.txt` 中的 `install(DIRECTORY config/ ...)`
+     ——否则 CMake 会在 configure 阶段因目录不存在直接报错（这条是删除的连带修正，不是功能改动）。
+     该包的参数一律由 nav_executor 的 `planner.rog_map.*` 提供。
+  6. **保留** qpOASES 的 `LICENSE`/`LICENSE.txt`/`AUTHORS`/`AUTHORS.txt`/`INSTALL`/`INSTALL.txt`：
+     实测两组文件内容并不相同（上游不同版本），涉及许可，不按"重复文件"处理。
+- 构建残留（均在 `.gitignore` 内、不进仓库）：删除 `build/` 下 5 个源码已删包的目录
+  （`minco_planner` 20 M、`minco_controller` 19 M、`fake_vel_transform` 8.1 M、
+  `waypoint_editor` 7.9 M、`pb_nav2_plugins` 4.5 M）、`install/rog_map/share/rog_map/config/`、
+  以及已删 `nav2_launch` 的 `.pyc`；并 `rm -rf build/interfaces install/interfaces` 后干净重编，
+  清掉已删消息 `CostMaps` 的全部生成物——审计 §2.24 当时判断只有 `install/` 有残留，
+  本次实测 **build 与 install 两侧都有**。
+- 验证：
+  1. 全工作区 `colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release`：
+     **15 个包全部通过**（48.2 s，含 interfaces 干净重建 5.6 s、nav_executor 42.3 s）。
+  2. `colcon test --packages-select mas2027_nav_executor`：**9/9 通过**；
+     `colcon test-result --verbose` 为 10 tests / 0 errors / 0 failures。
+  3. `find build install -iname "*cost_maps*" -o -iname "*CostMaps*"` 为空；
+     `ros2 interface list` 中 `interfaces/msg/MpcPositionCommand` 仍存在、`CostMaps` 消失
+     （列表里其余的 `nav2_msgs/msg/Costmap*` 属另一个包，与本次无关）。
+  4. 端到端冒烟 `test/smoke_goal.py`（真实 map_server + nav_executor + lab3 地图/PCD，隔离域 231）：
+     `goal smoke passed: 52 trajectory poses, 48 global plan poses, marker width 0.150 m`，与清理前一致。
+  5. 体积（本次实测，`du` 口径）：删除文件 279 个、按 git 记录合计 **7.61 MB**；`vendor/` 6.6 MB → 2.2 MB；
+     工作树（不含 `.git`）≈25 MB → **17 MB**，含 `.git` 55 MB → 47 MB；`build/` 558 MB → 499 MB
+     （先删 5 个孤儿包目录约 60 MB，随后 interfaces 干净重建有少量回补）；`install/` 5.2 MB → 5.1 MB。
+- 未做 / 未验证：未运行实车；未动任何编译单元、配置数值、话题与阈值。批次②（`pcd2ele`/`pcd2esdf`
+  无消费者、`mid360_driver` 与 `small_point_lio` 配置双真源、包内 `nav_executor.launch.py`、
+  4 份净空判据合并）与批次③（`strict_seed_after_failures` 整条 STRICT 链、`has_last_u_`、
+  `backup_path_pub_`/`BLOCK_COMMAND`、`omni_kino_astar` 等死代码）本次保留，需要各自专项提交
+  与重新构建验证；`mas2027_utils/map_edit`（无法还原的 gitlink）与
+  `save_pcd_and_make_map.sh:315` 的提示也留到批次②。
+
 ## 2026-09-18 — 远点导航与"反复冷启动/挪动"结案：新增实车验收结论文档，并纠正最近两条条目
 
 - 行为与文件：**本次只加/改文档，不改任何代码、配置、脚本逻辑**。

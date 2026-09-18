@@ -124,9 +124,10 @@ install(DIRECTORY include/
         DESTINATION include
 )
 
-install(DIRECTORY config/
-        DESTINATION share/${PROJECT_NAME}/config
-)
+# 2026-09-18：删除 install(DIRECTORY config/ ...)。config/ 下原本只有 ROS1 时代
+# dynamic_reconfigure 的 visualization.cfg，全仓库无任何引用，已随之删除；
+# 目录空了之后这条 install 会在 configure 阶段直接报错。ROGMap 的参数统一由
+# nav_executor 的 planner.rog_map.* 提供（见 mas2027_nav_executor/config/planner_params.yaml）。
 
 ament_export_include_directories(include)
 ament_export_libraries(${library_name})
