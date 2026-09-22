@@ -29,15 +29,11 @@ public:
 
   Eigen::Vector3d getLastControl() const { return last_u_global_; }
   void resetLastControl() { last_u_global_.setZero(); }
-  /// 【2026-09-17】把加速度约束的锚点设成**实测车速**，而不是清零。
+  /// 加速度约束的锚点取实测车速，切勿清零。
   ///
-  /// 加速度约束是 a_min·dt <= u_0 - anchor <= a_max·dt，anchor 就是"上一步的速度"。
-  /// 指令门/20 Hz 监视/缺帧只要打断一拍就 resetLastControl()（anchor=0），于是恢复后的
-  /// 第一拍被限成 |u_0| <= a_max·dt = 0.2 m/s —— 车还在 1.5 m/s 跑着，指令却被砍到 0.2，
-  /// 底盘只能硬刹，然后再按每拍 0.2 m/s 爬回去。门控以 1~2 Hz 抖动时，现场就是"反复启停"，
-  /// 也就是"MPC 频繁进入冷启动"的另一半代价（规划侧的停车前缀/急停是另一半）。
-  /// 用实测车速当锚点后，打断恢复时指令从"车实际在哪儿"接着走：不放松速度上限，
-  /// 不放松任何净空判据，只是让约束与物理一致（真正的加速度是 dv_actual/dt）。
+  /// 约束为 a_min·dt <= u_0 - anchor <= a_max·dt；若打断一拍就清零，恢复首拍会被限成
+  /// |u_0| <= a_max·dt = 0.2 m/s，车还在跑却被硬刹，门控抖动时即 MPC 反复冷启动。
+  /// 取实测车速不放松速度上限与任何净空判据，只让约束与物理一致（真实加速度 dv_actual/dt）。
   void setLastControl(const Eigen::Vector3d & control)
   {
     last_u_global_ = control;

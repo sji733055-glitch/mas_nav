@@ -420,19 +420,14 @@ void ROGMap::refreshLayers()
   if (z_min > z_max) {
     std::swap(z_min, z_max);
   }
-  // 只扫局部地图真正拥有的 z 层。配置的窗口（scan_z_relative_to_robot + -1.2/+2.75）是相对
-  // 雷达的 3.95 m，而 map_size.z 只有 2.5 m（±1.25），因此窗口里约一半的层恒在局部地图之外，
-  // 每个柱子都要为这些层跑一遍 rawGridType（内含 insideLocalMap + 哈希），结果必然是
-  // OUT_OF_MAP 被丢掉——纯浪费。按局部边界裁剪后逐格统计结果完全不变（越界格子本来就不计数），
-  // 而每列的工作量按实际层数下降。投影是当前单次更新里最大的固定开销，这一刀对所有分支
-  // （全量/脏列）都生效。
+  // 只扫局部地图真正拥有的 z 层：配置窗口（相对雷达 -1.2/+2.75）比 map_size.z（±1.25）宽，
+  // 越界层恒为 OUT_OF_MAP，按局部边界裁剪不改变逐格统计，只省下每列的空转开销。
   const int local_z_min = localMapMinIndex().z();
   const int local_z_max = localMapMaxIndex().z();
   z_min = std::max(z_min, local_z_min);
   z_max = std::min(z_max, local_z_max);
-  // 裁剪后可能整段落在局部地图外（例如雷达 z 远离地图中心）。此时没有任何可观测的体素，
-  // 所有柱子都只会得到 INSUFFICIENT_OBSERVATION，直接不去扫这些层（由 updateOneCell 用
-  // 空的 ColumnStats 正常分类），省掉每帧 200×200 次空转。
+  // 裁剪后 z 段可能整个落在局部地图外（雷达 z 远离地图中心）：无体素可观测，
+  // 所有柱子只会判为 INSUFFICIENT_OBSERVATION，直接跳过扫描。
   const bool z_range_valid = z_min <= z_max;
 
   const std::vector<uint8_t> old_fused_mask = fused_projection_mask_;
@@ -457,9 +452,7 @@ void ROGMap::refreshLayers()
   const bool dirty_over_ratio =
     cell_count > 0 &&
     projection_dirty_columns.size() > static_cast<size_t>(dirty_ratio * static_cast<double>(cell_count));
-  // 周期性全量安全网：与"脏列有多少"无关，每 dirty_full_period_s 强制走一次全量。
-  // 有了它，dirty_full_ratio 才能被放到"只在极端情况才回退"的位置——否则在稠密点云下
-  // 脏列恒超阈值（实测 19700/40401），增量路径永远不生效，投影每帧都要重算整张 200×200。
+  // 周期性全量安全网：每 dirty_full_period_s 强制一次全量，使 dirty_full_ratio 只在极端情况才回退。
   const bool periodic_full_due =
     cfg_.dirty_full_period_s > 0.0 &&
     (!std::isfinite(last_full_refresh_time_) ||
@@ -472,8 +465,7 @@ void ROGMap::refreshLayers()
   if (force_full_refresh) {
     last_full_refresh_time_ = current_update_time_;
   }
-  // 全量回退的归因：这五个互斥标记让 CSV 能区分「滑窗自己要求全量」「上一帧遗留的标记」
-  // 「脏列关闭」「脏列超比例」「周期性兜底」，不必再去猜 last_projection_time_ms 为什么忽然变高。
+  // 五个互斥标记用于给 CSV 归因全量回退来源（滑窗/遗留标记/脏列关闭/超比例/周期兜底）。
   runtime_stats_.full_reason_geometry = geometry_changed ? 1.0 : 0.0;
   runtime_stats_.full_reason_explicit = (!geometry_changed && explicit_full_refresh) ? 1.0 : 0.0;
   runtime_stats_.full_reason_dirty_disabled = cfg_.dirty_column_en ? 0.0 : 1.0;
@@ -742,9 +734,8 @@ void ROGMap::refreshLayers()
   const bool field_geometry_changed =
     !field_ ||
     !field_->matchesGeometry(layer_->width(), layer_->height(), layer_->resolution(), layer_->origin());
-  // field.update_rate 以前只被 Config 读进来，没有任何地方使用，改 YAML 不会有效果。
-  // 这里按周期限流，但几何变化（地图滑动）和 field 失效必须立刻重建，否则
-  // getQueryInterface() 里的 matchesGeometry 会判定 field 无效，规划器直接拿不到 ESDF。
+  // 按 field.update_rate 周期限流；但几何变化（地图滑动）和 field 失效必须立刻重建，
+  // 否则 getQueryInterface() 的 matchesGeometry 会判定 field 无效，规划器拿不到 ESDF。
   const double field_period = cfg_.field_update_rate > 0.0 ? 1.0 / cfg_.field_update_rate : 0.0;
   const bool field_period_ready =
     field_period <= 0.0 || !std::isfinite(last_field_update_time_) ||

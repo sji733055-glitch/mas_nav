@@ -95,11 +95,8 @@ namespace small_point_lio {
                 } else {
                     dense_point_imu_frame = estimator.Lidar_R_wrt_IMU * dense_point_lidar_frame.position.cast<state::value_type>() + estimator.Lidar_T_wrt_IMU;
                 }
-                // 去畸变：滤波状态只在 kf.time_state() 这一时刻有效，而稠密点是在这个时刻之后
-                // 才被采样的（本分支的进入条件就是它比下一个 point/imu 更早，但它仍晚于上一次状态更新）。
-                // 直接套用当前状态会把两次状态更新之间的整段运动烙进点云，高速平移/自旋时表现为拖影。
-                // 这里用状态快照做分段前向运动补偿，把点推到它自己的采样时刻对应的位姿上。
-                // 只读快照、不调用 predict_state：避免给 eskf 插入额外积分步而扰动 LIO 估计。
+                // 去畸变：状态仅在 kf.time_state() 有效，稠密点直接套用会把运动烙进点云（拖影）。
+                // 故只读快照前推到点采样时刻，不调 predict_state，避免多插积分步扰动 eskf 估计。
                 const auto dt_deskew = static_cast<state::value_type>(dense_point_lidar_frame.timestamp - estimator.kf.time_state());
                 if (dt_deskew > 0) {
                     const Eigen::Matrix<state::value_type, 3, 3> rotation_deskew =

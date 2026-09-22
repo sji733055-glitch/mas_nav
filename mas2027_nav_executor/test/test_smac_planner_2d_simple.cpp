@@ -159,9 +159,8 @@ int main(int argc, char ** argv)
   }
 
   // --- 3. ESDF 势场软代价必须真的把路径推离墙面 -------------------------------------
-  // 上下两行是墙、中间是 1.8 m 宽走廊，起终点都贴着下侧走廊的同一行。
-  // 关闭 ESDF 时最短路是一条贴墙直线；打开后（这里用远大于出厂值的权重放大效果，
-  // 出厂值 1.0/0.8/0.5 只是软偏置，不会改变最短路拓扑）应显著抬高平均净空。
+  // 上下两行是墙夹出 1.8 m 走廊，起终点同贴下侧一行：不开 ESDF 的最短路贴墙，
+  // 开启后平均净空须明显抬高；权重取远大于出厂 1.0/0.8/0.5，否则软偏置不会改变最短路拓扑。
   {
     std::vector<Cell> blocked;
     for (unsigned int x = 0; x < kWidth; ++x) {
@@ -188,12 +187,8 @@ int main(int argc, char ** argv)
   }
 
   // --- 4. 地图变化后必须基于新地图搜索，不能返回上一轮的陈旧路径 ---------------------
-  // 回归：mas_nav_2027 的 setMap() 会把 planning_id_ 归零，下一次 createPath 的 ++ 又得到 1，
-  // 与上一轮搜索留在 visited_/closed_/parent_ 里的 1 撞号。此时 createPath 末尾的
-  //   if (!goal_reached && closed_[goal_index] != planning_id_) { 失败 }
-  // 会因为 goal 格带着上一轮的 id 而被跳过，搜索直接顺着上一轮的 parent_ 回退出
-  // **上一条路径**（实测 iterations=1、路径逐点相同）。下面用「搜完一次再把缺口封死」
-  // 复现：正确实现必须失败，撞号实现会返回那条穿过墙的旧路径。
+  // 回归：setMap() 会把 planning_id_ 归零，下一次 createPath 自增得到 1，与上一轮留在
+  // visited_/closed_/parent_ 里的标记撞号，从而跳过 goal 判定并顺着旧 parent_ 返回旧路径。
   {
     auto open_terrain = makeTerrain(wallWithGap());
     auto open_query = std::make_shared<TerrainMapQuery>(open_terrain);

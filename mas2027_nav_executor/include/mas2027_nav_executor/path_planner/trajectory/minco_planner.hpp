@@ -48,10 +48,8 @@ public:
   bool checkCollision();
   bool checkCollision(const geometry_utils::Trajectory & traj);
 
-  /// 净空要求（发布前校验与运行时监视共用同一个公式）。
-  /// 只要两处用不同阈值，就会出现「发布前 0.30 通过、监视器 0.50 立刻否决」的死循环：
-  /// cmd_vel 只在发布的瞬间有值，RViz 轨迹在规划轨迹与急停轨迹之间来回闪。
-  /// required = collision_dist + max(v * replan_react_time, monitor_margin)
+  /// 净空要求：发布前校验与监视必须共用同一公式，两处阈值不一致会造成「发布通过、
+  /// 监视立刻否决」死循环。required = collision_dist + max(v * replan_react_time, monitor_margin)
   double requiredClearance(double speed) const;
 
   // Accessors for FSM
@@ -68,9 +66,7 @@ public:
     const geometry_msgs::msg::PoseStamped & goal) const;
   bool hasGlobalPath() const;
   void invalidateGlobalPath();
-  // 拷贝一份当前全局搜索（SMAC 2D / Astar）输出的折线，供 RViz 显示。
-  // 返回 false 表示目前没有可用的全局路径（尚未搜索或已被 invalidateGlobalPath 清掉）。
-  // 与 hasGlobalPath() 的区别：这里连数据一起取出，避免调用方分两次加锁看到不同的快照。
+  // 全局搜索折线快照供 RViz 显示：一次取出，避免调用方两次加锁看到不同快照；无路径返回 false。
   bool copyLatestGlobalPath(std::vector<geometry_msgs::msg::PoseStamped> & out) const;
   Eigen::Vector3d getCurrentSpeed() const;
   double getCurrentYawFromOdom() const;
@@ -121,8 +117,7 @@ private:
 
   bool validateTrajectory(const traj_opt::Trajectory & traj, const Eigen::Vector3d & expected_end_pos);
 
-  /// 把备份（急停）优化器实际使用的安全盒（SFC）发布成 RViz 调试 marker。
-  /// 纯可视化，不参与任何约束构造或规划决策。
+  /// 备份（急停）优化器安全盒（SFC）的 RViz 调试 marker；纯可视化，不参与约束构造与规划决策。
   void publishSafeCorridorBox(const PolyhedronH & poly);
 
   bool optimizeYaw(const Eigen::Matrix3d & start_state,
@@ -160,9 +155,8 @@ private:
   // === Configurations & Parameters ===
   double tolerance_;
   bool allow_unknown_;
-  // 全局主搜索：true 走 SMAC 2D（对齐 mas_nav_2027），false 退回 Astar。
+  // 主搜索：true 走 SMAC 2D、false 退回 Astar；SMAC 的 ESDF 代价参数对齐 mas_nav_2027 smac_2d 段。
   bool use_smac_{true};
-  // SMAC 的 ESDF 势场软代价，默认值对齐 mas_nav_2027 的 smac_2d 段。
   bool smac_use_esdf_cost_{true};
   double smac_esdf_weight_{1.0};
   double smac_esdf_decay_{0.8};
@@ -192,8 +186,7 @@ private:
 
   // === Core Modules (Pointers to FSM, Optimizers, etc.) ===
   std::unique_ptr<Astar> astar_planner_;
-  // SMAC 2D 主搜索（对齐 mas_nav_2027 的 PRIORMAP）。use_smac 为真时 GlobalPathSearcher
-  // 走它，astar_planner_ 退为 use_smac:=false 时的备用分支。
+  // SMAC 2D 主搜索（对齐 mas_nav_2027）；use_smac 为真走它，否则 astar_planner_ 兜底。
   std::unique_ptr<mas2027_nav_executor::smac::SmacPlanner2DSimple> smac_planner_;
   std::unique_ptr<MincoOptimizer> minco_optimizer_;
   std::unique_ptr<traj_opt::BackupTrajOpt> backup_opt_;
@@ -219,26 +212,16 @@ private:
   bool has_latest_odom_{false};
   std::atomic_bool is_traj_safe_{true};
 
-  // === 失败原因统计（排障用） ===
-  // 失败原因日志原来整条 2 s 节流：实车一次 10 分钟运行 350 次失败只留下 139 条原因，
-  // 其中"修复后 0.3 ms 立即失败"的 76 次现场里有 60 次连原因都没打出来，"死在哪一步"
-  // 无法从日志判断。现在按原因计数：每种原因前 failure_log_first_n_ 次逐条打出（带累计计数），
-  // 之后每 failure_log_every_n_ 次采样一条；每 failure_summary_every_ 次失败再打一条汇总。
+  // === 失败原因统计（排障用）：按计数采样，**不要退回按时间节流**，密集失败会丢现场 ===
+  // 前 failure_log_first_n_ 次逐条打印，之后每 failure_log_every_n_ 次采样一条。
   uint64_t replan_failure_total_{0};
   std::map<std::string, uint64_t> replan_failure_counts_;
   int64_t failure_log_first_n_{10};
-  // 第 failure_log_first_n_ 次之后的采样间隔。**不要退回按时间节流**：2 s 节流在
-  // "失败比节流窗口更密"时会丢现场——2026-09-16 14:55 那次运行 158 次失败只留下 54 条原因，
-  // COLLISION 109 次被压成 31 条，正是这个原因。按计数采样则无论失败多密都保证留下样本。
   int64_t failure_log_every_n_{25};
   int64_t failure_summary_every_{50};
 
-  // === 地形门否决点插桩（只加日志，不改任何判据/阈值） ===
-  // 起因：2026-09-16 20:13 那次运行 50 次失败里 TERRAIN_COLLISION_OR_DIRECTION 占 26 次
-  // （最长一次连续卡顿 21 s），但这条原因**从不打印否决位置**，因此无法判断它是在真实的
-  // 先验图墙体上否决（说明现场挤压是真的）还是在别处（说明判据或坐标系有问题）。
-  // 净空门早就有 "Trajectory clearance ... at (x,y)"，地形门缺同等待遇。
-  // 前 kTerrainRejectLogFirstN 次逐条打印，之后每 kTerrainRejectLogEveryN 次采样一条。
+  // 地形门否决点插桩（只加日志，不改任何判据/阈值）：原先不打印否决位置，分不清真墙与
+  // 判据/坐标问题；前 kTerrainRejectLogFirstN 次逐条，之后每 kTerrainRejectLogEveryN 次采样一条。
   uint64_t terrain_reject_log_count_{0};
 
   // 第四层兜底（短距离脱困前缀）参数，见 minco_planner.cpp 的 configure 段。

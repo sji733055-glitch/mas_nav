@@ -19,8 +19,8 @@ constexpr uint8_t TERRAIN_LABEL_COUNT = static_cast<uint8_t>(TerrainType::STEP_H
 constexpr size_t MAX_OVERLAP_SAMPLES = 8;
 constexpr double MAX_DIRECTION_NON_BODY_MAGNITUDE_CAP = 0.9;
 
-// 每个膨胀区域的固定调用开销，折算为等价的整图格数。经实测标定：在 560×300 的
-// 地图上使该回退阈值与分区/整图路径的实际耗时交叉点（约 800 个连通域）吻合。
+// 每个膨胀区域的固定调用开销（阈值化 / 距离变换的启动成本）折算为等价的整图格数；
+// 经实测标定，使分区/整图路径的回退阈值与两者实际耗时的交叉点吻合。
 constexpr size_t PER_REGION_INFLATION_OVERHEAD_CELLS = 48;
 
 void validate_resolution(const double resolution) {

@@ -11,11 +11,8 @@
 
 namespace mas2027_nav_executor {
 
-/// 命令门（checkCommandSafety）里到底是哪一条判据否决的。
-/// 以前只返回 ExecutorStatus，地形层拒绝、TF 查不到、
-/// ROGMap 净空不足在日志里都是同一句
-/// "Braking: terrain layer or map transform unavailable, or next command violates terrain"，
-/// 现场 43 条 Braking 里 28 条属于这一类却无法区分，排障只能猜。加这个结构体把成因带出来。
+/// 命令门（checkCommandSafety）命中了哪一条判据：原先只返回 ExecutorStatus，
+/// 地形层拒绝、TF 查不到、ROGMap 净空不足在日志里无法区分，故用本结构体带出成因。
 struct CommandSafetyDetail
 {
   /// 命中的判据名（固定字符串，便于 grep/统计）：

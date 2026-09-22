@@ -8,12 +8,8 @@ namespace rog_map {
 namespace {
 constexpr double kInf = 1.0e20;
 
-// 一次局部地图尺度的 EDT 只有 0.3~0.8 ms 的实际计算量，展开很宽的 OpenMP team
-// 反而是净亏：fork/join 必须等最后一个 worker 被调度到才能结束，CPU 一旦被占满，
-// 墙上时间跟的是调度延迟而不是计算量。在 20 核机器满载下实测（201x201，
-// 一次 field 重建 = 两遍 EDT）：
-//   1 线程 ~3.3 ms | 2 线程 ~1.9 ms | 4 线程 ~21 ms | 20 线程 ~58 ms
-// 因此把 team 宽度压住，让这一段的耗时在 CPU 竞争时仍然有界。
+// 局部地图 EDT 计算量仅 0.3~0.8 ms，宽 OpenMP team 反而净亏：fork/join 必须等最后一个
+// worker 被调度，CPU 满载时墙钟跟的是调度延迟；故 team 宽度封顶 2，每线程须满 16384 格点。
 constexpr int kMaxEdtThreads = 2;
 constexpr int kMinCellsPerEdtThread = 16384;
 

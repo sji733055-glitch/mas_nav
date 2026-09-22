@@ -109,11 +109,8 @@ namespace {
         assert(near(rotated_still.linear_acceleration_z, -0.1068, 1e-4));
         assert(near(rotated_still.timestamp, 5.0, 1e-12));
 
-        // 离心项：绕后雷达系 z 轴以 1 rad/s 自转。陀螺本身也要转到前系：
-        //   ω_front = R·(0,0,1) = (0, 0.9942806, −0.1067996)
-        // 前 IMU 相对后 IMU 的杆臂 d = −t = (0, −0.2004845, +0.2231725)（前系），
-        // 于是 ω×(ω×d) = ω(ω·d) − d|ω|² = (0, −0.0214117, −0.1993378)（手算见下）。
-        // 输入加速度为 0，所以输出就等于这个离心项。
+        // 离心项：绕后雷达系 z 轴以 1 rad/s 自转、输入加速度为 0，输出即 ω×(ω×d)，杆臂 d = −t（前系）。
+        // 陀螺须同步转到前系：ω_front = R·(0,0,1) = (0, 0.9942806, −0.1067996)。
         ImuMsg spinning{};
         spinning.angular_velocity_z = 1.0F;
         const ImuMsg rotated_spinning = mid360_driver::rotate_imu_to_front(spinning, tf);

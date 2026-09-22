@@ -38,11 +38,8 @@ def main():
     goal_x, goal_y = (float(value) for value in args.goal.split(","))
     env = os.environ.copy()
     env["LD_LIBRARY_PATH"] = "/lib/x86_64-linux-gnu:" + env.get("LD_LIBRARY_PATH", "")
-    # 把配置复制一份再改掉 ROGMap 的性能 CSV 路径后再启动。
-    # 原因：planner_params.yaml 的 rog_map.performance.summary_csv_path 指向工作区里的
-    # .scratch/rog_map_perf_summary.csv，而 PerformanceMonitor 是以 trunc 模式打开的，
-    # 于是每跑一次冒烟都会把**实车那一次的数据**覆盖成只有一行冒烟样本（已实测踩到）。
-    # 复制到本次运行专属目录后，实车 CSV 不再被动过，冒烟自己的数据也留在 .scratch 下可查。
+    # 先把配置复制一份再改掉 ROGMap 的性能 CSV 路径：PerformanceMonitor 以 trunc 模式打开
+    # planner_params.yaml 里的 CSV，直接跑冒烟会把实车那一次的数据覆盖成一行冒烟样本。
     config_dir = os.path.abspath(args.executor_config_dir)
     smoke_run_dir = os.path.join(os.getcwd(), ".scratch", "smoke_run")
     os.makedirs(smoke_run_dir, exist_ok=True)
@@ -63,8 +60,7 @@ def main():
                         indent = line[:len(line) - len(line.lstrip())]
                         text = text.replace(line, indent + target)
                     continue
-                # 配置里没显式写 detailed_csv_path 时（默认值指向 /tmp，冒烟侧读不到），
-                # 就在同一段落里补一行，缩进对齐相邻的 summary_csv_path / summary_rate。
+                # 配置没显式写 detailed_csv_path 时默认值指向 /tmp、冒烟侧读不到，就地补一行并对齐缩进。
                 anchor = next((l for l in lines
                                if l.strip().startswith("summary_rate:")), None)
                 if anchor is None:
@@ -202,11 +198,8 @@ def main():
         end = plan.poses[-1].pose.position
         assert abs(end.x - expected_end_x) < 1e-6 and abs(end.y - goal_y) < 1e-6, \
             f"global plan does not end at the goal: ({end.x}, {end.y})"
-        # 判别性检查：这条线必须是搜索输出的格点路径，而不是被重新接回 MINCO 轨迹。
-        # SMAC 直接在地图的 0.05 m 格上扩展，相邻点间距只有 0.05（直走）或
-        # 0.0707 m（斜走 = 0.05·√2），# 而 MINCO 轨迹按 dt 采样（0.02 s × 车速），
-        # 间距小一个量级。最后一段要排除：搜索在 tolerance(0.30 m) 内就停，
-        # makePlanOnQuery 随后把末尾一点直接改写成精确目标，最后一段是跳过去的。
+        # 判别性检查：必须是搜索输出的格点路径，而非被接回 MINCO 的轨迹（后者按 dt 采样、间距小一量级）；
+        # SMAC 在 0.05 m 格上扩展，步长仅 0.05（直走）或 0.0707 m（斜走 √2）；末段为贴到精确目标的跳变段，排除。
         steps = [math.dist((a.pose.position.x, a.pose.position.y),
                            (b.pose.position.x, b.pose.position.y))
                  for a, b in zip(plan.poses, plan.poses[1:])]

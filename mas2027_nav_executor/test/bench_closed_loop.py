@@ -320,9 +320,8 @@ def main():
                     r2 = dx * dx + dy * dy
                     if r2 > args.cloud_radius ** 2:
                         continue
-                    # 传感器自身盲区：真实链路里 ray_range 下限 0.3 m 会把车体附近的点丢掉，
-                    # 否则机器人自己脚下/头顶的点会被投影成本格障碍（表现为
-                    # "ROGMap is not clear at the robot pose"，目标直接被拒）。
+                    # 传感器自身盲区：真实链路 ray_range 下限 0.3 m 会丢掉车体附近的点，不模拟则
+                    # 机器人脚下/头顶的点被投影成本格障碍（ROGMap is not clear at the robot pose），目标被拒。
                     if r2 < args.cloud_blind ** 2:
                         continue
                     if wz < args.cloud_z_min or wz > args.cloud_z_max:

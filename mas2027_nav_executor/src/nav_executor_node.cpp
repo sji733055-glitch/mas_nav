@@ -291,9 +291,8 @@ private:
     minco_trajectory_pub_->publish(marker);
   }
 
-  // 全局搜索折线（SMAC 2D / Astar 的输出，odom 系）。与上面的 MINCO 轨迹分开显示：
-  // 轨迹是「车准备怎么走」，这条线是「搜索给出的拓扑引导」，两者对不上时一眼就能看出来。
-  // 按定时器周期重发（见函数末尾说明），这样 RViz 后开也能拿到完整折线。
+  // 全局搜索折线（SMAC 2D / Astar 的输出，odom 系）。与 MINCO 轨迹分开显示：轨迹是
+  // 「车准备怎么走」，这条线是「搜索给出的拓扑引导」，两者对不上时一眼就能看出来。
   void publish_global_plan()
   {
     if (!path_planner_ || !global_plan_pub_ || !global_plan_marker_pub_) return;
@@ -362,9 +361,8 @@ private:
     global_plan_pub_->publish(path);
     global_plan_marker_pub_->publish(line);
     global_plan_marker_pub_->publish(goal_dot);
-    // 每个 tick 都重发（不是只在变化时发）：RViz 常常在本节点之后才打开，靠的是
-    // transient_local 的 durability 缓存，定期重发才能保证它一打开就看到完整折线，
-    // 也避免 Marker 因缓存被后续消息挤出而消失。5 Hz × 一条折线，开销可以忽略。
+    // 每个 tick 都重发（不是只在变化时发）：RViz 常在本节点之后才打开，靠 transient_local
+    // 缓存定期重发才能看到完整折线，也避免 Marker 被后续消息挤出；5 Hz 的开销可忽略。
     global_plan_published_ = true;
   }
 
@@ -404,9 +402,8 @@ private:
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Braking: MPC solve failed");
     } else if (output.status == ExecutorStatus::TERRAIN_BLOCKED ||
                output.status == ExecutorStatus::DYNAMIC_BLOCKED) {
-      // 这一类以前四种完全不同的成因共用一句话（动态层缺帧 / 地形层 transition 拒绝 /
-      // TF 一时拿不到 / 净空或动态走廊违规），现场 43 条 Braking 里 28 条属于这类却
-      // 分不出是哪一种。这里把命令门带出来的判据名与实测值打进日志。
+      // 动态层缺帧 / 地形层 transition 拒绝 / TF 拿不到 / 净空或动态走廊违规会归到同一
+      // 状态，故打出命令门给出的判据名与实测值，便于区分具体成因。
       const auto & d = path_executor_->lastSafetyDetail();
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
         "Braking: %s (reason=%s value=%.3f threshold=%.3f)",

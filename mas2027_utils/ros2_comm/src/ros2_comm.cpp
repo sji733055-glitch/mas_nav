@@ -26,11 +26,9 @@ constexpr int LOCAL_PORT = 8888;   // Docker 监听端口
 const char* TARGET_IP = "127.0.0.1"; // 宿主机 IP (host模式)
 constexpr int TARGET_PORT = 8889;  // 宿主机监听端口
 
-// 发送节拍。宿主机按「每轮读一个数据报」消费，实测排空速率约 100~200 Hz，
-// 因此发送速率必须显著低于它，否则内核接收队列会累积成一条陈旧指令 FIFO，
-// 造成秒级的恒定延迟（UDP 队列满时丢弃的是新到达的包，旧包全部保留）。
-// 两条发送路径都要求距上次发送 >= MIN_SEND_INTERVAL，所以速率硬上限为 50 Hz；
-// 保活路径保证下限 20 Hz。用 steady_clock 计时，避免系统时钟被 NTP 步进时误判。
+// 发送节拍：宿主机每轮只读一个数据报，发送速率必须显著低于它的排空速率，否则内核接收队列会积压成
+// 陈旧指令 FIFO（队列满时丢新包、保留旧包），造成恒定的秒级延迟。两条发送路径都要求距上次发送
+// >= MIN_SEND_INTERVAL，故速率硬上限 50 Hz、保活下限 20 Hz；用 steady_clock 避免 NTP 步进误判。
 constexpr auto MIN_SEND_INTERVAL = std::chrono::milliseconds(20);   // 速率上限 50 Hz
 constexpr auto KEEPALIVE_INTERVAL = std::chrono::milliseconds(50);  // 无新指令时的补发周期
 constexpr auto KEEPALIVE_TICK = std::chrono::milliseconds(20);      // 保活定时器查询周期
@@ -119,7 +117,7 @@ private:
     RawControlPacket m_latest_ctrl;
     rclcpp::Time m_last_cmd_time;
     std::chrono::steady_clock::time_point m_last_send_time;
-    // 0.3 s 超时：0.4 m/s 下最多多滑 12 cm。原来的 1.0 s 会让失联后继续跑 40 cm
+    // 0.3 s 超时：0.4 m/s 下失联最多多滑 12 cm；不得放宽，滑行距离与超时成正比
     static constexpr double CMD_TIMEOUT_SEC = 0.3;
 
     // UDP

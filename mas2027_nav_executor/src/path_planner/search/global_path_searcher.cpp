@@ -279,18 +279,9 @@ bool GlobalPathSearcher::planExploration(const geometry_msgs::msg::PoseStamped &
       geometry_msgs::msg::PoseStamped start_map, goal_map;
       tf2::doTransform(start_rog, start_map, rog_to_map);
       tf2::doTransform(goal_rog, goal_map, rog_to_map);
-      // 【2026-09-15 现场改为主搜索】静态地形图上的纯栅格 A*。
-      // 这与 mas_nav_2027 的 SMAC2D/PRIORMAP 同口径：不含速度/加速度可行性约束、没有扩展
-      // 预算，只要目标可通行就能给出路径，远处目标毫秒级出解。
-      // 旧的全向 Kino 状态格点搜索（searchOmniKinoPath）已移出关键路径，原因（现场实测）：
-      // 它以「实测速度种子 + 速度/加速度可行性」扩展状态格点，
-      // speed 维 3.0/0.1 = 30 档 × 8 朝向 → 单节点最多 248 个后继，在有障碍的真实图上
-      // 3 m 起大量方向无解、5 m 后几乎全灭，且每次失败都烧光 50 000 次扩展预算、耗时
-      // 0.76~1.03 s（日志里"点目标→WARN"相隔 1.08 s 即此）；同一批目标空图上 8 m 也只要
-      // 45 ms，说明瓶颈是状态空间爆炸而非无解。该实现已于 2026-09-18 整条删除（生产从未
-      // 调用它，只剩启动日志里一个名字还留着误导）：要恢复请从 git 历史取回。
-      // 另外本部署的 HW 方向层（lab3_terrain.msgpack 的 direction）实测全 0，因此 Kino 的
-      // 逐边方向约束（transition()）当前不产生任何收益。
+      // 静态地形图上的纯栅格 A* 作为主搜索：无速度/加速度可行性约束、无扩展预算，
+      // 目标可通行即出解，远处目标也能毫秒级返回。切勿改回全向 Kino 状态格点搜索：
+      // 它按速度/加速度扩展状态格点，单节点最多 248 个后继，真实障碍图上 3 m 起大量方向无解。
       auto terrain_query = std::make_shared<mas2027_nav_executor::TerrainMapQuery>(terrain_);
       nav_msgs::msg::Path terrain_plan;
       terrain_plan.header.stamp = rclcpp::Clock().now();
@@ -301,11 +292,9 @@ bool GlobalPathSearcher::planExploration(const geometry_msgs::msg::PoseStamped &
         return false;
       }
 
-      // makePlanOnQuery 的 output_frame 只用来写 header.frame_id，不做坐标变换：点位来自
-      // query->mapToWorld()，是【地形图查询坐标系】（map）。不换算就等于把种子路径整体平移
-      // (0.316, 0.403) 并少转 0.10 rad（现场 odom_localizer 实测的 map->odom），起点离车
-      // 0.5 m、终点离目标 0.5 m——MINCO 只能沿错位参考线优化，表现为"路径生成成功、
-      // 日志里没有 Astar failed，但车一动不动"。这里换算到 outputFrame。
+      // makePlanOnQuery 的 output_frame 只写 header.frame_id、不做坐标变换，而路径点来自
+      // query->mapToWorld()（地形图查询坐标系 map）：必须换算到 outputFrame，否则种子路径
+      // 整体错位，MINCO 只能沿错误参考线优化，表现为"出解但车一动不动"。
       for (auto & pose : latest_global_path) {
         geometry_msgs::msg::PoseStamped in = pose;
         in.header.frame_id = terrain->cost.header.frame_id;
@@ -321,8 +310,7 @@ bool GlobalPathSearcher::planExploration(const geometry_msgs::msg::PoseStamped &
     }
   }
 
-  // 走到这里说明没有地形图（terrain_ 为空）：退回旧行为，只在 ROGMap 局部窗口内搜索。
-  // cancel_checker 已在函数开头定义，供地形主搜索与这里共用。
+  // 无地形图（terrain_ 为空）时退回旧行为，只在 ROGMap 局部窗口内搜索；cancel_checker 由两处共用。
   unsigned int sx = 0;
   unsigned int sy = 0;
   if (!query->worldToMap(start_rog.pose.position.x, start_rog.pose.position.y, sx, sy)) {
@@ -651,13 +639,8 @@ bool GlobalPathSearcher::makePlanOnQuery(const geometry_msgs::msg::Pose & start,
     cellCostLabel(goal_cost));
 
   if (use_smac_ && smac_) {
-    // SMAC 2D 主搜索，与 mas_nav_2027 的 PRIORMAP 分支同构
-    // （旧工程 minco_planner/src/minco_core/components/global_path_searcher.cpp:636-672）。
-    // 本工程的 ESDF 查询就是同一张地形图查询：TerrainMapQuery 的 query() 返回由
-    // planningConstraints() 烘焙的二维有符号距离场，量纲与旧工程 ROGMap 的 ESDF 一致，
-    // 因此 smac_2d.use_esdf_cost 的势场偏置可以直接复用。旧工程的 map/esdf 一个是 Nav2
-    // costmap（map 系）、一个是 ROG 查询（odom 系），中间靠 FrameAwareRogQuery 换算；
-    // 本工程两者同系，不需要换算层。
+    // SMAC 2D 主搜索：query() 即 planningConstraints() 烘焙的二维有符号距离场（ESDF），
+    // 量纲与旧工程 ROGMap ESDF 一致，smac_2d.use_esdf_cost 势场偏置可复用；两者同系，无需换算层。
     smac_->setMap(query);
     smac_->setESDFQuery(query);
 
@@ -666,8 +649,7 @@ bool GlobalPathSearcher::makePlanOnQuery(const geometry_msgs::msg::Pose & start,
       smac_->createPath(mx_start, my_start, mx_goal, my_goal, smac_path, cancel_checker);
 
     if (!smac_success || smac_path.size() < 2) {
-      // 与旧工程一致：SMAC 失败直接失败，不退回 Astar。退回会让同一次失败产生两条不同的
-      // 搜索路径与两套日志，现场无法判断到底是哪条搜索给出的结果。
+      // SMAC 失败即失败，不退回 Astar：否则一次失败会产生两条搜索路径与两套日志，无法判断来源。
       RCLCPP_ERROR(logger_,
         "%s SMAC 2D failed to find path (success=%s, path_size=%zu). See endpoint diagnostics below.",
         failure_source.c_str(),

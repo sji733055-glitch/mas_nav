@@ -11,12 +11,11 @@ namespace minco_planner {
 
 namespace {
 
-/// 近场放宽的抖动余量。与 ESDF 抖动余量是同一个量级的同一个理由，直接共用同一个常量，
-/// 避免两处各写一个 0.02 后又漂移。
+/// 近场放宽的抖动余量，与 ESDF 抖动余量同源共用常量，避免两处各写 0.02 后漂移。
 constexpr double kNearFieldSlack = mas2027_nav_executor::kEsdfJitterTolerance;
 constexpr double kStoppingBuffer = 0.15;
 constexpr double kMinimumStoppingPrefix = 0.30;
-// "修复后被否决"日志前 N 次不节流：排障最需要的是第一次发生时的现场，之后退回 2 s 节流。
+// "修复后被否决"前 N 次日志不节流：排障最需要第一次的现场，之后退回 2 s 节流。
 constexpr uint64_t kRepairRejectLogFirstN = 10;
 
 struct OpenCell {
@@ -42,30 +41,19 @@ std::string classifySeedReject(const SeedRejectInfo &info,
     return "PREFIX_TOO_SHORT";
   }
 
-  // 脱困层 / 轨迹校验门用的"近场规则"：近场外是完整要求，近场内是"不比现在更差 - slack"。
-  // 【2026-09-17】近场外的"完整要求"要用**四道门统一后的有效阈值**（减 ESDF 抖动余量），
-  // 否则这个判读器还在按旧的两套阈值建模，会把"其实能过"的点判成 SEED_GATE_STRICTER。
+  // 近场规则：场外取四道门统一后的有效阈值，场内为"不比现在更差 - slack"，用旧阈值会误判更严。
   const bool in_near_field = info.arc_from_start < collision_dist;
   const double near_rule_required =
       in_near_field ? std::max(0.0, start_clearance - near_field_slack)
                     : mas2027_nav_executor::effectiveClearanceThreshold(collision_dist);
-  // 该点其实能过"近场规则"，那它被判据拒绝就只能是因为种子门用了更严的完整要求。
+  // 该点其实能过"近场规则"，被拒就只能是因为种子门用了更严的完整要求。
   const bool passes_near_rule = info.clearance > near_rule_required;
 
   if (!passes_near_rule) {
-    // 连"近场规则"都过不了 → 这个点真的没有净空，拒绝是正确行为。
-    //
-    // 这里也覆盖"机器人本来就贴死（起点净空 < collision_dist）"的情形，而且**不会漏判**：
-    // 种子门在起点贴死时会把该点记成"放宽后的要求"（起点净空 - slack），所以此时
-    // `passes_near_rule` 用的正是同一条放宽规则；一旦它也过不了，就说明连"不比现在更差"
-    // 都做不到，判 GEOMETRY 是对的。因此**不存在**"起点贴死但规则本身没问题"这一类
-    // ——种子门记不下这种组合，硬造一个 verdict 只会变成死分支。
+    // 连"近场规则"都过不了说明该点真没净空（含起点贴死），判 GEOMETRY 无误且不存在死分支。
     return "GEOMETRY";
   }
-  // 走到这里说明该点满足近场规则，却不满足更严的那套要求。种子门只在
-  // "起点净空 < collision_dist" 时放宽，能走到这里就意味着起点并不贴死，
-  // 且该点落在近场之内 —— 即两条代码路径的近场门槛不一致
-  // （见 docs/refusal_triage_2026-09-16.md §1.3）。
+  // 该点满足近场规则却不满足更严要求，且种子门只在起点贴死时放宽 —— 两处近场门槛不一致。
   return "SEED_GATE_STRICTER";
 }
 
@@ -138,8 +126,7 @@ LocalPathSeed LocalPathProcessor::buildSeed(
   const double start_clearance =
       start_clearance_ok ? start_query.distance : 0.0;
 
-  // 安全检查必须包含机器人实测位置。机器人沿路移动后，全局折线从最近栅格顶点开始，
-  // 该顶点不一定等于机器人当前位置。
+  // 安全检查必须包含机器人实测位置：折线起点取最近栅格顶点，不一定等于机器人当前位置。
   std::vector<Eigen::Vector3d> checked_path;
   checked_path.reserve(seed.dense_path.size() + 1U);
   checked_path.push_back(cur_pos);
@@ -149,9 +136,7 @@ LocalPathSeed LocalPathProcessor::buildSeed(
     }
   }
 
-  // 四层兜底各自"死在哪一点"。带上这组量之后，这条消息不再只是"全败了"，
-  // 而是能直接读出：是几何路线本身差几毫米过不了净空，还是路被物理挡住。
-  // 判读方式见 docs/refusal_triage_2026-09-16.md §1.3 与 §5。
+  // 四层兜底各自"死在哪一点"：带上这组量，一条日志即可区分净空否决与物理阻断。
   SeedRejectInfo dense_reject;
   SeedRejectInfo prefix_reject;
   SeedRejectInfo detour_reject;
@@ -175,8 +160,7 @@ LocalPathSeed LocalPathProcessor::buildSeed(
 
   if (!pathClear(checked_path, cur_pos, query, start_clearance,
                  start_clearance_ok, terrain_segment_free, &dense_reject)) {
-    // 排障用：不管后面有没有修复成功，都留下"种子门死在哪一点"。调用方（以及测试）靠它
-    // 区分"毫米级净空否决"与"物理阻断"，因此必须在进兜底链之前就记下。
+    // 不管后续修复是否成功都要留下种子门的失败点：调用方与测试靠它区分净空否决与物理阻断。
     seed.dense_reject = dense_reject;
     std::vector<Eigen::Vector3d> repaired;
     if (searchDynamicDetour(cur_pos, seed.dense_path.back(), query,
@@ -201,10 +185,8 @@ LocalPathSeed LocalPathProcessor::buildSeed(
                                  start_clearance, start_clearance_ok,
                                  terrain_segment_free, repaired,
                                  &escape_reject)) {
-      // 第四层兜底：连完整停车前缀都建不出来（障碍前不足 kMinimumStoppingPrefix +
-      // kStoppingBuffer = 0.45 m），说明车已经贴在障碍上停死。此时退化成一个"只要求不比
-      // 当前净空更差"的短前缀，把车挪出这个状态；长度上限就是一个近场豁免半径，
-      // 因此不引入任何新的安全阈值，且末速度为零（stop_at_local_end）。
+      // 第四层兜底：障碍前不足 kMinimumStoppingPrefix + kStoppingBuffer = 0.45 m 时车已贴死，
+      // 退化为长度不超过一个近场豁免半径的蠕行前缀，末速为零且不引入新的安全阈值。
       seed.dense_path = std::move(repaired);
       seed.stop_at_local_end = true;
       seed.used_escape_prefix = true;
@@ -217,8 +199,6 @@ LocalPathSeed LocalPathProcessor::buildSeed(
                            "prefix; escaping with a %.2f m creep prefix.",
                            escape_length);
     } else {
-      // 四层全败。带上每层"死在哪一点"，以及种子门的起点净空与门槛，
-      // 这样一条日志就能区分"毫米级净空否决"与"物理阻断"。
       RCLCPP_WARN_THROTTLE(
           logger_, *rclcpp::Clock::make_shared(), 2000,
           "[MincoPlanner] Live obstacle blocks the local route and leaves no "
@@ -236,10 +216,7 @@ LocalPathSeed LocalPathProcessor::buildSeed(
       return seed;
     }
   } else if (dense_reject.valid && dense_reject.clearance_only) {
-    // 【2026-09-17】"贴墙但没堵死"：折线是自由的，只是有一段净空小于要求。种子照常交给
-    // MINCO（净空由轨迹级三道门决定），这里只留一条可查的现场，方便与"真的被挡住"区分。
-    // 想确认"种子门又变回硬否决"时，把这条日志与上面的
-    // "Live obstacle blocks the local route" 一起看即可。
+    // "贴墙但没堵死"时折线仍自由，种子照常交给 MINCO，仅留一条现场日志以便与真被挡住区分。
     seed.dense_reject = dense_reject;
     RCLCPP_INFO_THROTTLE(
         logger_, *rclcpp::Clock::make_shared(), 2000,
@@ -265,10 +242,7 @@ LocalPathSeed LocalPathProcessor::buildSeed(
                pathClear(seed.sparse_waypoints, cur_pos, query, start_clearance,
                          start_clearance_ok, terrain_segment_free);
   if (!seed.valid) {
-    // 到这一步说明前面的修复分支"看起来成功了"（调用方会看到 Repaired / stopping prefix 日志），
-    // 但种子最终仍不可用。实车日志里这两种日志之间只隔 0.3 ms，看日志无法区分，所以这里
-    // 明确打一条带规模的记录：sparse=0 表示稀疏化（getSparseWaypoints）整体拒绝了这条路径，
-    // sparse>=2 表示稀疏点自身没过净空复核。
+    // 修复看似成功后种子仍可能不可用：sparse=0 表示稀疏化整体否决，sparse>=2 表示稀疏点没过复核。
     if (seed.used_dynamic_detour || seed.stop_at_local_end) {
       seed.repair_rejected = true;
       if (repair_reject_logged_ < kRepairRejectLogFirstN) {
@@ -302,11 +276,7 @@ bool LocalPathProcessor::segmentClear(
     const std::function<bool(const Eigen::Vector3d &, const Eigen::Vector3d &)>
         &terrain_segment_free,
     SeedRejectInfo *reject_info, bool enforce_clearance) const {
-  // 记录"第一次否决"的现场。只在 reject_info 非空时写入，且只写第一次，
-  // 这样调用方拿到的是整条路径上最早的失败点，而不是最后一次。
-  // 【2026-09-17】例外：已经记下的是"只差净空"（clearance_only）而新来的是硬否决
-  // （占据/地形/查询无效）时允许覆盖——判读与日志都必须按**最严重**的那一类归类，
-  // 否则一条"前面贴墙、后面被堵死"的路径会被标成"只是贴墙"。
+  // 只记整条路径上最早的失败点（reject_info 非空时写第一次）；例外的硬否决可覆盖"只差净空"。
   const auto note_reject = [reject_info, &planning_start](
       const Eigen::Vector3d &point, double clearance, double required,
       bool near_field_relaxed, bool terrain_blocked, bool clearance_only) {
@@ -320,7 +290,7 @@ bool LocalPathProcessor::segmentClear(
     reject_info->point = point;
     reject_info->clearance = clearance;
     reject_info->required = required;
-    // 近场是按"离规划起点的距离"划分的，判读时需要这个量来判断该点是否落在近场内。
+    // 近场按"离规划起点的距离"划分，判读时需要该量判断此点是否落在近场内。
     reject_info->arc_from_start = (point - planning_start).head<2>().norm();
     reject_info->near_field_relaxed = near_field_relaxed;
     reject_info->terrain_blocked = terrain_blocked;
@@ -354,27 +324,10 @@ bool LocalPathProcessor::segmentClear(
       note_reject(point, 0.0, fullClearanceRequirement(), false, false, false);
       return false;
     }
-    // 【2026-09-17 种子门撤掉净空硬否决：净空是**轨迹**的属性，不是原始折线的属性】
-    //
-    // 这里曾经把"净空 <= required"直接当成整条种子无效（→ 绕行 → 停车前缀 → 0.28 m
-    // 蠕行 → 最后一层脱困前缀）。代价在台架与实车上都量到了：局部折线只要有一段贴着墙
-    // （哪怕差几毫米），种子就被判死，车原地停住；同一时刻 /opt_path 上的规划峰值是
-    // 2.5 m/s，而车 30 s 只走了 4~7 m（平均 0.13~0.24 m/s），日志里刷的是
-    // "Live obstacle blocks the local route..." / "planning a safe stopping prefix" /
-    // 反复 COLD_START。现场表现就是"走一下停一下"。
-    //
-    // 这个判据从根上过严：交给 MINCO 的是**折线种子**，真正执行的是优化后的**轨迹**，
-    // 而 MINCO 的位置罚项（safe_dist 0.33）会把轨迹推离障碍 —— "折线净空 0.244"完全
-    // 可以优化成"轨迹净空 0.30"。拿折线的净空去否决种子，等于要求种子先满足轨迹的指标，
-    // MINCO 的避障能力全部作废。
-    //
-    // 旧工程 /home/mas/mas_nav_2027 就是这个语义：
-    // minco_core/components/local_path_processor.cpp:9-31 的 isLineFree 只查占据，
-    // 而它的轨迹级门槛反而更严（collision_dist 0.30、无 ESDF 抖动容差），实车能跑快。
-    //
-    // 所以：**占据 / 地形 / 查询有效**才是硬否决；净空不足只记录现场（clearance_only=true）
-    // 并继续采样。净空要求仍然由轨迹级三道门把关 —— 发布前校验、20 Hz 监视、MPC 指令门，
-    // 三者都用 effectiveClearanceThreshold(collision_dist)，这一处也没有放松。
+    // 净空是**轨迹**的属性而非折线的属性：MINCO 的位置罚项会把轨迹推离障碍，用折线净空否决种子
+    // 等于要求种子先满足轨迹指标，避障能力作废；故硬否决只保留占据 / 地形 / 查询无效。
+    // 净空不足仅记 clearance_only 后继续采样，净空要求仍由发布前校验、20 Hz 监视、MPC 指令门
+    // 三道轨迹级门把关，此处没有放松。
     double required = fullClearanceRequirement();
     bool relaxed = false;
     if (start_clearance_ok && start_clearance < collision_dist_ &&
@@ -457,8 +410,7 @@ bool LocalPathProcessor::searchDynamicDetour(
                 query->isFree(mx, my);
     if (safe) {
       const auto result = query->query(point);
-      // 与种子门/轨迹门同一个有效阈值，否则绕行搜索会拒绝轨迹门本来接受的格子
-      // （0.26~0.28 m 的窄处），表现为"有路可绕却报 No local route"→ 停车前缀 → 蠕行。
+      // 必须与种子门/轨迹门用同一有效阈值，否则绕行会拒绝轨迹门接受的窄处而误报"无路可绕"。
       double required = fullClearanceRequirement();
       if (start_clearance_ok && start_clearance < collision_dist_ &&
           (point - start).head<2>().norm() <= collision_dist_) {
@@ -471,8 +423,7 @@ bool LocalPathProcessor::searchDynamicDetour(
     return safe;
   };
 
-  // 实测起点是权威位置：近场规则接受该位置时允许起点格，后续格仍必须满足上面的
-  // 普通净空或近场净空判据。
+  // 实测起点是权威位置：近场规则接受它时允许起点格，后续格仍须满足上面的净空判据。
   const auto start_result = query->query(start);
   if (!start_result.ok || !std::isfinite(start_result.distance)) {
     return false;
@@ -594,8 +545,7 @@ bool LocalPathProcessor::buildEscapePrefix(
         &terrain_segment_free,
     std::vector<Eigen::Vector3d> &prefix,
     SeedRejectInfo *reject_info) const {
-  // 长度上限刻意取 collision_dist：整段都落在近场豁免半径（"不比当前净空更差"）以内，
-  // 所以既不需要放宽任何安全阈值，也不会出现"脱困轨迹尾部净空不达标"被校验否掉的情况。
+  // 长度上限刻意取 collision_dist：整段落在近场豁免半径内，故不放宽安全阈值也不会被校验否掉。
   return buildStoppingPrefixCore(start, path, query, start_clearance,
                                  start_clearance_ok, terrain_segment_free,
                                  escape_buffer_, escape_min_length_,
@@ -641,7 +591,7 @@ bool LocalPathProcessor::buildStoppingPrefixCore(
           target_length = std::min(target_length, max_length);
         }
         if (target_length < min_length) {
-          // 否决的定义是"安全段太短"：把这一点标出来，判读时才能与"净空不够"区分开。
+          // 否决的定义是"安全段太短"：标出该点，判读时才能与"净空不够"区分开。
           if (reject_info != nullptr) {
             reject_info->length_limited = true;
           }

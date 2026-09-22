@@ -82,8 +82,7 @@ int main(int argc, char ** argv)
   options.check_dist = 0.30;
   options.near_field = 0.30;
 
-  // 1) 起点净空 0.28 m（比要求低），但轨迹一路远离障碍 → 必须放行。
-  //    这正是真车「停在离墙 0.28 m 处发目标点，车不动」的场景。
+  // 1) 起点净空 0.28 m 低于阈值，但轨迹一路远离障碍 → 必须放行（真车贴墙起步场景）。
   query->field = [](const Eigen::Vector3d & p) { return 0.28 + p.x(); };
   assert(checker.checkTrajectory(trajectory, options));
   // 关闭近场放宽后同一条轨迹必须被拒，证明失败原因就是起点净空。

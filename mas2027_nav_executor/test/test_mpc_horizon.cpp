@@ -73,12 +73,8 @@ int main()
   assert(omni_solver.solve(state, omni_reference, command));
   assert(command.omega < 0.0);
 
-  // 【2026-09-17】加速度锚点语义：清零 vs 锚到实测车速，恢复后的第一拍差 1.3 m/s。
-  //
-  // 现场症状：指令门/20 Hz 监视/缺帧只要打断一拍就 resetLastControl()，恢复后的第一拍被
-  // 限成 |u_0| <= a_max·dt = 0.2 m/s，而车还在 1.5 m/s —— 指令被硬砍到 0.2、底盘急刹、
-  // 再按每拍 0.2 m/s 爬回来，现场就是"反复启停 / MPC 频繁冷启动"。锚到实测车速后，
-  // 第一拍可以从车实际所在的速度接着走（速度/加速度上下限与三道净空门都没变）。
+  // 加速度锚点语义：清零等价于"以为车停着"，恢复后的第一拍被限成 |u_0| <= a_max·dt；
+  // 锚到实测车速则从真实车速接着走（速度/加速度限幅与净空门不变），避免打断一拍后指令被硬砍。
   {
     minco_controller::MPCConfig cruise = config;
     cruise.horizon = 40;

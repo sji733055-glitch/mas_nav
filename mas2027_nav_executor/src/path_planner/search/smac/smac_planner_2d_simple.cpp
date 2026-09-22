@@ -68,15 +68,8 @@ void SmacPlanner2DSimple::setMap(const std::shared_ptr<rog_map::MapQueryInterfac
   size_x_ = map_->sizeX();
   size_y_ = map_->sizeY();
   ensureSearchBuffers();
-  // 注意：这里**不能**把 planning_id_ 归零。visited_/closed_/parent_ 里存的是上一次搜索留下的
-  // 标记与父指针；归零后下一次 createPath 的 ++ 又重新得到 1，与更早一次搜索的 1 撞号。
-  // 后果不是「搜索变慢」而是**静默返回陈旧路径**：createPath 末尾的失败判定是
-  //   if (!goal_reached && closed_[goal_index] != planning_id_) { 失败 }
-  // goal 格此刻已带着上一轮的 id，判定被跳过，于是直接顺着上一轮留下的 parent_ 回退出
-  // 上一条路径（实测 iterations=1、路径与上一轮逐点相同），即使地图已经变了。
-  // mas_nav_2027 只在 configure 时 setMap 一次，所以那里没有暴露这个问题；本工程每次
-  // 全局搜索前都会 setMap（沿用它「搜索前把地图交给 SMAC」的接线方式），必须按此处理。
-  // 地图内容变化不需要清空 closed_：createPath() 每次都会 ++planning_id_，旧标记自然失效。
+  // 注意：这里**不能**把 planning_id_ 归零：visited_/closed_/parent_ 复用上次搜索的标记与父指针，
+  // 归零后 ++ 又得到 1、与更早搜索撞号，失败判定失效、静默回退陈旧路径；地图变化无需清空 closed_。
 }
 
 void SmacPlanner2DSimple::setESDFQuery(

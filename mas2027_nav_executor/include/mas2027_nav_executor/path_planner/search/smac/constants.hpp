@@ -12,10 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License. Reserved.
 //
-// 移植自 mas_nav_2027 的 mas2027_planner/minco_planner/include/smac_search/constants.hpp。
-// 唯一改动：命名空间改为 mas2027_nav_executor::smac，代价常量由 float 改为 uint8_t，
-// 使 2027 里对 nav2_costmap_2d::NO_INFORMATION / INSCRIBED_INFLATED_OBSTACLE 的比较
-// 在没有 Nav2 的本工程里保持同一套取值（255/254/253/252）。
+// 移植自 mas_nav_2027 的 smac_search/constants.hpp（命名空间改为本工程）：本工程无 Nav2，
+// 故自带常量，且由 float 改为 uint8_t 仍取 255/254/253/252，与 nav2_costmap_2d 取值一致。
 
 #ifndef MAS2027_NAV_EXECUTOR__PATH_PLANNER__SEARCH__SMAC__CONSTANTS_HPP_
 #define MAS2027_NAV_EXECUTOR__PATH_PLANNER__SEARCH__SMAC__CONSTANTS_HPP_

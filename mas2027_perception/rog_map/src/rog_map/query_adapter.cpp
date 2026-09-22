@@ -291,14 +291,8 @@ bool QueryAdapter::isFree(unsigned int mx, unsigned int my) const
     return false;
   }
   const size_t idx = static_cast<size_t>(my) * static_cast<size_t>(snap->width) + static_cast<size_t>(mx);
-  // 255（no information）必须与 254（OCCUPIED / kLethalCost）区别对待：
-  // 按 projection_layer.cpp::applyValueAndMask()，未知列的取值是
-  //   unknown_as_occupied == true  → 254（与障碍同值，应判为不可通行）
-  //   unknown_as_occupied == false → 255（应判为可通行，与二维 ESDF 的 mask=1 一致）
-  // 原先只判 < 253，会把 255 也当成"不自由"。后果：全局搜索在 ROGMap 滑窗内逐格调用
-  // 本函数（global_path_searcher.cpp:301），未观测区域整片被判为不可通行——目标落在
-  // 先验图上的远处（车还没看过的地方）时规划必然失败，日志刷
-  // "No acceleration-feasible route satisfies terrain and current dynamic obstacles"。
+  // 255=no information 必须放行（未知格随 unknown_as_occupied 取 254 或 255），
+  // 才与 ESDF mask=1 一致，否则未观测区域不可通行。
   const unsigned char cost = snap->values[idx];
   return cost < 253U || cost == 255U;
 }

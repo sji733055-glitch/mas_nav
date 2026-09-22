@@ -105,12 +105,9 @@ int main(int argc, char ** argv)
   query->slope_x = 0.6;
   assert(check_forward() == ExecutorStatus::PUBLISHED);
 
-  // 3b) 【2026-09-17 四道门统一】指令门必须和发布前校验/20 Hz 监视/局部种子门取同一个
-  // 有效阈值：rog_map_clearance(0.30) − kEsdfJitterTolerance(0.02) = 0.28。
-  // 构造：起点净空 0.45，朝障碍方向 1.0 m/s，净空随 +x 以 0.46/m 下降 ⇒ 前视 0.35 s 处
-  // （弧长 0.35 m，**已在近场半径 0.30 之外**）净空降到 ≈0.289，正好落在 [0.28, 0.30]
-  // 这条缝里 —— 统一前指令门按完整的 0.30 会否决（实车日志里 7 次 clearance 否决值
-  // 0.263~0.280 全是这一条），统一后必须放行。
+  // 3b) 指令门必须与发布前校验 / 20 Hz 监视 / 局部种子门取同一有效阈值
+  // rog_map_clearance(0.30) − kEsdfJitterTolerance(0.02) = 0.28：起点 0.45、净空以 0.46/m
+  // 下降时，近场 0.30 外前视净空 ≈0.289 落在 [0.28, 0.30] 缝内，必须放行不得被误否决。
   {
     minco_controller::Control fast;
     fast.vx = 1.0;
@@ -122,8 +119,7 @@ int main(int argc, char ** argv)
     query->distance = 0.45;
     query->slope_x = -0.46;
     assert(check_fast() == ExecutorStatus::PUBLISHED);
-    // 但真的压到有效阈值以下仍必须拦下，别把"统一"写成放水：
-    // 起点 0.30 时前视末端净空 ≈0.14，远低于 0.28。
+    // 但压到有效阈值以下仍必须拦下（统一不等于放水）：起点 0.30 时前视末端净空 ≈0.14。
     query->distance = 0.30;
     assert(check_fast() == ExecutorStatus::DYNAMIC_BLOCKED);
     query->slope_x = 0.0;

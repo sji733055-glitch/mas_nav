@@ -40,8 +40,7 @@ bool TrajectorySafetyChecker::checkPoint(const Eigen::Vector3d & pos) const
 
 bool TrajectorySafetyChecker::checkPoint(const Eigen::Vector3d & pos, double check_dist) const
 {
-  // 安全检查先拒绝二维 layer 中的致命/膨胀代价值，再用 ROGMap distance field 与 check_dist 比较。
-  // ROGMap field 已扣除 field.inflation_radius，check_dist 会继续增加规划安全余量。
+  // 先按 layer 致命/膨胀代价否决，再比 ROGMap field 净空与 check_dist（已扣除 inflation_radius）。
   if (!ensureQueryAvailable()) {
     return false;
   }
@@ -130,12 +129,8 @@ bool TrajectorySafetyChecker::checkTrajectory(
       start_clearance = start_query.distance;
       start_clearance_ok = true;
     } else {
-      // 起点查不到净空（现场典型是 OUT_OF_MAP：车在滑窗边缘或栅格之外）**不等于轨迹不安全**。
-      // 原实现在这里直接 return false，会把整条轨迹误杀——现场表现为连续
-      //   "Near-field clearance query failed: OUT_OF_MAP" + "Trajectory collision detected"（各 30 次）。
-      // 按 clearance_gate.hpp 的既定语义降级：拿不到当前净空就不启用近场放宽，
-      // 全程按完整 required 判（makeClearanceRequirement 在 current_clearance_ok=false 时正是如此）。
-      // 这只是取消"近场豁免"这一放宽项，逐个采样点的完整净空判据仍然生效，不放松安全底线。
+      // 起点查不到净空（如 OUT_OF_MAP：车在滑窗边缘或栅格之外）不等于轨迹不安全：
+      // 直接判 false 会误杀整条轨迹，按 clearance_gate 语义只关闭近场放宽，逐点完整判据仍生效。
       RCLCPP_WARN_THROTTLE(logger_,
         *rclcpp::Clock::make_shared(),
         1000,
@@ -150,13 +145,7 @@ bool TrajectorySafetyChecker::checkTrajectory(
       start_clearance_ok,
       options.near_field_slack);
   if (gate.nearFieldEnabled() && gate.near_required < gate.required) {
-    // 明确记录「近场要求被下调」：真车贴着墙停车时靠这条规则才能起步，
-    // 排查「车不动」时先看这里有没有刷，再看是不是连近场外的要求也满足不了。
-    // 措辞注意：本分支的条件是「近场要求被下调」，它会在起点净空**高于** required 时成立
-    // （净空落在 [required, required + slack) 区间内就会成立）。旧措辞写作
-    // "start clearance X below required Y" 会把 X = 0.318、Y = 0.300 这种 X > Y 的数字
-    // 摆在一起，读起来自相矛盾，已两次导致现场把「近场规则正常工作」误判成日志 bug 或
-    // 阈值不一致。这里改成直接打印三个量：实测净空、下调后的近场要求、完整要求。
+    // 本分支指「近场要求被下调」（起点净空可高于 required），故并列打印三个量以免读成自相矛盾。
     RCLCPP_INFO_THROTTLE(logger_, *rclcpp::Clock::make_shared(), 2000,
       "[MincoPlanner] Near-field exemption active: start clearance %.3f m, "
       "near requirement lowered to %.3f m (full requirement %.3f m); "

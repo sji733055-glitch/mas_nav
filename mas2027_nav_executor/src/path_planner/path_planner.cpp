@@ -94,11 +94,8 @@ bool PathPlanner::acceptGoal(const geometry_msgs::msg::PoseStamped & goal)
     planning_frame = "odom";
   }
 
-  // 远端操作者（Foxglove 等）发布目标时用的是客户端自己的时钟，与本机存在毫秒级偏差时，
-  // tf2 会因"请求时间在未来"直接抛 extrapolation into the future 而丢弃目标
-  // （2026-09-17 实测：笔记本快约 330 ms，Foxglove 点击的目标 100% 被静默忽略）。
-  // 人工点击的目标"什么时候点的"对规划没有意义，所以查询前把时间戳归零：
-  // tf2 把 0 视为"取最新可用 TF"，从此免疫两端时钟偏差。
+  // 远端（Foxglove 等）目标的时间戳来自客户端时钟，与本机有偏差时 tf2 会因"请求时间在未来"
+  // 抛 extrapolation into the future 并静默丢弃目标；归零即可（tf2 把 0 视为"取最新 TF"）。
   geometry_msgs::msg::PoseStamped goal_query = goal;
   goal_query.header.stamp = rclcpp::Time(0, 0, node_->get_clock()->get_clock_type());
 
@@ -117,8 +114,7 @@ bool PathPlanner::acceptGoal(const geometry_msgs::msg::PoseStamped & goal)
     goal_in_planning.header.frame_id = planning_frame;
   }
 
-  // tf2 的 transform() 是否把输出时间戳改写成查询时刻取决于实现，这里显式再归零一次，
-  // 保证第二次（转到地形图坐标系）查询同样走"最新 TF"。
+  // transform() 是否改写输出时间戳取决于实现，显式再归零，让第二次（转地形图坐标系）同样取最新 TF。
   goal_in_planning.header.stamp = goal_query.header.stamp;
 
   geometry_msgs::msg::PoseStamped goal_in_map;

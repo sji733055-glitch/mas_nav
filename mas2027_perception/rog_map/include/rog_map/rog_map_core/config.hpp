@@ -373,11 +373,8 @@ public:
     decay_active_list_en = true;
     dirty_column_en = false;
     dirty_full_ratio = 0.30;
-    // 周期性全量重投影的安全网（秒）。0 = 关闭（沿用上游行为：只在脏列超比例时回退全量）。
-    // 背景：dirty_full_ratio 的定位是"脏列太多时全量反而更快"，但它实际上会让增量路径
-    // 在稠密点云下**永远不生效**——实测 96k 点/帧时 dirty_column_count 稳定在 ~19700/40401
-    // (49%)，恒大于 0.30 阈值，77/77 次更新全部走全量。把阈值调高后必须有一个与"脏列多少"
-    // 无关的兜底，否则一旦某列因为未预期的原因长期没被标脏，二维图会一直保留旧分类。
+    // 周期性全量重投影的安全网（秒）。0 = 关闭，沿用上游"仅脏列超比例才回退全量"的行为。
+    // 兜底须与脏列数量无关：dirty_full_ratio 会让增量长期不生效，否则未标脏的列会一直保留旧分类。
     dirty_full_period_s = 0.0;
     performance_enable = true;
     performance_detailed_csv_enable = false;

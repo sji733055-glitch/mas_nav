@@ -12,16 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License. Reserved.
 //
-// 移植自 mas_nav_2027 的 mas2027_planner/minco_planner/{include,src}/smac_search/
-// smac_planner_2d_simple.{hpp,cpp}。算法本体逐行保留（8 邻域 A*、octile 启发式、
-// tolerance 到点判定、膨胀代价因子、ESDF 势场软代价、SoA 搜索缓冲）。
-// 相对 2027 的改动只有三处，都是为了在没有 Nav2 的本工程里编译与运行：
-//   1. 去掉 nav2_costmap_2d::Costmap2DROS 成员与两个 configure 重载，改为
-//      configure(rclcpp::Logger)：地图几何全部从 MapQueryInterface 取，
-//      createPath() 本来每次都会刷新 origin/resolution/size。
-//   2. 代价常量改从本目录 constants.hpp 取（取值与 Nav2 相同：255/254/253/252）。
-//   3. ESDF 参数由 MincoPlanner 读 ROS 参数后经 setESDFParameters() 传入，
-//      避免本类依赖 rclcpp::Node 的参数接口。
+// 移植自 mas_nav_2027 的 smac_planner_2d_simple（8 邻域 A*、octile 启发式、tolerance 到点判定、
+// 膨胀代价因子、ESDF 势场软代价、SoA 搜索缓冲），算法本体逐行保留；脱离 Nav2 编译运行仅改三处：
+//   1. configure() 只收 logger，地图几何全取自 MapQueryInterface（createPath() 每次刷新
+//      origin/resolution/size），不再持有 nav2_costmap_2d::Costmap2DROS。
+//   2. 代价常量取自本目录 constants.hpp（与 Nav2 相同：255/254/253/252）。
+//   3. ESDF 参数由 MincoPlanner 读 ROS 参数后经 setESDFParameters() 注入，避免依赖 Node 参数接口。
 
 #ifndef MAS2027_NAV_EXECUTOR__PATH_PLANNER__SEARCH__SMAC__SMAC_PLANNER_2D_SIMPLE_HPP_
 #define MAS2027_NAV_EXECUTOR__PATH_PLANNER__SEARCH__SMAC__SMAC_PLANNER_2D_SIMPLE_HPP_

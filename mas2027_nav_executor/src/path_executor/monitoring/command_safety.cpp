@@ -57,14 +57,9 @@ ExecutorStatus checkCommandSafety(
     if (!terrain->transition(position, position + horizon * velocity)) {
       return reject(ExecutorStatus::TERRAIN_BLOCKED, "terrain_transition");
     }
-    // 净空判据与规划侧的发布/监视门一致：机器人当前所在位置（近场，车体安全半径以内）
-    // 只要求不比现在的实测净空更差，离开近场后必须满足 rog_map_clearance。
-    // 否则「贴着墙停下」会让每一条速度指令都在 t=0 处被否决，cmd_vel 恒为 0。
-    // 【2026-09-17 统一四道门】完整要求同样要减掉 ESDF 抖动余量（kEsdfJitterTolerance），
-    // 与发布前校验/20 Hz 监视/局部种子门取同一个有效阈值。此前本门直接用 rog_map_clearance，
-    // 比发布门严 2 cm ⇒ 规划器按 0.26 发布、执行器按 0.28 否决，实车日志里
-    // `reason=clearance value=0.263~0.280 threshold=0.280` 7 次全部落在 [0.26,0.28] 这条缝里，
-    // 表现为"一顿一顿、反复启停"。近场半径仍取车体安全半径 rog_map_clearance，不变。
+    // 净空判据与规划侧发布/监视门一致：近场半径取车体安全半径 rog_map_clearance。
+    // 场内不比实测净空更差即可，出近场必须满足该阈值；否则贴墙停下会让指令在 t=0 被否决。
+    // 有效阈值须减掉 ESDF 抖动余量 kEsdfJitterTolerance，与发布门/监视门同值，避免指令卡在两门间。
     const double effective_clearance = effectiveClearanceThreshold(rog_map_clearance);
     const auto current_clearance =
       rog_query->query(Eigen::Vector3d(current.x, current.y, 0.0));

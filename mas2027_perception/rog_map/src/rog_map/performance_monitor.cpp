@@ -255,8 +255,7 @@ void PerformanceMonitor::observeUpdate(const RuntimeStats & raw_stats)
   std::lock_guard<std::mutex> lock(mutex_);
   RuntimeStats stats = raw_stats;
   // 真实更新周期：从上次更新结束到这次更新结束的墙钟差。total_update_time 只覆盖
-  // updateMapInternal 内部，更新之后的可视化快照构建（captureVizFrame）不在其中，
-  // 因此这一列才是「地图实际多久刷新一次」；两者之差即那段不可见开销。
+  // updateMapInternal，不含其后的可视化快照构建（captureVizFrame），两者之差即那段不可见开销。
   const long long now_ns = steadyNowNs();
   if (last_observe_ns_ > 0) {
     const double period_ms = static_cast<double>(now_ns - last_observe_ns_) / 1.0e6;
@@ -498,9 +497,8 @@ void PerformanceMonitor::maybeWriteSummary(double stamp)
         num(stats_.raycast_time),
         num(stats_.projection_total_time),
         num(stats_.field_time),
-        // 此前 summary 只报了三段耗时，剩下的 prob_update/decay/query 与「周期 − 自报」
-        // 都看不到，排障时必须靠 detailed CSV。这里补上，让每次实车运行（哪怕没开 detailed）
-        // 都留下可判读的分阶段数据。
+        // summary 补齐 prob_update/decay/query 与「周期 − 自报」两段：原先只报三段
+        // 耗时，这几项排障时不可见；补上后未开 detailed CSV 的运行也能留下可判读数据。
         num(stats_.prob_update_time),
         num(stats_.decay_time),
         num(stats_.query_refresh_time),

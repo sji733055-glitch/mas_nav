@@ -44,11 +44,8 @@ public:
     double rho{0.01};
     double smooth_eps{0.01};
 
-    /// 速度感知净空（可选，默认关）。开启后位置罚项的目标净空不再是固定的 safe_dist，
-    /// 而是与发布前校验/运行时监视同一条口径：
-    ///   required(v) = clearance_collision_dist
-    ///                 + max(|v| * clearance_react_time, clearance_monitor_margin)
-    /// 关闭时行为与改动前完全一致。开启的意义见 constraintsFunctional 中的说明。
+    /// 速度感知净空（可选，默认关）：开启后位置罚项目标净空不再是固定 safe_dist，而是与
+    /// 发布前校验/运行时监视同口径（见 ClearanceModel）；关闭时行为与固定 safe_dist 一致。
     bool speed_aware_clearance{false};
     double clearance_collision_dist{0.30};
     double clearance_react_time{0.35};
@@ -63,9 +60,8 @@ public:
     bool print_optimizer_log{true};
   } cfg_;
 
-  /// 速度感知净空参数。开启后位置罚项的目标净空不再是固定的 safe_dist，而是
-  ///   required(v) = collision_dist + max(|v| * react_time, monitor_margin)
-  /// 与发布前校验/运行时监视同一条口径；关闭时行为与改动前完全一致。
+  /// 速度感知净空模型：目标净空与发布前校验/运行时监视同口径，即
+  ///   required(v) = collision_dist + max(|v| * react_time, monitor_margin)；
   /// 单独抽成结构体是因为罚函数是静态成员，只能靠传参拿到这些值。
   struct ClearanceModel
   {
@@ -73,9 +69,8 @@ public:
     double collision_dist{0.30};
     double react_time{0.35};
     double monitor_margin{0.0};
-    /// 优化器软目标相对硬判据的余量。优化器只能渐近逼近软目标，若软目标恰好等于硬判据，
-    /// 解会稳定地差几毫米被 validateTrajectory 否掉（实测 0.002~0.010 m 的擦边失败，
-    /// 表现为窄道处「卡一下」）。留出该余量后软目标始终高于硬判据。
+    /// 优化器软目标相对硬判据的余量，必须为正：优化器只能渐近逼近软目标，若软目标恰好
+    /// 等于硬判据，解会稳定地差几毫米被 validateTrajectory 否掉（窄道处表现为「卡一下」）。
     double optimizer_margin{0.05};
   };
 

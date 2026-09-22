@@ -2,6 +2,45 @@
 
 本文件记录由开发任务产生的代码、配置、脚本、资源和文档变更。新记录追加在最上方，不改写旧记录。
 
+## 2026-09-22 — 注释清理：删掉项目自有代码/配置里的日志类长注释（纯注释，代码零改动）
+
+- 起因：用户要求"去除多余注释（那些很长的日志类）"。范围与力度由用户在二选一里确定：**项目自有代码 + 配置（排除
+  `vendor/`、`third_party/`、`3rdparty/`）**，力度为**删掉排障叙事、每条保留 1~2 行"为什么"**。
+- 改动（**只动注释文本，代码/配置 token 零改动**）：39 个文件，覆盖 `mas2027_nav_executor`（`minco_planner.cpp`、
+  `local_path_processor.cpp/.hpp`、`minco_optimizer.*`、`global_path_searcher.*`、`smac_planner_2d_simple.*`、
+  `clearance_gate.hpp`、`trajectory_safety_checker.*`、`path_executor`/MPC/`command_safety`、`nav_executor_node.cpp`、
+  `path_planner.cpp`、测试与 `config/planner_params.yaml`）、`mas2027_perception`（`rog_map` 的
+  `rog_map.cpp`/`query_adapter.cpp`/`esdf_utils.cpp`/`config.hpp`/`performance_monitor.*`、`mid360_driver`、
+  `map_server/src/utils.cpp`、`small_point_lio`）、`mas2027_utils/ros2_comm`、`mas2027_nav_bringup` 的
+  `config/small_point_lio_params.yaml` 与 `test/bench_closed_loop.py`。
+  注释行 **1787 → 1248（−30%）**，其中中文注释 **1048 → 542（−48%）**，最长连续注释块由 44 行降到 ≤7 行。
+- 删掉的：日期/场次标记（`【2026-09-17】`、`2026-09-16 14:55 那次运行` 等）、实车/台架日志原文与读数堆砌、
+  多轮运行频率统计表、事故复盘与"改过又回退/已删除"的历史沿革、验证命令与对 `docs/*.md` 排障文档的逐条指引
+  （这些内容本文件里已有存档）。
+- **刻意保留**（压缩为 1~2 行）：取值理由与安全边界——`collision_dist` 有效硬阈值 0.26 m"不要再下调"且必须与
+  `node.rog_map_clearance` 一致、`kEsdfJitterTolerance` 四道净空门必须同值（"切勿再下调"）、
+  `esdf_max_cost ≥ esdf_weight`（否则势场饱和、梯度为 0 → 贴墙切内角）、`safe_dist` 软目标必须比硬判据高
+  出余量、`unknown_as_occupied` 两处必须一致、"切勿再引入种子门净空硬否决开关"、"切勿改回全向 Kino 状态格点
+  搜索"、MPC 加速度锚点"切勿清零"、`kMonitorClearanceTolerance` "切勿接近车体半径"；以及单位/量纲/坐标系约定、
+  Doxygen 结构与 `verdict=` 条目。
+- 未改动的文件：经逐文件核对本来就没有日志类注释，故保持原样——`rog_map/include/rog_map_ros/rog_map_ros2.hpp`
+  （189 行中文注释全是 1~3 行 "why"）、`rog_map_node.cpp`、`mid360_driver_node.hpp/.cpp`、`merge_failover.hpp`、
+  `mid360_driver.hpp`、`pcd2esdf_node.cpp`、`measure_lidar_mount.py`、`mpc_solver.cpp` 等。
+- 验证（本地，离线）：
+  1. **机械闸门**（`.scratch/comment_cleanup/verify.py`，一次性工具，按约定留在 `.scratch/` 不进仓库）：C++ 用
+     `g++ -fpreprocessed -dD -E -P` 做编译器级去注释、Python 比对 `ast.dump`、YAML 比对 `yaml.safe_load`，
+     逐文件比对 `git HEAD` 与工作区 ⇒ **39/39 代码骨架完全一致**（即改动前后除注释外逐 token 相同）；
+     期间发现并回退了一次"顺手跑了 clang-format"的改动（`path_planner.cpp`，已还原后手工重做注释）。
+  2. **增量编译**：`cmake --build build/<pkg>` 对 `ros2_comm`、`rog_map`、`map_server`、`mid360_driver`、
+     `small_point_lio`、`mas2027_nav_executor` 全部 **rc=0**（仅剩 `fmt` 既有的 deprecation 警告）。
+  3. 复核了本文件与 `rog_map/README.md` 明确引用过的关键注释仍在（上列"刻意保留"项逐条 grep 确认）。
+- 未验证：未上实车、未跑 `colcon test` 全量用例、未重启节点（纯注释改动，无行为变化，故未做功能回归）。
+- 顺带发现（**未改动**，非本次引入，`git HEAD` 即如此）：① `planner_params.yaml` 现值
+  `surface_height_delta_max: 0.2`，而本文件 2026-09-22 那条"0.1 → 0.15 并补 9 行注释"的记录与该行现状
+  （HEAD 即为 0.2、上方没有那 9 行注释）不一致；② 本文件 2026-09-16 记录过的 `fill_occ_min`"切勿取 9 及以上"
+  醒目警告在 HEAD 的 `planner_params.yaml` / `rog_map` 代码里已经找不到（只剩 `fill_occ_min: 8` 与
+  `denoise_occ_max: 0` 两个裸值）。两处都需要时另行核对补齐。
+
 ## 2026-09-22 — 配置：`projection.surface_height_delta_max` 0.1 → 0.15（桌子被判障碍）
 
 - 起因：用户报桌子被 `/rog_map/layer_value` 判成障碍（100），而桌面下沿 0.7 m、车高 0.5 m 本可以钻过去。
