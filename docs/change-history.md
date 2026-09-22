@@ -2,6 +2,42 @@
 
 本文件记录由开发任务产生的代码、配置、脚本、资源和文档变更。新记录追加在最上方，不改写旧记录。
 
+## 2026-09-22 — 修复 clangd 满屏报错/无法跳转：导出并合并 compile_commands.json
+
+- 起因：用户报"本项目 clangd 报错无法转跳"。
+- 诊断（`clangd --check` 复现）：① 工作区里唯一的 `build/compile_commands.json` 只有 **22 条**（是
+  mid360_driver / odom_localizer / small_point_lio 三个包的残留），项目自有 106 个 `.cpp` 基本没有编译命令；
+  ② 编译库里查不到条目时 clangd 会**拿别的文件的命令来猜**（实测日志：用 `3rdparty/small_gicp/.../registration.cpp`
+  的命令去解析 `minco_planner.cpp`）⇒ 缺 ROS/PCL/Qt 全部 `-I`，报 `'mas2027_nav_executor/...hpp' file not found`
+  与 `use of undeclared identifier`，索引里没有正确的 TU，跳转自然失效；③ `.vscode/settings.json` 里写死的
+  `--compile-commands-dir=${workspaceFolder}/build`：把 `src/` 当工作区打开时该目录**不存在**；
+  ④ 同文件的 `clangd.fallbackFlags`、`ROS2.distro`、python 路径仍停留在 ROS 2 **humble** / PCL 1.12 / python3.10，
+  本机是 **jazzy** / PCL 1.14 / python3.12。
+- 改动：
+  1. **新增 `src/tools/gen_compile_commands.sh`**：对 `build/` 下每个已配置的包重新 `cmake -S <包> -B <build>`
+     并打开 `CMAKE_EXPORT_COMPILE_COMMANDS`（只重生成构建文件，**不重新编译**），再把各包 DB 合并去重成
+     一份 `build/compile_commands.json`（11 份来源、146 条）。新增/删除源文件或改 `CMakeLists.txt` 后重跑即可。
+  2. **新增 `src/.clangd`**：`CompileFlags.CompilationDatabase: ../build` + `Index.Background: Build`，
+     与编辑器无关（换编辑器、换工作区打开方式都生效）。
+  3. `src/.vscode/settings.json`：删掉写死的 `--compile-commands-dir`（交给 `.clangd`）；`fallbackFlags` 改为
+     jazzy / `pcl-1.14`；`ROS2.distro` humble → jazzy，python extraPaths 改 `jazzy/lib/python3.12/site-packages`。
+  4. `src/.gitignore`：忽略 `/compile_commands.json`（指向 `build/` 的本地软链，内容是绝对路径，不入库）。
+  5. `src/README.md`「环境与编译」：构建命令补 `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`，并新增
+     「代码跳转（clangd）」小节（生成命令、症状对照、何时需要重跑）。
+- 验证（本地，CLI 等价路径）：
+  1. `clangd --check` 抽查 5 个文件（`minco_planner.cpp`、`local_path_processor.hpp`、`test_local_path_processor.cpp`、
+     `rog_map.cpp`、`mid360_driver_node.cpp`）：均从合并后的库拿到正确命令（头文件走"由同目录 TU 推断"），
+     **不再有 `pp_file_not_found` / `undeclared identifier` 类诊断**；输出的 "N errors" 全是 `ExtractFunction` /
+     `ExpandDeducedType` 这类 tweak 自检，与编译无关。
+  2. **LSP 实测 `textDocument/definition` 三次跨文件跳转全部成功**：`minco_planner.cpp` →
+     `clearance_gate.hpp:11`、`rog_map.cpp` → `rog_map.h:166`、`mid360_driver_node.cpp` →
+     `mid360_driver_node.hpp:44`；分别在"工作区＝仓库根"与"工作区＝src/"两种打开方式下各测一遍。
+  3. 覆盖度核对：项目自有 `.cpp` **106 个全部有条目**；未覆盖的 40 个全是 `3rdparty/small_gicp` 的
+     demo/benchmark（本就不参与构建）。脚本可重复执行（幂等）。
+- 未验证：未在 VS Code GUI 里点验（CLI 的 LSP 路径已覆盖同一份配置）；未跑全量 `colcon build`/实车。
+- 提醒：**新增/删除源文件、切分支、改过 `CMakeLists.txt` 之后要重跑一次脚本**，否则新文件仍会满屏
+  `file not found`；只改注释或函数体不必重跑。
+
 ## 2026-09-22 — 注释清理：删掉项目自有代码/配置里的日志类长注释（纯注释，代码零改动）
 
 - 起因：用户要求"去除多余注释（那些很长的日志类）"。范围与力度由用户在二选一里确定：**项目自有代码 + 配置（排除

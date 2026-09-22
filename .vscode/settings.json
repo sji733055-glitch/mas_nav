@@ -23,14 +23,14 @@
     // 编辑器通用配置
     "editor.formatOnSave": true,
     "editor.tabSize": 4,
-    "ROS2.distro": "humble",
+    "ROS2.distro": "jazzy",
     "python.autoComplete.extraPaths": [
-        "/opt/ros/humble/lib/python3.10/site-packages",
-        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+        "/opt/ros/jazzy/lib/python3.12/site-packages",
+        "/opt/ros/jazzy/local/lib/python3.12/dist-packages"
     ],
     "python.analysis.extraPaths": [
-        "/opt/ros/humble/lib/python3.10/site-packages",
-        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+        "/opt/ros/jazzy/lib/python3.12/site-packages",
+        "/opt/ros/jazzy/local/lib/python3.12/dist-packages"
     ],
     "cmake.ignoreCMakeListsMissing": true,
 
@@ -41,8 +41,8 @@
     // Clangd 配置
     "clangd.path": "clangd",
     "clangd.arguments": [
-        // 指定 compile_commands.json 的路径
-        "--compile-commands-dir=${workspaceFolder}/build",
+        // 编译库不再用 --compile-commands-dir 指定：由仓库里的 src/.clangd 指向 ../build，
+        // 与编辑器无关（旧值 ${workspaceFolder}/build 在把 src/ 当工作区打开时并不存在）。
         // 后台索引
         "--background-index",
         // 禁用自动插入头文件
@@ -61,14 +61,15 @@
         // 限制补全结果数量
         "--limit-results=50"
     ],
-    // Clangd fallback 配置 - 用于没有 compile_commands.json 时的文件（如头文件）
+    // Clangd fallback 配置 - 编译库里没有条目的文件（如 3rdparty 的 demo/benchmark）用这套兜底。
+    // 必须与机器上的实际发行版一致：本机是 ROS 2 Jazzy + PCL 1.14（旧值 humble / pcl-1.12 对不上）。
     "clangd.fallbackFlags": [
         "-std=c++17",
         // ROS2 核心头文件
-        "-I/opt/ros/humble/include",
+        "-I/opt/ros/jazzy/include",
         // 第三方库
         "-I/usr/include/eigen3",
-        "-I/usr/include/pcl-1.12",
+        "-I/usr/include/pcl-1.14",
         "-I/usr/include/opencv4",
         "-I/usr/include/vtk-9.1"
     ],

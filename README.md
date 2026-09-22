@@ -116,11 +116,28 @@ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 
 cd /home/mas/mas_nav_2027_native
 rosdep install -r --from-paths src --ignore-src --rosdistro jazzy -y
-colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release --parallel-workers 4
+colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON --parallel-workers 4
 source install/setup.bash
 ```
 
 额外系统库：`ros-jazzy-rmw-cyclonedds-cpp libdw-dev libomp-dev python3-pip`。
+
+### 代码跳转（clangd）
+
+`CMAKE_EXPORT_COMPILE_COMMANDS=ON`（已在上面的构建命令里）让每个包导出自己的编译命令，再把它们合并成
+一份给编辑器用：
+
+```bash
+bash src/tools/gen_compile_commands.sh   # 重新 configure 各包，合并到 build/compile_commands.json
+```
+
+编译库只能放 `build/`（不入库），所以仓库里用 `src/.clangd` 显式指向它——这几行配置与编辑器无关，
+clangd 打开任意文件都能拿到正确的 `-I`/`-D`（ROS 2 Jazzy、PCL、Eigen、本工作区各包头文件）。
+`src/compile_commands.json` 是一条指向同一文件的软链（不入库），给只认目录祖先搜索的工具兜底。
+
+**新增/删除源文件、切分支、改过 `CMakeLists.txt` 之后要重跑一次**；只改注释或函数体不必重跑。
+症状对照：编译库里没有该文件时，clangd 会拿别的文件的命令去猜，表现为满屏
+`'xxx.hpp' file not found`、`use of undeclared identifier`，同时跨文件跳转失效。
 
 ## 启动
 
