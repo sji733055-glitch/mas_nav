@@ -137,6 +137,12 @@ QueryCounters QueryAdapter::queryCounters() const
   return counters_;
 }
 
+double QueryAdapter::snapshotStampSeconds() const
+{
+  const auto snap = snapshot();
+  return snap ? snap->stamp : std::numeric_limits<double>::quiet_NaN();
+}
+
 void recordQueryStatus(QueryCounters & counters, QueryStatus status)
 {
   if (status == QueryStatus::OK) {

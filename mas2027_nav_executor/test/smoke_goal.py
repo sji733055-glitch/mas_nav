@@ -21,10 +21,21 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("terrain_map")
     parser.add_argument("executor_config_dir")
-    parser.add_argument("static_cloud")
+    parser.add_argument(
+        "--map-yaml",
+        help="matching Nav2 map YAML (defaults to <name>.yaml beside <name>_terrain.msgpack)",
+    )
+    parser.add_argument("--goal", default="2.56226,0.437201", help="map-frame goal x,y")
     parser.add_argument("--preempt", action="store_true",
                         help="Send a newer goal and verify that its path replaces the first")
     args = parser.parse_args()
+    map_yaml = args.map_yaml
+    if map_yaml is None:
+        suffix = "_terrain.msgpack"
+        if not args.terrain_map.endswith(suffix):
+            raise SystemExit("--map-yaml is required when terrain map lacks _terrain.msgpack suffix")
+        map_yaml = args.terrain_map[:-len(suffix)] + ".yaml"
+    goal_x, goal_y = (float(value) for value in args.goal.split(","))
     env = os.environ.copy()
     env["LD_LIBRARY_PATH"] = "/lib/x86_64-linux-gnu:" + env.get("LD_LIBRARY_PATH", "")
     # 把配置复制一份再改掉 ROGMap 的性能 CSV 路径后再启动。
@@ -69,8 +80,7 @@ def main():
                            "lib/mas2027_nav_executor/mas2027_nav_executor_node")
     server = subprocess.Popen([
         map_exe, "--ros-args", "-p", f"terrain_map_path:={args.terrain_map}",
-        "-p", "origin_x:=-4.6", "-p", "origin_y:=-7.94",
-        "-p", f"global_cloud_path:={args.static_cloud}",
+        "-p", f"map_yaml_path:={map_yaml}",
     ], env=env)
     nav = subprocess.Popen([
         nav_exe, "--ros-args",
@@ -100,12 +110,12 @@ def main():
     # 折线覆盖掉，只剩终点球，所以这里必须用更大的队列。
     marker_qos = QoSProfile(depth=50, reliability=ReliabilityPolicy.RELIABLE,
                             durability=DurabilityPolicy.TRANSIENT_LOCAL)
-    maps = []
+    terrain_maps = []
     paths = []
     global_plans = []
     global_markers = []
-    node.create_subscription(OccupancyGrid, "/dynamic_cost_map", maps.append, qos)
-    node.create_subscription(Path, "/nav_executor/global_path", paths.append, qos)
+    node.create_subscription(OccupancyGrid, "/cost_map", terrain_maps.append, qos)
+    node.create_subscription(Path, "/nav_executor/minco_path", paths.append, qos)
     node.create_subscription(Path, "/nav_executor/global_plan", global_plans.append, qos)
     node.create_subscription(Marker, "/nav_executor/debug/global_plan",
                              global_markers.append, marker_qos)
@@ -129,15 +139,14 @@ def main():
             rclpy.spin_once(node, timeout_sec=0.1)
             if server.poll() is not None or nav.poll() is not None:
                 raise RuntimeError(f"node exited: map_server={server.poll()} nav_executor={nav.poll()}")
-            if maps and first_map_at is None:
+            if terrain_maps and first_map_at is None:
                 first_map_at = time.monotonic()
             if first_map_at is not None and time.monotonic() - first_map_at >= 2.0 and not goal_sent:
                 goal = PoseStamped()
                 goal.header.stamp = node.get_clock().now().to_msg()
                 goal.header.frame_id = "map"
-                # Reproduce the free-space goal recorded in the user's RViz log.
-                goal.pose.position.x = 2.56226
-                goal.pose.position.y = 0.437201
+                goal.pose.position.x = goal_x
+                goal.pose.position.y = goal_y
                 goal.pose.orientation.w = 1.0
                 goal_pub.publish(goal)
                 goal_sent = True
@@ -154,21 +163,24 @@ def main():
                     goal = PoseStamped()
                     goal.header.stamp = node.get_clock().now().to_msg()
                     goal.header.frame_id = "map"
-                    goal.pose.position.x = 3.0
-                    goal.pose.position.y = 0.437201
+                    goal.pose.position.x = goal_x + 0.43774
+                    goal.pose.position.y = goal_y
                     goal.pose.orientation.w = 1.0
                     goal_pub.publish(goal)
                     second_sent = True
                 elif (paths[-1].poses[-1].pose.position.x > first_end_x + 0.25
-                      and any(len(p.poses) >= 2 and abs(p.poses[-1].pose.position.x - 3.0) < 1e-6
+                      and any(len(p.poses) >= 2
+                              and abs(p.poses[-1].pose.position.x
+                                      - (goal_x + 0.43774)) < 1e-6
                               for p in global_plans)
                       and any(m.ns == "global_plan" and m.type == Marker.LINE_STRIP
-                              and m.points and abs(m.points[-1].x - 3.0) < 1e-6
+                              and m.points
+                              and abs(m.points[-1].x - (goal_x + 0.43774)) < 1e-6
                               for m in global_markers)):
                     # Path 与 Marker 同一 tick 背靠背发出，回调逐个处理；两条都要等到，
                     # 否则断言会在 Marker 回调之前就跑完（表现为 global_markers 为空）。
                     break
-        assert goal_sent, "dynamic map was not ready"
+        assert goal_sent, "static terrain map was not ready"
         assert paths and len(paths[-1].poses) >= 2, "goal produced no path"
         if args.preempt:
             assert second_sent and paths[-1].poses[-1].pose.position.x > first_end_x + 0.25, \
@@ -180,7 +192,7 @@ def main():
         plan = next((p for p in reversed(global_plans) if len(p.poses) >= 2), None)
         assert plan is not None, \
             f"no non-empty global plan; got sizes {[len(p.poses) for p in global_plans]}"
-        expected_end_x = 3.0 if args.preempt else 2.56226
+        expected_end_x = goal_x + 0.43774 if args.preempt else goal_x
         assert len(plan.poses) >= 2, f"global plan has {len(plan.poses)} poses"
         assert plan.header.frame_id == "odom", f"global plan frame is {plan.header.frame_id!r}"
         for pose in plan.poses:
@@ -188,7 +200,7 @@ def main():
                 assert math.isfinite(value), "global plan contains a non-finite coordinate"
         # 折线末端被 makePlanOnQuery 贴到精确目标上，所以应当与目标点重合。
         end = plan.poses[-1].pose.position
-        assert abs(end.x - expected_end_x) < 1e-6 and abs(end.y - 0.437201) < 1e-6, \
+        assert abs(end.x - expected_end_x) < 1e-6 and abs(end.y - goal_y) < 1e-6, \
             f"global plan does not end at the goal: ({end.x}, {end.y})"
         # 判别性检查：这条线必须是搜索输出的格点路径，而不是被重新接回 MINCO 轨迹。
         # SMAC 直接在地图的 0.05 m 格上扩展，相邻点间距只有 0.05（直走）或

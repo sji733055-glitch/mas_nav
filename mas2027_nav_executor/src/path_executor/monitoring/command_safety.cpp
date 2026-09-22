@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 #include "mas2027_nav_executor/common/environment/clearance_gate.hpp"
 #include "tf2/utils.h"
@@ -15,11 +16,10 @@ ExecutorStatus checkCommandSafety(
   const std::shared_ptr<tf2_ros::Buffer> & tf,
   const std::string & odom_frame,
   double rog_map_clearance,
-  double dynamic_map_timeout_s,
+  double rog_map_timeout_s,
   double dt,
   const minco_controller::State & current,
   const minco_controller::Control & control,
-  const std::vector<minco_controller::ReferencePoint> & reference,
   const rclcpp::Time & stamp,
   CommandSafetyDetail * detail)
 {
@@ -33,19 +33,14 @@ ExecutorStatus checkCommandSafety(
     return status;
   };
   const auto terrain = grid ? grid->snapshot() : nullptr;
-  const auto dynamic = grid ? grid->dynamicSnapshot() : nullptr;
-  if (!terrain || !dynamic || !tf || !rog_query) {
+  if (!terrain || !tf || !rog_query) {
     return reject(ExecutorStatus::TERRAIN_BLOCKED, "grid_or_frame_missing");
   }
-  const double dynamic_age_s = std::abs((stamp - rclcpp::Time(dynamic->grid.header.stamp)).seconds());
-  // 阈值必须给足余量，不能等于发布周期：旁路模式下 /dynamic_cost_map 由 map_server 的
-  // 500 ms 定时器发一帧全 0 空图，判据若也是 0.5 s，则每个周期的最后一拍必然越界
-  // （实测 age 恒在 0.509~0.521），表现为车每秒被清零两次的"一卡一卡"。
-  // 默认 1.5 s = 3 倍发布周期，改动只放宽"地图新鲜度"，不触碰任何净空阈值。
-  if (std::isfinite(dynamic_map_timeout_s) && dynamic_map_timeout_s > 0.0 &&
-    dynamic_age_s > dynamic_map_timeout_s) {
-    return reject(ExecutorStatus::TERRAIN_BLOCKED, "dynamic_stale", dynamic_age_s,
-      dynamic_map_timeout_s);
+  const double rog_stamp_s = rog_query->snapshotStampSeconds();
+  const double rog_age_s = std::isfinite(rog_stamp_s) ?
+    std::abs(stamp.seconds() - rog_stamp_s) : std::numeric_limits<double>::infinity();
+  if (!std::isfinite(rog_age_s) || rog_age_s > rog_map_timeout_s) {
+    return reject(ExecutorStatus::DYNAMIC_BLOCKED, "rog_map_stale", rog_age_s, rog_map_timeout_s);
   }
   try {
     const auto transform = tf->lookupTransform(
@@ -79,9 +74,6 @@ ExecutorStatus checkCommandSafety(
     const int command_steps = std::max(1, static_cast<int>(std::ceil(horizon / dt)));
     for (int i = 0; i <= command_steps; ++i) {
       const double t = horizon * i / command_steps;
-      if (!dynamic->freeAt(position + t * velocity)) {
-        return reject(ExecutorStatus::DYNAMIC_BLOCKED, "dynamic_horizon", t, horizon);
-      }
       const Eigen::Vector3d odom_point(current.x + t * control.vx,
         current.y + t * control.vy, 0.0);
       const auto clearance = rog_query->query(odom_point);
@@ -90,15 +82,6 @@ ExecutorStatus checkCommandSafety(
           clearance.ok ? "clearance" : "clearance_out_of_map",
           clearance.distance,
           clearance_gate.requiredAt(t * travel_speed));
-      }
-    }
-    for (const auto & point : reference) {
-      const Eigen::Vector2d & p = point.pos;
-      const Eigen::Vector2d map_point(
-        mc * p.x() - ms * p.y() + transform.transform.translation.x,
-        ms * p.x() + mc * p.y() + transform.transform.translation.y);
-      if (!dynamic->freeAt(map_point)) {
-        return reject(ExecutorStatus::DYNAMIC_BLOCKED, "dynamic_reference");
       }
     }
   } catch (const tf2::TransformException &) {

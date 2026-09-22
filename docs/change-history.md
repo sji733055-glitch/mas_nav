@@ -2,6 +2,357 @@
 
 本文件记录由开发任务产生的代码、配置、脚本、资源和文档变更。新记录追加在最上方，不改写旧记录。
 
+## 2026-09-22 — 配置：`projection.surface_height_delta_max` 0.1 → 0.15（桌子被判障碍）
+
+- 起因：用户报桌子被 `/rog_map/layer_value` 判成障碍（100），而桌面下沿 0.7 m、车高 0.5 m 本可以钻过去。
+  用户在三选一里明确选了"只改这一行"。适用于**柱内只有桌面那一层**的薄板桌（span 0.10~0.15）。
+- 改动（**一行配置 + 注释**，无代码改动）：`src/mas2027_nav_executor/config/planner_params.yaml` 的
+  `planner.rog_map.projection.surface_height_delta_max: 0.1 → 0.15`，并在该行上方补了 9 行注释，写明
+  ① 为什么（`height_delta = (最高占据层号 − 最低占据层号) × resolution`，阈值只在 resolution 的整数倍上
+  有意义：0.10 = 层号差 2、0.15 = 3、0.20 = 4；原值容不下被打厚到 3 层的桌面 ⇒ 落进 AMBIGUOUS 死区）；
+  ② **代价与回退**（同一分支是 2026-09-16"真墙在 ROGMap 里消失、规划器穿墙后急停"的机制，放宽一格 =
+  把掠射角薄墙切片的可通行上限从 2 层抬到 3 层；发现真墙变 66 就改回 0.1 并重启）；
+  ③ 上限硬约束（必须 < `tunnel_height_delta_min` 0.25 与 `wall_height_delta_min` 0.80，否则
+  `config.hpp:313-346` 抛异常、节点起不来）；④ 判读工具（RViz `/rog_map/layer_height_delta` 的
+  intensity = 柱内 span；`.scratch/table_probe.py --what-if surface_height_delta_max=0.15`）。
+  同步更新 `src/mas2027_perception/rog_map/README.md` 参数表里该行的现值。
+- 为什么不是改 `tunnel_*`：中空档要求柱内**上下都有占据**且 `ratio ≤ 0.45`；桌面柱里只有桌面那一层时
+  span（0.05~0.15）够不到 `tunnel_height_delta_min(0.25)`，改 tunnel 无效。用户桌子的实际 span 未实测。
+- 验证（本地，离线）：
+  1. 从**安装路径**读回 yaml（`install/.../config/planner_params.yaml`，确认仍是源文件的软链，
+     `realpath` 指向 `src/.../planner_params.yaml`）：`surface_height_delta_max = 0.15`（float），
+     全文该键只出现 **1 次**（无重复键）。
+  2. 复刻 `config.hpp:313-346` 的四条派生校验：`0.15 < 0.25`、`0.15 < 0.80`、`0.4 ≥ 0.25`、
+     `0.45 < 0.90` —— **全部通过**，节点不会因此起不来。
+  3. 有效分档随之为：span ≤ 0.15 → PASSABLE；0.15~0.25 死区 → OCCUPIED；0.25~0.40 → PASSABLE(中空)；
+     ≥ 0.80 → 墙。
+- 未验证：**未上实车、未重启节点**（参数只在 `PathPlanner` 构造函数里读一次，必须重启才生效）；
+  **桌子的真实 span 未实测**，所以 0.15 是否够覆盖仍是推断——若桌面被打厚到 4 层（span 0.20）则仍会
+  判 OCCUPIED，需要再抬到 0.20（上限 0.24）；**放宽后的穿墙风险未在真实场景验证**，上车后必须斜看
+  已知实墙仍是 100（`/rog_map/layer_type`）并对比 CSV 的 `reason_thin_surface` 是否暴涨；
+  桌子若在 PGM/terrain msgpack 里也标注为障碍，本次改动不解决那道门。
+
+## 2026-09-22 — 更正参数查询的节点名：rog_map 参数在 `/nav_executor_planner`，不是主节点
+
+- 起因：用户问 `ros2 param get` 怎么用。核对发现上一轮 README 的「启动与检查」把节点写成了
+  `mas2027_nav_executor_node`，**是错的**：一个进程里有**两个节点** —— 主节点是
+  `Node("nav_executor")`（`nav_executor_node.cpp:56`），而 `planner.*` 与 `planner.rog_map.*` 全部声明在
+  `PathPlanner` 自己创建的 `LifecycleNode("nav_executor_planner")` 上（`path_planner.cpp:20-28`），
+  README 里查的那条参数属于后者。本文件 2026-09-16 的旧条目里其实记着正确用法
+  （`/nav_executor_planner planner.minco_optimizer.safe_dist`），是本次重写 README 时抄错了。
+- 改动（纯文档）：`src/mas2027_perception/rog_map/README.md` 的「启动与检查」补上两节点对照表，
+  命令改为 `ros2 param list|get|dump /nav_executor_planner`，并写明：
+  ① 参数在 `PathPlanner` **构造函数**里声明，进程一起来即可查，不必等生命周期 configure/activate；
+  ② ROGMap 无 on-set-parameters 回调 ⇒ `ros2 param set` 返回成功但行为不变，改 yaml 必须重启；
+  ③ "确实生效"要两条都过：启动日志 `[ROGMap Config] loaded ...`（`config.hpp:501`）+ 行为侧证据
+  （分类阈值看 `/rog_map/layer_type` 翻转与 CSV 的 `reason_*` 列，`scan_z_*` 看 `projection_z_layers`，
+  `update_period_ms` 看同名列，`dirty_column_enable` 看 `dirty_column_enabled`/`full_reason_*`，
+  `visualization.rate` 看 `/rog_map/layer_type` 的 hz，`field.max_distance` 看 `/rog_map/field` 的
+  intensity 上限，`decay.clear_time` 看 `/rog_map/decay_cells` 的 intensity 上限）。
+- 验证：节点名取自源码构造处（`nav_executor_node.cpp:56`、`path_planner.cpp:20`）与旧条目里的实查记录
+  （`/nav_executor_planner` / `/nav_executor`）互相印证；未跑节点实查（本轮无运行环境），未跑构建
+  （纯文档）。README 结构复核：两节点表在「启动与检查」内，命令块与后文 FAQ 未被破坏。
+- 未验证：未在实车用 `ros2 param list` 复核参数全集是否需要额外命名空间（launch 未加 namespace 与 remap）。
+
+## 2026-09-22 — 探针加 `--what-if`：用实测柱内占据层数回答"改 tunnel 那一行有没有用"
+
+- 起因：用户问 `projection.tunnel_height_delta_min/max` 与 `tunnel_occupancy_ratio_max` 是不是该改的地方。
+  结论是"要看柱子形状"，而 `classifyCell()` 判断中空档需要的 `竖直占据率 = (occupied_count-1)*res/span`
+  在已发布话题里读不到（`layer_height_delta` 只有 span 与最高点，`layer_confidence` 是观测数），
+  于是把这一项做成可实测的。
+- 改动（`.scratch/table_probe.py`，一次性探针，不进仓库）：
+  1. 新增订阅 `/rog_map/occupied`。它与 `/rog_map/occupied_raw` 实际是同一份数据
+     （`rog_map_ros2.hpp:589-598` 都用 `collectOccupiedForViz` 的 occ_map，未膨胀），按投影 z 窗口
+     过滤后逐格统计占据层数 → 得到真实 `occupied_count`。
+  2. 新增 `classify_span()`：复刻 `classifyCell()` 的四档分支，但 ratio 用实测层数，因此能预测
+     "把这几个阈值改成 X 之后这一格会变成什么"；并打印模型与 `/rog_map/layer_type` 的一致率
+     （低于 90% 时明确警告：可能有未被重新命中的陈旧占据体素或补洞/迟滞改过结果，此时 what-if 仅供参考）。
+  3. 新增 `--what-if K=V[,K=V]`（可重复），只接受 `classifyCell` 用到的 6 个阈值；会先跑
+     `config.hpp:313-346` 的派生校验，非法组合直接标"节点会抛异常起不来"；对每格给出
+     "翻成 PASSABLE / 仍 OCCUPIED + 卡在哪一条"，全 0 翻时明确写"别白改"。
+- 验证：`table_probe_selftest.py` 扩到 **8/8 通过**（新增 E1/E2 中空桌 span=0.65 → 只改
+  `tunnel_height_delta_max` 翻 441 格、只改 `surface` 翻 0 格且原因是 `span > tunnel_max`；
+  F 薄板桌 span=0.15 → 改 `tunnel_max` 翻 0 格、原因是 `span < tunnel_min`；G `surface ≥ tunnel_min`
+  被校验拦住）。合成场景里模型与图层分类一致率 100%。
+- 未验证：仍未上实车、未对真实 ROS 图跑过；`/rog_map/occupied` 在 `decay_active_list_en=true`（当前取
+  默认值）下只含活跃表体素，长时间未被重新命中的陈旧占据不会出现 —— 这正是 what-if 一致率告警要覆盖的情形。
+
+## 2026-09-22 — rog_map README 参数章节重写为完整参数表（现值 + 默认 + 启动校验）
+
+- 性质：**纯文档改动**，未动任何代码与配置。用户要“rogmap 各参数”，把散在 `config.hpp`、
+  `planner_params.yaml` 与各实现里的口径收敛成一份可查的表，落进模块自己的 README。
+- 改动：`src/mas2027_perception/rog_map/README.md` 的「⚙️ 关键配置」整段重写，按功能分组：
+  地图几何与滑动窗口 / ROS 回调与可视化 / 概率更新与 raycast / 衰减 / 二维投影（决定
+  `layer_value`）/ 二维距离场 / 三维 ESDF / 性能与诊断 CSV / 已接线但无效的参数。每项给出
+  **现值（本仓库 yaml）+ 内置默认（`config.hpp`）+ 说明与坑**，yaml 里没有的项明确标注“未设置（取默认）”。
+- **顺带修正的旧文档错误**（都是会误导现场调参的）：
+  1. 参数位置写成不存在的 `src/navigation/navi2_bringup/params/sentry1.yaml` → 实为
+     `src/mas2027_nav_executor/config/planner_params.yaml` 的 `planner.rog_map` 子树
+     （`path_planner.cpp:25`）；补上「install 里是软链、改完不用重编，但没有 on-set-parameters
+     回调所以必须重启节点」与「独立跑 `rog_map_node` 时前缀是 `rog_map.`」。
+  2. `map_size` 写成 `[10, 10, 1.5]` → 现值 `[10, 10, 2.5]`。
+  3. 衰减段称“当前比赛配置 `active_list_enable: false`” → **yaml 根本没设这一项**，实际取默认
+     `true`（`config.hpp:373`）。
+  4. 投影范围写成 `-0.2 / 1.5` → 现值 `-1.2 / 2.75`，且 `scan_z_relative_to_robot: true`
+     （两项是相对 `/Odometry` z 的偏移）。
+  5. 新增判定链表（`classifyCell()` 的 span 四档）与派生校验清单（`config.hpp:313-346`），并显式标注
+     “薄面判据同时是 09-16 真墙在 ROGMap 里消失的同源机制”。
+  6. `/rog_map/layer_value` 补上“实际是二值 mask（100=障碍）”；`/rog_map/layer_height_delta`
+     补上“z=柱内占据最高点、intensity=span”的语义（判读分类分支最直接的一条）。
+  7. 常见问题表新增三行：桌子/门楣这类“上方有面、下方能过”的结构、真墙“消失”、建图频率跟不上点云；
+     另新增“节点启动即死、日志为空”的参数校验清单与“无效参数”一节（`debug.layer_pub_enable` /
+     `debug.field_pub_enable` / `debug.pub_rate` 全仓库 0 引用）。
+- 验证：逐项对照 `config.hpp`（load 键名/默认值/校验）、`planner_params.yaml`（用脚本展开 rog_map 全部
+  43 个叶子键取现值）、`projection_layer.cpp`、`prob_map.{h,cpp}`、`rog_map.cpp`、
+  `query_adapter.cpp`、`trajectory_safety_checker.cpp` 核对；README 改后用标题层级 grep + 尾部读取确认
+  结构完整、旧引用（`sentry1`/`navi2_bringup`）已清零。
+- 未验证：未跑构建与 `ctest`（纯文档，无编译产物受影响）；README 里的行号引用（如
+  `config.hpp:313-346`、`prob_map.cpp:938`）随上游改动可能漂移，属预期。
+
+## 2026-09-22 — 桌子被判成障碍：定位判定链 + 新增现场量 span 的探针（**未改任何参数/判据**）
+
+- 起因：用户报"桌子被识别为障碍物，但桌子下面其实可以通行"。现场尺寸由用户提供：**车体最高点约 0.5 m，
+  桌面下沿约 0.7 m**（净空余量 0.2 m，物理上确实钻得过去）。
+- **读码结论（本次未改行为，只把机制写成文档）**：`/rog_map/layer_value` 是二值 mask
+  （`rog_map_ros2.hpp:874` `fillLayerMaskGrid`：mask==0 → 100），桌子显示 100 只有一个来源 ——
+  `CellType::OCCUPIED`（`projection_layer.cpp:314`）。`classifyCell()`（`projection_layer.cpp:17-79`）
+  **只用柱内占据 z 跨度 span 分类**，当前 `planner_params.yaml` 的实际分档是：
+  `span ≤ surface_height_delta_max(0.10)` → PASSABLE；`span ≥ wall_height_delta_min(0.80)` 且竖直
+  占据率 ≥0.90 → OCCUPIED(墙)；`0.25 ≤ span ≤ tunnel_height_delta_max(0.40)` 且比率 ≤0.45 →
+  PASSABLE(中空)；**其余 → OCCUPIED(AMBIGUOUS)**。⇒ 桌面若因雷达噪声/LIO z 抖动在栅格里被打厚到
+  3~4 格（0.15~0.20 m），就落进死区变成障碍格；而"抬 `surface_height_delta_max`"这个旋钮
+  **正是 09-16 那次"真墙在 ROGMap 里消失"的机制**（见本文件 2026-09-16 条目，掠射角薄墙切片被判
+  PASSABLE），因此不能盲调。`passable_as_free` 只改 value 不改 mask，改它解不掉本问题；
+  `fill_occ_min`/`denoise`/`obstacle_hold_time` 与本现象无关。
+- **新增诊断工具（脚本，不改运行时行为）**：`.scratch/table_probe.py`（一次性探针，按仓库惯例留在
+  `.scratch`，不进仓库）。它同时订阅 `/rog_map/layer_type`（33/66/100/-1）、`/rog_map/layer_value`
+  与 `/rog_map/layer_height_delta`（z=该柱占据最高点，intensity=span），以车身（`/Odometry`）为心或
+  按 `--roi` 取一片，直接打出：类型构成、OCCUPIED 格的 span 分档直方图、"车顶以上（默认
+  `--car-height 0.5`）非墙结构"的 span 中位/p95 与底面离地高度、最近若干格明细，并在最后给一句判读：
+  span 全落在 AMBIGUOUS 死区 ⇒ 走 A（`surface_height_delta_max` 0.10 → p95 向上取整到体素，且必须
+  < `tunnel_height_delta_min`，`config.hpp:337` 会校验）；p95 ≥ `tunnel_min` ⇒ 抬阈值救不了，需要
+  C（桌下净空判据，尚未实施）；车顶以上有结构但一格 OCCUPIED 都没有 ⇒ 不是投影层判的障碍。
+  参数从 `src/.../config/planner_params.yaml` 读取（`install` 里那份是该文件的软链，改 src 即生效）。
+- **同时明确了一条容易漏的旁路**：静态地形图是**独立的第二道门**。terrain msgpack 是纯二维 cost、
+  没有 z/高度语义（`terrain_map_query.hpp:59-63`，`navigation_map.yaml:8` 当前指向
+  `lab_map_20260921_211523_terrain.msgpack`），`validateTrajectory` 与 command safety 都会否决穿过
+  它的轨迹。⇒ 即使 ROGMap 把桌子放开，只要桌子在 PGM/terrain 里也是障碍，仍会复现 09-16 那种
+  `Terrain rejection` + `Braking`。二者要一起看。
+- 验证：`python3 -m py_compile .scratch/table_probe.py` 通过；`.scratch/table_probe_selftest.py`
+  造三张合成投影图（A 桌面 OCCUPIED/span=0.15、B 桌面 PASSABLE、C 桌面 OCCUPIED/span=0.30，另加一面
+  ROI 外的 span=1.5 远墙）离线跑 `report()`：**4/4 通过**（A 判读 `0.1 → 0.15`、B 判读"投影层没把
+  它判障碍"、C 判读"走 C"、车高改 0.9 m 后不再把 0.7 m 桌面当候选），远墙未被算进桌面候选。
+  期间修掉两个自身缺陷：Jazzy 的 `read_points` 返回结构化数组（不是元组）；`0.15/0.05` 的浮点误差
+  会让向上取整多一格。
+- **未验证 / 未做**：① **未改任何参数与判据**，`surface_height_delta_max` 仍是 0.10；② 探针**未上
+  实车、未对真实 ROS 图跑过**（只有离线假消息自测），它依赖可视化已发布（`visualization.enable`
+  且层有订阅者）；③ 桌子到底落在哪一档**仍未知**，等现场读数；④ 未确认桌子在 PGM/terrain msgpack
+  里是否也是障碍；⑤ 方案 C（薄面只有在"下方实测自由净空 ≥ 车高"或"下方根本没有空腔"时才 PASSABLE）
+  **未实施**。
+
+## 2026-09-22 — 地图选择收敛为 YAML，原点直接读取 Nav2 地图元数据
+
+- 新增 `mas2027_nav_bringup/config/navigation_map.yaml` 作为导航地图的唯一选择入口，只需配置
+  `localization_pcd`、`occupancy_yaml`、`terrain_msgpack` 三个相对包 share 或绝对路径；
+  `nav_executor_launch.py` 不再硬编码地图名、PCD、terrain 或 `origin_x/origin_y`，也删除了容易形成
+  第二配置源的 `map_pcd` launch 参数。定位器通用 `params.yaml` 同步删除默认 PCD 路径，由 bringup
+  统一注入。
+- `map_server` 新增必填 `map_yaml_path`，启动时从 Nav2 地图 YAML 读取 `origin: [x, y, yaw]` 和
+  `resolution`，并读取 YAML 引用的 PGM 检查宽高。它会将 PGM/YAML 的宽、高、分辨率与 terrain
+  msgpack 交叉校验，错误组合立即拒绝启动；删除可手填且容易漂移的 `origin_x/origin_y` 参数。
+  当前栅格查询是轴对齐实现，因此非零 YAML origin yaw 也会明确拒绝，要求控制台先成组旋转所有产物。
+- 接入当前建图产物：确认导航仓库中的 `lab_map_20260921_211523.pcd` 与 mapping_web_ui 原文件
+  字节一致，复制同名 PGM、YAML、terrain msgpack 到 `mas2027_nav_bringup/map/`，并将
+  `navigation_map.yaml` 切换到该组。安装后 `/cost_map` 实测为 `772x308`、`0.05 m/px`，原点自动读取
+  为 `(-5.2370148, -7.8741794)`。
+- 烟测脚本 `smoke_goal.py`、`smoke_goal_motion.py`、`bench_closed_loop.py` 改为传入/按文件名推导
+  `map_yaml_path`，不再硬编码 lab3 原点；基础烟测新增 `--goal x,y`，便于不同地图选取有效自由空间目标。
+  README 已更新为“复制四份产物、只改一个 YAML、重建 bringup”的换图流程。
+- 验证：
+  1. `map_server`、`mas2027_nav_bringup`、`mas2027_nav_executor` Release/symlink-install 构建通过；
+     `yaml-cpp` 使用非弃用的命名 target，最终构建无该警告。
+  2. 安装产物中的新地图启动通过，`ros2 topic echo /cost_map --field info --once` 返回
+     `width=772`、`height=308`、`resolution=0.05`、`origin=(-5.2370148,-7.8741794)`。
+  3. 故意用 `rmuc.yaml` 搭配 `lab3_terrain.msgpack` 时按预期 fail-fast，错误准确报告
+     `439x635` 与 `770x347` 尺寸不一致。
+  4. `ctest --test-dir build/mas2027_nav_executor --output-on-failure` **8/8 通过**；三份受影响 Python
+     脚本 `py_compile` 通过；`ros2 launch ... --show-args` 通过且不再暴露 `map_pcd`。
+  5. 原 lab3 目标烟测仍通过（52 个 MINCO 轨迹点、48 个全局路径点）；新地图用其有效自由空间目标
+     `(1.0, 0.0)` 通过（38 个 MINCO 轨迹点、15 个全局路径点）。旧固定测试目标
+     `(2.56226, 0.437201)` 在新 terrain 上会穿过满代价格，安全校验正确拒绝，故不作为新地图烟测目标。
+  6. 按用户要求删除本次 `.scratch/smoke_run` 临时配置与 CSV；未连接雷达/底盘，未做实车定位、
+     动态障碍和运动验收；本次不涉及浏览器。
+
+## 2026-09-22 — nav_executor launch 默认同时启动 foxglove_bridge
+
+- 需求：启动 `nav_executor` 时一并起 Foxglove bridge，免去另开终端。
+- 改动：
+  - `mas2027_nav_bringup/launch/nav_executor_launch.py` 用
+    `FrontendLaunchDescriptionSource` include 官方
+    `foxglove_bridge/foxglove_bridge_launch.xml`；新增
+    `use_foxglove`（默认 `True`）、`foxglove_address`（默认 `127.0.0.1`，配合 SSH
+    隧道）、`foxglove_port`（默认 `8765`）。
+  - `package.xml` 增加 `exec_depend`：`foxglove_bridge`。
+  - `docs/foxglove_remote_debug.md` 改为以随栈启动为主路径，并提示勿与独立
+    bridge 双开（端口冲突）。
+- 验证：`python3 -m py_compile` 通过 launch；未上实车连 Foxglove。
+
+## 2026-09-22 — 删除二维动态代价层，在线障碍统一交给 ROGMap
+
+- 背景：生产 launch 已长期将 `map_server` 的动态障碍检测旁路，但它仍每 500 ms
+  发布全零 `/dynamic_cost_map`；`nav_executor` 同时把这个空图当作目标接纳、全局搜索、
+  MINCO 轨迹验收和 MPC 指令前视的必要输入。所谓“新鲜度”本来是二维动态图为权威
+  障碍源时的 fail-closed 保护（防止发布器卡死后无限使用过期的“空闲”格）；在当前
+  ROGMap 独占实时障碍的架构中，它只是冗余心跳门，并曾因超时边界导致周期性清零指令。
+- 导航执行器彻底去耦：
+  - 删除 `node.use_dynamic_cost_map`、`node.dynamic_map_timeout_s`、
+    `node.topics.dynamic_cost_map_sub`、订阅器、`TerrainGrid::DynamicSnapshot`、动态栅格合并与
+    `/nav_executor/debug/dynamic_obstacles`。
+  - `PathPlanner`、`GlobalPathSearcher`、`MincoPlanner`、`checkCommandSafety()` 不再等待/读取
+    二维动态图或其时间戳。静态 `/cost_map` + `/direction_map` 仍是目标与全局拓扑的
+    硬约束；ROGMap 在在线快照、局部绕行/停车前缀、轨迹发布前验收、20 Hz 监视和
+    0.35 s MPC 指令净空前视中仍 fail closed。
+  - 新鲜度的安全目的保留，但改为读取 ROGMap 自己的快照时间戳：
+    `MapQueryInterface::snapshotStampSeconds()` / `QueryAdapter` 暴露最后一次完成地图更新的
+    ROS 时间，`node.rog_map_timeout_s: 0.5` 在目标接纳和 MPC 指令门同时检查。点云断流或
+    ROGMap 工作线程停滞时会 fail closed，无需 ROGMap 另发一个兼容心跳话题。
+- 静态地图服务精简：`map_server_node.cpp/.hpp`、`CMakeLists.txt`、`package.xml` 删除点云订阅、
+  先验 PCD/KdTree 差分、地面分割、时间保持、动态膨胀、PCL/Eigen/TF 依赖和
+  `/dynamic_cost_map` 发布；节点现在只加载 terrain msgpack 并发布 `/cost_map`、`/direction_map`。
+  同时删除已无消费者的动态图烟测脚本和两份 PCD fixture。
+- 消除话题语义歧义：原 `/nav_executor/global_path` 实际发的是 MINCO 局部优化轨迹，现将
+  参数和话题分别改为 `node.topics.minco_path_pub` / `/nav_executor/minco_path`；真正的全局搜索
+  折线仍为 `/nav_executor/global_plan`。RViz、烟测和 README 已同步。
+- 烟测/文档：`smoke_goal.py`、`smoke_goal_motion.py`、`bench_closed_loop.py` 改为以静态
+  `/cost_map` 判定地形就绪，不再等待动态心跳；README 明确 `map_server` 仍用于静态地形，
+  实时障碍则只由 ROGMap 处理。`docs/change_device.md` 标记旧动态层段落为历史记录，
+  `docs/foxglove_remote_debug.md` 更新当前栅格话题。
+- 验证：
+  1. `map_server`、`rog_map`、`mas2027_nav_executor`、`mas2027_nav_bringup` 四个受影响包均
+     `colcon build --symlink-install` 构建通过；`rog_map` 仍有既存 PCL/FLANN CMake 与 fmt enum
+     deprecated 警告，无编译错误。
+  2. `ctest --test-dir build/mas2027_nav_executor --output-on-failure` 全部 **8/8 通过**，覆盖静态
+     terrain 查询、ROGMap 快照超时闭锁/指令净空门、局部绕行/停车前缀和轨迹安全。
+  3. `ROS_DOMAIN_ID=226 .../smoke_goal.py <terrain> <config>` 端到端通过：
+     `52 trajectory poses, 48 global plan poses, marker width 0.150 m`，全程无二维动态图。
+  4. 运行态 ROS graph 确认 `map_server` 只发 `/cost_map`、`/direction_map`；`nav_executor`
+     订阅列表中无 `/dynamic_cost_map`，参数列表中也无二维动态层开关/超时，并正常发布
+     `/nav_executor/minco_path`；`node.rog_map_timeout_s` 运行值确认为 `0.5`。
+  5. `py_compile` 通过本次改动的 launch 与 3 个烟测/基准脚本。
+  6. `mas2027_nav_bringup` 包级 linter 仍有两类**既存、与本次无关**的失败：
+     `nav_executor_launch.py` 无版权头，`measure_lidar_mount.py` 有 49 个 pep257 中文标点/格式问题；
+     `lint_cmake` 和 `xmllint` 通过。未上实车，未做雷达动态障碍运动验收。
+
+## 2026-09-21 — 删除与 `/home/mas/mapping_web_ui` 功能重合的建图工具
+
+- 背景：三维建图控制台 `/home/mas/mapping_web_ui` 已独立承接全部建图功能（累计
+  `/cloud_registered` → PCD + PGM/YAML、PGM 笔刷/矩形/画线修图、map 原点与 +X 拖拽定义并成组
+  变换 PCD/PGM/terrain、PGM→terrain msgpack 含坡地/台阶/飞坡方向标注、建图链路节点启停）。按用户
+  要求删除本仓库中与之功能重合的部分，**保留里程计、驱动、机器人模型**。
+- 删除（5 项）：
+  1. `mas2027_utils/pcd2pgm/`（整包）：PCD 按 Z 带通切片→Nav2 占用图。控制台保存时会用同一投影
+     语义（有点=占用、其余=空闲）直接从累计点云出 PGM/YAML，无需先落 PCD 再切。
+  2. `mas2027_utils/pcd_trans/`（`pcd_tool.py`、`field_align.py`、`visual_point_cloud_lab.html`、
+     `README.md`）：离线 PCD 刚体变换、格式转换、网页点云查看器与场外扫描打点对齐。控制台"map 坐标系"
+     工作区对 PCD+PGM+terrain 做成组刚体变换并记录 `source_to_map`，自带 WebGL 三维点云查看器。
+     注意 `field_align.py` 是上一版末新增、**尚未提交**的文件，删除后无法从 git 恢复
+     （已在删除前向用户明确提示并获确认）。
+  3. `mas2027_utils/map_edit`：空 gitlink（审计 3.18，无 `.gitmodules`，clone 后无内容），控制台的
+     二维 PGM 编辑器覆盖其"修墙"用途。
+  4. `mas2027_nav_bringup/scripts/save_pcd_and_make_map.sh`：存 PCD + 切片一键脚本。它依赖的
+     `rm_navigation_small_point_lio_launch.py` 已不存在（审计 §1.7），本就不可用。
+  5. `mas2027_perception/map_server/scripts/pgm_to_terrain_msgpack.py`：PGM/YAML→terrain 转换。控制台
+     的"生成 terrain MSG"同格式，且能标注平地/障碍/斜坡/各级台阶/飞坡与方向（原脚本只有 FLAT/OBSTACLE、
+     direction 恒 0）。**`map_server` 包本身保留**，它是在线地形服务节点。
+- 保留：`small_point_lio`（里程计）、`mid360_driver`（驱动）、`mas2027_robot_description`（模型）；
+  运行链路 `odom_localizer`、`rog_map`、`map_server` 节点、`mas2027_nav_executor`、`tf_maintainer`、
+  `ros2_comm`；与建图无关的 `data_analyzer`、`rotmat_cal`、`measure_lidar_mount.{py,sh}`、
+  `record_lio_bag.sh`；以及控制台不具备对应能力的 `pcd2ele`（max-Z 高程图）与 `pcd2esdf`（离线 ESDF）。
+- 同步清理引用：
+  - `mas2027_nav_bringup/CMakeLists.txt`：`install(PROGRAMS ...)` 去掉换图脚本。
+  - `mas2027_perception/map_server/CMakeLists.txt`：去掉 terrain 转换脚本的
+    `install(PROGRAMS ...)`（`scripts/` 目录已空）。
+  - `README.md` **地图更新**：改为控制台建图/换图流程，写明产物在控制台自己的 `data/` 下、需拷进
+    `mas2027_nav_bringup/{pcd,map}/`，以及换图后要同步的三处路径（launch 的 `map_pcd`、
+    `terrain_map_path`、`odom_localizer` 的 `map.prior_pcd_file`）。
+  - `odom_localizer/config/params.yaml`：先验 PCD 坐标系注释改写为"控制台直接从 `/cloud_registered`
+    累计，导出即该坐标系"，不再提 `T_odom_from_internal`；并保留"别把 LIO 内部世界的 `scan.pcd` 指过来"。
+  - `pcd2ele/README.md`、`pcd2esdf/README.md`：占用图来源改指控制台，并去掉指向已不存在的根 README
+    **离线静态地图** 章节的引用。
+  - 构建产物：删除 `build/pcd2pgm`、`install/pcd2pgm`，以及 `install/` 下指向已删源码的两条悬空软链
+    （`map_server/lib/map_server/pgm_to_terrain_msgpack.py`、`bringup/lib/.../save_pcd_and_make_map.sh`）。
+  - 历史文档 `docs/project_audit_2026-09-17.md` 与本文旧记录中的相关描述按约定不改写。
+- 验证：
+  1. `colcon build --symlink-install` 全仓 **14 个包通过**（`pcd2pgm` 已从构建列表消失），无其他包
+     依赖被删项（`package.xml`/`CMakeLists.txt` 全仓 grep 无残留）。
+  2. `map_server` 端到端烟测通过：`ROS_DOMAIN_ID=231 python3
+     mas2027_perception/map_server/test/smoke_dynamic_cost_map.py
+     mas2027_nav_bringup/map/lab3_terrain.msgpack
+     mas2027_perception/map_server/test/fixture_static_floor.pcd`
+     → `dynamic_cost_map smoke passed: occupied=388`。
+  3. `ros2 launch mas2027_nav_bringup nav_executor_launch.py --show-args` 正常，`map_pcd` 默认仍解析到
+     `share/mas2027_nav_bringup/pcd/lab3.pcd`。
+  4. 全仓 grep（排除历史文档）无 5 个目标的残留引用；`install/` 下无本次相关的悬空软链。
+  5. **未测试**：控制台本身的建图/编辑/换图流程（本次未改该仓库）；未上实车、未跑 `smoke_goal.py`
+     与闭环基准。另外发现两条**既存**悬空软链与本次改动无关：
+     `install/mas2027_robot_description/.../meshes/LakiBeam.STL`（源码树只有 `base_link.STL`/
+     `mid360.STL`）与 `install/small_point_lio/.../config/unilidar_l2.yaml`。
+
+## 2026-09-20 — 新增 `pcd_trans/field_align.py`：场外扫描打点对齐工具（比赛现场用）
+
+- 背景：比赛需在**观众席**（场外）扫描点云建图，而车在场上开机。`small_point_lio`
+  的 `align_odom_with_gravity: true` 把 odom 位置与 yaw 在启动瞬间归零，因此
+  odom 原点 = 场上开机点；扫描图原点却在场外看台，两者差十几米。而 `odom_localizer`
+  的 GICP bootstrap 门限只有 2.0 m（锁定后 0.75 m），初值猜错就永远锁不上。
+  需要一个离线、确定性、不依赖 GICP 收敛的对齐手段。
+- 新增 `mas2027_utils/pcd_trans/field_align.py`（纯 Python，numpy 必需，
+  PyYAML/matplotlib/open3d 可选）：
+  1. **自带 PCD 读写**，支持 `ascii` / `binary` / `binary_compressed` 三种编码
+     （含 liblzf 解压，按字段分块的 SoA 布局），**不需要 Open3D**。
+     这一条是硬需求：本机没装 open3d，而 `pcd_tool.py` 读 `binary_compressed`
+     必须依赖它（`pcd_tool.py:108-111` 直接报"请安装 Open3D"）。
+  2. **打点**：`--pick auto|matplotlib|open3d|none`，matplotlib 走俯视散点 +
+     `ginput`，支持 `--roi` 放大、`--z-mode nearest|min|zero`（点击只给 XY，
+     Z 由附近点云吸附）。
+  3. **求解**：`yaw`（默认，Z 轴旋转+平移的解析解）与 `full`（Kabsch/SVD 六自由度）
+     两种模式，输出逐点残差与 RMS。
+  4. **输出**：4x4 行主序矩阵（语义 `p_field = R·p_pcd + t`，与 `pcd_tool.py
+     --matrix` 的 `p' = R p + t` 一致）、`--apply-out` 直接变换点云（无 open3d 也可用）、
+     `--check-plot` 出对齐检查图。
+  5. 支持"以发车点为 map 原点"的用法（把发车点当第 1 个特征点、field 填 `[0,0,0]`），
+     这正是让 map 原点与车体 odom 接近的最短路径。
+  6. 中文标注字体探测：matplotlib 默认字体表无中文字体，图上中文会变豆腐块。
+     `configure_plot_font()` 从 12 个候选里挑可用的，并用 `FT2Font.get_char_index`
+     确认**真有这些字形**；一个都没有时自动改用英文标注。
+- 同步更新：
+  - `mas2027_utils/pcd_trans/README.md`：补 `field_align.py` 用法与"残差小 ≠ 对齐正确"的告诫。
+  - `mas2027_nav_bringup/scripts/save_pcd_and_make_map.sh` 结尾"下一步（人工）"提示：
+    原文 ①`ros2 launch map_edit`（该包是空 gitlink，新克隆跑不了，审计 3.18）、
+    ②`pcd_trans --tx/--yaw`（已被本工具取代）、③"换图时三处同名"指向已不存在的
+    `nav2_params projection.prior_map` 与 `launch map:=`——三处全部按当前代码改正为
+    `map_pcd` / `terrain_map_path` / `origin_x,origin_y`。
+- 验证（全部 headless 可复现，未上实车、未在真图形界面点过鼠标）：
+  1. `field_align.py --selftest` 16 项全过：合成数据复原已知 yaw 变换（角度误差
+     0.006°、平移 0.0055 m）与含 roll/pitch 的六自由度变换；共线点、散布过小、
+     点数不足三种退化输入均正确报警；PCD 三种编码往返；对应表往返；字体字形覆盖。
+  2. 端到端回归 `.scratch/field_align_verify/verify_field_align.py` 21 项全过：
+     把 `lab3.pcd` 施加已知大位移（平移 (21.7, −14.3, 2.85)、yaw −118°）伪造成"观众席
+     扫描"，经 模板→打点（叠加 2 cm 噪声）→解算→变换 后，**整片点云还原中位误差
+     0.0136 m**、特征点最大 0.0237 m，即精度受限于打点噪声而非算法。
+  3. **矩阵方向跨工具交叉验证**：本工具产出的矩阵喂给 `pcd_tool.py --matrix`，
+     两条路径结果最大差 3.98e-06 m（ASCII 精度极限），证明 `p' = R p + t` 方向约定一致。
+  4. `binary_compressed` 解码器用**独立产物交叉验证**：读出的 `lab3.pcd` 点数
+     59522 与头部 `POINTS` 完全一致，且按 `pcd2pgm` 的 z 带通 (0.05~1.5) 复现后，
+     X/Y 最小角为 (−4.44, −7.91)，与另一个 C++ 工具产出的 `lab3.yaml` origin
+     (−4.6, −7.94) 相差 0.16 / 0.03 m——四条边全部吻合。
+  5. 打点逻辑用 mock `ginput` 验证（XY 取点击值、Z 正确吸附、半径外退回最近点、
+     三种 z-mode）；无 `DISPLAY` 时报错清晰；CLI 非法输入（缺 `--out`、非法 mode）被拒。
+  6. **未测试**：matplotlib `ginput` 与 open3d `VisualizerWithEditing` 的**真实交互
+     点选**（本机无 `DISPLAY`，只验证到"事件返回值之后的全部逻辑"）；`--roi` 视窗、
+     以及观众席真实扫描数据上的端到端效果——后者需现场数据才能验证。
+  7. `pyflakes` 干净，`py_compile` 通过；`save_pcd_and_make_map.sh` 改动后
+     `bash -n` 通过、`--help` 正常。
+
 ## 2026-09-18 — 文档精简：根 `README.md` 压缩约一半篇幅（378 → 192 行）
 
 - 背景：上一条把 `docs/README.md` 合并进根 README 后篇幅到 378 行，用户要求"更精简"。

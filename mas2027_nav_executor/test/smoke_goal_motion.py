@@ -14,7 +14,8 @@ closer, which is the "parked against the wall" case.
 
 Usage:
   ROS_DOMAIN_ID=229 python3 test/smoke_goal_motion.py \
-      <lab3_terrain.msgpack> <executor_config_dir> <lab3.pcd> [--near-wall 0.16] [--goal -0.15,-0.70]
+      <lab3_terrain.msgpack> <executor_config_dir> <lab3.pcd> \
+      [--map-yaml lab3.yaml] [--near-wall 0.16] [--goal -0.15,-0.70]
 """
 import argparse
 import math
@@ -112,6 +113,10 @@ def main():
     parser.add_argument("terrain_map")
     parser.add_argument("executor_config_dir")
     parser.add_argument("prior_pcd")
+    parser.add_argument(
+        "--map-yaml",
+        help="matching Nav2 map YAML (defaults to <name>.yaml beside <name>_terrain.msgpack)",
+    )
     parser.add_argument("--goal", default="-0.15,-0.70", help="goal in odom, x,y")
     parser.add_argument("--map-to-odom", default=DEFAULT_MAP_TO_ODOM,
                         help="tx,ty,tz,qx,qy,qz,qw")
@@ -120,6 +125,12 @@ def main():
     parser.add_argument("--seconds", type=float, default=15.0, help="observation window")
     parser.add_argument("--cloud-hz", type=float, default=5.0)
     args = parser.parse_args()
+    map_yaml = args.map_yaml
+    if map_yaml is None:
+        suffix = "_terrain.msgpack"
+        if not args.terrain_map.endswith(suffix):
+            raise SystemExit("--map-yaml is required when terrain map lacks _terrain.msgpack suffix")
+        map_yaml = args.terrain_map[:-len(suffix)] + ".yaml"
     gx, gy = (float(v) for v in args.goal.split(","))
     map_to_odom = [float(v) for v in args.map_to_odom.split(",")]
     if len(map_to_odom) != 7:
@@ -147,8 +158,7 @@ def main():
                            "lib/mas2027_nav_executor/mas2027_nav_executor_node")
     server = subprocess.Popen([
         map_exe, "--ros-args", "-p", f"terrain_map_path:={args.terrain_map}",
-        "-p", "origin_x:=-4.6", "-p", "origin_y:=-7.94",
-        "-p", f"global_cloud_path:={args.prior_pcd}",
+        "-p", f"map_yaml_path:={map_yaml}",
     ], env=env)
     nav = subprocess.Popen([
         nav_exe, "--ros-args",
@@ -182,10 +192,10 @@ def main():
     goal_pub = node.create_publisher(PoseStamped, "/goal_pose", 10)
     qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                      durability=DurabilityPolicy.TRANSIENT_LOCAL)
-    cmds, trajs, maps = [], [], []
+    cmds, trajs, terrain_maps = [], [], []
     node.create_subscription(Twist, "/cmd_vel", cmds.append, 10)
     node.create_subscription(MpcPositionCommand, "/opt_path", trajs.append, 10)
-    node.create_subscription(OccupancyGrid, "/dynamic_cost_map", maps.append, qos)
+    node.create_subscription(OccupancyGrid, "/cost_map", terrain_maps.append, qos)
 
     goal_sent = False
     goal_sent_at = None
@@ -209,7 +219,7 @@ def main():
             if server.poll() is not None or nav.poll() is not None:
                 raise RuntimeError(
                     f"node exited: map_server={server.poll()} nav_executor={nav.poll()}")
-            if maps and map_ready_at is None:
+            if terrain_maps and map_ready_at is None:
                 map_ready_at = time.monotonic()
             if not goal_sent and map_ready_at and time.monotonic() - map_ready_at > 6.0:
                 goal = PoseStamped()
@@ -231,7 +241,7 @@ def main():
         stamps = {t.header.stamp.sec * 10**9 + t.header.stamp.nanosec for t in trajs}
         print(f"cmd_vel: {len(cmds)} msgs, moving {len(moving)}, max speed {max_speed:.3f} m/s")
         print(f"/opt_path: {len(trajs)} msgs, {len(stamps)} distinct trajectories")
-        assert goal_sent, "dynamic map never became ready"
+        assert goal_sent, "static terrain map never became ready"
         assert stamps, "goal produced no trajectory on /opt_path"
         assert len(moving) > 0.5 * len(cmds), (
             f"only {len(moving)}/{len(cmds)} cmd_vel messages command motion: the planner is "

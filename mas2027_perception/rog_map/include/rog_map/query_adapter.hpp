@@ -62,6 +62,7 @@ public:
   double resolution() const override;
   double originX() const override;
   double originY() const override;
+  double snapshotStampSeconds() const override;
 
   uint8_t value(unsigned int mx, unsigned int my) const override;
   // Returned pointer is only valid until the next snapshot update. Prefer copyValues() or snapshot().

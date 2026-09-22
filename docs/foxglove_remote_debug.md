@@ -21,12 +21,27 @@
                                         nav_executor / ROGMap / map_server / ...
 ```
 
-`foxglove_bridge` 与 nav 栈是**两条独立的 launch**，互不依赖：bridge 只负责把 DDS 图
-暴露成 WebSocket，nav 栈没起时 Foxglove 里能看到连接但没数据。
+`foxglove_bridge` 已默认挂进 `nav_executor_launch.py`（`use_foxglove:=True`，
+`foxglove_address:=127.0.0.1`，`foxglove_port:=8765`）。bridge 只负责把 DDS 图暴露成
+WebSocket；关掉 bridge 时 nav 栈照常跑，单独起 bridge、nav 没起时 Foxglove 能连上但没数据。
 
 ## 2. 机器人端
 
-### 起 bridge
+### 随 nav 栈一起起（推荐）
+
+```bash
+source install/setup.bash
+# 默认已起 bridge，绑 127.0.0.1:8765（配合 SSH 隧道）
+ros2 launch mas2027_nav_bringup nav_executor_launch.py
+
+# 直连（笔记本装桌面版 Foxglove，直接连机器人 IP）
+ros2 launch mas2027_nav_bringup nav_executor_launch.py foxglove_address:=0.0.0.0
+
+# 不需要可视化时关掉
+ros2 launch mas2027_nav_bringup nav_executor_launch.py use_foxglove:=False
+```
+
+### 单独起 bridge（nav 栈已用 use_foxglove:=False，或只想先开可视化）
 
 ```bash
 # 方式 A：只绑回环 + SSH 隧道（推荐：端口不外露，不用动防火墙）
@@ -36,7 +51,8 @@ ros2 launch foxglove_bridge foxglove_bridge_launch.xml address:=127.0.0.1 port:=
 ros2 launch foxglove_bridge foxglove_bridge_launch.xml address:=0.0.0.0 port:=8765
 ```
 
-两种方式**不能同时起**，会 `Failed to bind port: Address already in use (os error 98)`。
+**不要**在 nav 栈已默认起 bridge 的同时再单独起一份，会
+`Failed to bind port: Address already in use (os error 98)`。两种 address 也不能并存。
 
 确认活着：
 
@@ -51,17 +67,10 @@ ss -tln | grep 8765        # 看到 127.0.0.1:8765 或 0.0.0.0:8765
 [foxglove_bridge-1] [INFO] [foxglove_bridge]: Advertising new channel 46 for topic "/cmd_spin"
 ```
 
-停止：
+停止：Ctrl-C 整个 nav launch 会一并停掉 bridge；若只想杀 bridge：
 
 ```bash
 pkill -f foxglove_bridge
-```
-
-### 起 nav 栈
-
-```bash
-source install/setup.bash
-ros2 launch mas2027_nav_bringup nav_executor_launch.py
 ```
 
 ### 限流白名单（点云太多、走 WiFi 卡时用）
@@ -114,7 +123,7 @@ Foxglove → `Open connection` → 选 **Foxglove WebSocket** → 填 URL → `O
 | PointCloud2 | `/cloud_registered` | 实时配准点云（首选） |
 | PointCloud2 | `/rog_map/occupied` | ROGMap 动态占据 |
 | PointCloud2 | `/rog_map/field` | 2D 距离场 |
-| OccupancyGrid | `/cost_map`、`/dynamic_cost_map` | 代价图 |
+| OccupancyGrid | `/cost_map`、`/planning_constraints` | 静态地形代价图 / 导航实际使用的静态约束图 |
 | Path | `/opt_path_vis` | 实际执行的轨迹 |
 | Path | `/nav_executor/global_plan` | 全局路径 |
 | Path | `/backup_path_vis`、`/minco_candidate_path_vis` | 备份/候选轨迹 |

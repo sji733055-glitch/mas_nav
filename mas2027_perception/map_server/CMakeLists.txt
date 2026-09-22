@@ -10,9 +10,7 @@ find_package(rclcpp_components REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(OpenCV REQUIRED)
-find_package(Eigen3 REQUIRED)
-find_package(PCL REQUIRED COMPONENTS common io kdtree filters segmentation)
-find_package(tf2_ros REQUIRED)
+find_package(yaml-cpp REQUIRED)
 find_path(MSGPACK_INCLUDE_DIR msgpack.hpp REQUIRED)
 
 add_library(${PROJECT_NAME}_core SHARED
@@ -20,9 +18,8 @@ add_library(${PROJECT_NAME}_core SHARED
   src/utils.cpp
 )
 target_include_directories(${PROJECT_NAME}_core PUBLIC include ${MSGPACK_INCLUDE_DIR})
-target_include_directories(${PROJECT_NAME}_core PUBLIC ${PCL_INCLUDE_DIRS})
-target_link_libraries(${PROJECT_NAME}_core ${OpenCV_LIBS} ${PCL_LIBRARIES} Eigen3::Eigen)
-ament_target_dependencies(${PROJECT_NAME}_core rclcpp rclcpp_components nav_msgs sensor_msgs tf2_ros)
+target_link_libraries(${PROJECT_NAME}_core ${OpenCV_LIBS} yaml-cpp::yaml-cpp)
+ament_target_dependencies(${PROJECT_NAME}_core rclcpp rclcpp_components nav_msgs sensor_msgs)
 rclcpp_components_register_nodes(${PROJECT_NAME}_core "map_server::MapServerNode")
 
 add_executable(map_server_node src/main.cpp)
@@ -34,6 +31,5 @@ install(TARGETS ${PROJECT_NAME}_core map_server_node
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
-install(PROGRAMS scripts/pgm_to_terrain_msgpack.py DESTINATION lib/${PROJECT_NAME})
 ament_export_include_directories(include)
 ament_package()

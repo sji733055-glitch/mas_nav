@@ -80,7 +80,7 @@ add_executable(${PROJECT_NAME}_node src/nav_executor_node.cpp
   src/path_executor/monitoring/command_safety.cpp
   src/task_manager/task_manager.cpp
   src/common/environment/terrain_grid.cpp
-  # 降级全局搜索改用 TerrainMapQuery（见 global_path_searcher.cpp 的 fallback 分支），
+  # 静态地形全局搜索使用 TerrainMapQuery（见 global_path_searcher.cpp），
   # 实现必须编进本目标；此前它只出现在 test_terrain_map_query 里，故不加会报
   # undefined reference to TerrainMapQuery::TerrainMapQuery / vtable。
   src/common/environment/terrain_map_query.cpp)

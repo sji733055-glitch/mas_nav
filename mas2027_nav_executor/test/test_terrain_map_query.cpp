@@ -34,18 +34,10 @@ int main()
   assert(free.ok && free.distance > 0.0 && free.gradient.x() < 0.0);
   assert(occupied.ok && occupied.distance < 0.0);
 
-  nav_msgs::msg::OccupancyGrid dynamic = cost;
-  dynamic.header.stamp.nanosec = 1;
-  dynamic.data.assign(25, 0);
-  dynamic.data[3 + 2 * 5] = 100;
-  terrain->updateDynamic(dynamic);
-  assert(query.query({3.5, 2.5, 0.0}).distance < 0.0);
+  // 静态 terrain 更新会使距离场缓存失效；在线障碍不在这个查询器中融合。
+  cost.data[3 + 2 * 5] = 100;
   const auto revision = terrain->revision();
-  dynamic.header.stamp.nanosec = 2;
-  terrain->updateDynamic(dynamic);
-  assert(terrain->revision() == revision);  // New timestamp, same obstacles: reuse the field.
-  dynamic.data[3 + 2 * 5] = 0;
-  terrain->updateDynamic(dynamic);
+  terrain->updateCost(cost);
   assert(terrain->revision() > revision);
-  assert(query.query({3.5, 2.5, 0.0}).distance > 0.0);
+  assert(query.query({3.5, 2.5, 0.0}).distance < 0.0);
 }

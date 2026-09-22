@@ -3,7 +3,7 @@
 /**:
   ros__parameters:
     planner:
-      # Global terrain + current dynamic map; ROGMap supplies local occupancy and distance.
+      # Static terrain owns global topology; ROGMap supplies online occupancy and distance.
       planner_mode: EXPLORATION
       global_frame: odom
       frames:
@@ -284,19 +284,11 @@
             # 留空时使用 YAML 的 image 字段，并相对 YAML 所在目录解析。
             pgm_path: ""
             frame_id: map
-          # 地面是否落进窗口决定地面柱子会不会被当成"未观测"。雷达装得越高，地面 z 越负：
-          # -0.5 时若雷达离地 0.5 m 以上，地面就掉出窗口 → 整片地面成为 UNKNOWN/障碍，
-          # 二维距离场到处只剩 0.3~0.45 m，速度被 required=0.30+0.15v 压死（实车日志实测值）。
-          # 旧工程 /home/mas/mas_nav_2027 取 -1.2，这里对齐。
           scan_z_min_abs: -1.2
           scan_z_max_abs: 2.75
-          # UNKNOWN 是否作为二维 ESDF 障碍。false = 未知按自由处理，与旧工程一致，
-          # 是"能跑快"的主要来源；代价是规划可能穿过尚未观测的区域，靠地形先验图兜底。
-          # 与 planner.exploration.unknown_as_occupied 必须同时改，两者不一致会让全局搜索
-          # 与距离场对同一格给出相反结论。
           unknown_as_occupied: false
           min_observed_voxels: 1
-          surface_height_delta_max: 0.1
+          surface_height_delta_max: 0.2
           wall_height_delta_min: 0.80
           wall_occupancy_ratio_min: 0.90
           tunnel_height_delta_min: 0.25
@@ -306,15 +298,6 @@
           hysteresis_enable: false
           obstacle_hold_time: 1.5
           mask_filter_en: true
-          # 【2026-09-16】fill_occ_min 4 → 8：把"补洞"削弱到只填真正被包围的格子。
-          # 依据：车体直径 60 cm（半径 0.30）与 collision_dist 0.30 相等，通道宽度只要严格大于
-          # 0.60 m 车就能过；而 fillMask() 会把周围 ≥fill_occ_min 个占据邻格的自由格填成障碍
-          # （projection_layer.cpp，8 邻域最多 8），每侧最多加粗 1 格 = 5 cm。实测卡住处净空
-          # 0.288~0.318（真实通道可过），正是这 5 cm 造成的"假性过不去"（verdict=GEOMETRY）。
-          # 取 8 表示仅当 8 个邻格全为占据时才填——那属于障碍物内部的空洞，不会改变外轮廓、
-          # 也就不会把通道补窄；同时满足 denoise_occ_max(0) < fill_occ_min 的校验。
-          # ⚠️ 切勿取 9 及以上：config.hpp:299 会抛 std::invalid_argument（合法区间 [1,8]），
-          #    节点启动即死、日志为空、ROGMap 可视化全部消失（已踩过一次）。
           fill_occ_min: 8
           denoise_occ_max: 0
         field:

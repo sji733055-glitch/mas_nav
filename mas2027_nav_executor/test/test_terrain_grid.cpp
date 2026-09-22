@@ -37,8 +37,6 @@ int main()
   assert(snapshot->search({0.5, 2.5}, {4.5, 2.5}, path));
   assert(path.size() >= 4);
   assert(!snapshot->transition({1.5, 2.5}, {3.5, 2.5}));
-  assert(!snapshot->search({0.5, 2.5}, {4.5, 2.5}, path,
-    [](const Eigen::Vector2d & p) { return p.x() < 2.0; }));
 
   // Direction body: horizontal traversal allowed, vertical traversal rejected.
   direction.data[(2 * 5 + 1) * 3 + 1] = 255;
@@ -59,18 +57,7 @@ int main()
   assert(constraints->data[2 + 2 * 5] == 100);
   assert(constraints->data[1 + 2 * 5] == 50);
 
-  nav_msgs::msg::OccupancyGrid dynamic_grid = cost;
-  dynamic_grid.data.assign(25, 0);
-  dynamic_grid.data[2 + 2 * 5] = 100;
-  grid.updateDynamic(dynamic_grid);
-  const auto dynamic = grid.dynamicSnapshot();
-  assert(dynamic);
-  assert(!dynamic->freeAt({2.5, 2.5}));
-  assert(dynamic->freeAt({3.5, 2.5}));
   constraints = grid.planningConstraints();
   assert(constraints && constraints->data[2 + 2 * 5] == 100);
   assert(constraints->data[3 + 2 * 5] == 0);
-  dynamic_grid.info.width = 4;
-  grid.updateDynamic(dynamic_grid);
-  assert(!grid.dynamicSnapshot());
 }

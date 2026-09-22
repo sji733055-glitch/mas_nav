@@ -1049,8 +1049,7 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
   std::function<bool(const Eigen::Vector3d &, const Eigen::Vector3d &)> terrain_segment_free;
   if (terrain_) {
     const auto terrain = terrain_->snapshot();
-    const auto dynamic = terrain_->dynamicSnapshot();
-    if (!terrain || !dynamic || !tf_) return finish(false, "TERRAIN_MAP_UNAVAILABLE");
+    if (!terrain || !tf_) return finish(false, "TERRAIN_MAP_UNAVAILABLE");
     try {
       const auto transform = tf_->lookupTransform(
         terrain->cost.header.frame_id, output_frame_, tf2::TimePointZero);
@@ -1058,20 +1057,13 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
       const double c = std::cos(yaw), s = std::sin(yaw);
       const double tx = transform.transform.translation.x;
       const double ty = transform.transform.translation.y;
-      terrain_segment_free = [terrain, dynamic, c, s, tx, ty](
+      terrain_segment_free = [terrain, c, s, tx, ty](
         const Eigen::Vector3d & a, const Eigen::Vector3d & b) {
         const auto to_map = [c, s, tx, ty](const Eigen::Vector3d & p) {
           return Eigen::Vector2d(c * p.x() - s * p.y() + tx,
             s * p.x() + c * p.y() + ty);
         };
-        const Eigen::Vector2d from = to_map(a), to = to_map(b);
-        if (!terrain->transition(from, to)) return false;
-        const int steps = std::max(1, static_cast<int>(std::ceil(
-          (to - from).norm() / (0.5 * terrain->cost.info.resolution))));
-        for (int i = 0; i <= steps; ++i) {
-          if (!dynamic->freeAt(from + (to - from) * (static_cast<double>(i) / steps))) return false;
-        }
-        return true;
+        return terrain->transition(to_map(a), to_map(b));
       };
     } catch (const tf2::TransformException &) {
       return finish(false, "TERRAIN_TF_UNAVAILABLE");
@@ -1762,8 +1754,7 @@ bool MincoPlanner::validateTrajectory(
   // terrain body before any trajectory is published to the /cmd_vel tracker.
   if (terrain_) {
     const auto terrain = terrain_->snapshot();
-    const auto dynamic = terrain_->dynamicSnapshot();
-    if (!terrain || !dynamic || !tf_) {
+    if (!terrain || !tf_) {
       last_validation_failure_reason_ = "TERRAIN_MAP_UNAVAILABLE";
       return false;
     }
@@ -1779,7 +1770,7 @@ bool MincoPlanner::validateTrajectory(
           s * p.x() + c * p.y() + ty);
       };
       // 【2026-09-16 插桩】地形否决点现场：**只加日志，不改任何判据、阈值或行为**。
-      // 打印 stage（start_static / start_dynamic / edge_static / edge_dynamic）、该点在
+      // 打印 stage（start_static / edge_static）、该点在
       // 地形图（map）系的坐标与格号、格子 cost、前一点的格号与 cost、以及对应的 odom 系轨迹点。
       // 判读：cost≥95 且落在真实墙体上 → 地形门工作正常，"挤压"是真的；
       //       cost<95 却报否决、或格号对不上地图 → 判据/坐标系有问题。
@@ -1850,31 +1841,16 @@ bool MincoPlanner::validateTrajectory(
         (2.0 * std::max(0.1, minco_config.max_vel)));
       const int intervals = std::max(1, static_cast<int>(std::ceil(duration / dt)));
       Eigen::Vector2d previous = to_map(traj.getPos(0.0));
-      const bool start_static_ok = terrain->traversable(previous);
-      if (!start_static_ok || !dynamic->freeAt(previous)) {
-        log_terrain_reject(start_static_ok ? "start_dynamic" : "start_static",
-          previous, traj.getPos(0.0), nullptr);
+      if (!terrain->traversable(previous)) {
+        log_terrain_reject("start_static", previous, traj.getPos(0.0), nullptr);
         last_validation_failure_reason_ = "TERRAIN_COLLISION";
         return false;
       }
       for (int i = 1; i <= intervals; ++i) {
         const Eigen::Vector3d pos_odom = traj.getPos(duration * i / intervals);
         const Eigen::Vector2d current = to_map(pos_odom);
-        bool dynamic_clear = true;
-        const int edge_steps = std::max(1, static_cast<int>(std::ceil(
-          (current - previous).norm() / (0.5 * terrain->cost.info.resolution))));
-        for (int j = 0; j <= edge_steps; ++j) {
-          if (!dynamic->freeAt(previous + (current - previous) *
-            (static_cast<double>(j) / edge_steps))) {
-            dynamic_clear = false;
-            break;
-          }
-        }
-        // 求值顺序与原先一致（static 先判、dynamic 短路），只是把结果留了下来给插桩用。
-        const bool edge_static_ok = terrain->transition(previous, current);
-        if (!edge_static_ok || !dynamic_clear) {
-          log_terrain_reject(edge_static_ok ? "edge_dynamic" : "edge_static",
-            current, pos_odom, &previous);
+        if (!terrain->transition(previous, current)) {
+          log_terrain_reject("edge_static", current, pos_odom, &previous);
           last_validation_failure_reason_ = "TERRAIN_COLLISION_OR_DIRECTION";
           return false;
         }

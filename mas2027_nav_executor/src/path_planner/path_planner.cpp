@@ -1,6 +1,7 @@
 #include "mas2027_nav_executor/path_planner/path_planner.hpp"
 
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 
 #include "rclcpp/rclcpp.hpp"
@@ -12,12 +13,10 @@
 namespace mas2027_nav_executor {
 
 PathPlanner::PathPlanner(std::shared_ptr<TerrainGrid> terrain, double odom_timeout_s,
-  const std::string & odom_frame, double dynamic_map_timeout_s)
-: terrain_(std::move(terrain)), odom_timeout_s_(odom_timeout_s)
+  const std::string & odom_frame, double rog_map_timeout_s)
+: terrain_(std::move(terrain)), odom_timeout_s_(odom_timeout_s),
+  rog_map_timeout_s_(rog_map_timeout_s)
 {
-  if (std::isfinite(dynamic_map_timeout_s) && dynamic_map_timeout_s > 0.0) {
-    dynamic_map_timeout_s_ = dynamic_map_timeout_s;
-  }
   node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("nav_executor_planner");
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(node_->get_clock());
   tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
@@ -71,20 +70,18 @@ bool PathPlanner::acceptGoal(const geometry_msgs::msg::PoseStamped & goal)
       "Ignoring goal until static terrain cost and direction maps are ready");
     return false;
   }
-  const auto dynamic = terrain_->dynamicSnapshot();
-  // 阈值必须给足余量（默认 1.5 s = 3 倍发布周期）。曾经硬编码 0.5 s，与 map_server 旁路模式下
-  // 500 ms 的"空图心跳"零余量，导致运行中途点目标被静默丢弃（实测 age 恒在 0.51 附近）。
-  if (!dynamic ||
-    std::abs((node_->now() - rclcpp::Time(dynamic->grid.header.stamp)).seconds()) >
-    dynamic_map_timeout_s_)
-  {
-    RCLCPP_WARN(node_->get_logger(),
-      "Ignoring goal until a fresh dynamic map is ready (age limit %.2f s)", dynamic_map_timeout_s_);
-    return false;
-  }
   const auto query = rog_map_->queryInterface();
   if (!query || query->sizeX() == 0U || query->sizeY() == 0U) {
     RCLCPP_WARN(node_->get_logger(), "Ignoring goal until ROGMap has an online snapshot");
+    return false;
+  }
+  const double rog_stamp_s = query->snapshotStampSeconds();
+  const double rog_age_s = std::isfinite(rog_stamp_s) ?
+    std::abs(node_->now().seconds() - rog_stamp_s) : std::numeric_limits<double>::infinity();
+  if (!std::isfinite(rog_age_s) || rog_age_s > rog_map_timeout_s_) {
+    RCLCPP_WARN(node_->get_logger(),
+      "Ignoring goal until ROGMap is fresh (age %.3f s, limit %.3f s)",
+      rog_age_s, rog_map_timeout_s_);
     return false;
   }
 
@@ -133,8 +130,8 @@ bool PathPlanner::acceptGoal(const geometry_msgs::msg::PoseStamped & goal)
     return false;
   }
   const Eigen::Vector2d target(goal_in_map.pose.position.x, goal_in_map.pose.position.y);
-  if (!terrain->traversable(target) || !dynamic->freeAt(target)) {
-    RCLCPP_WARN(node_->get_logger(), "Ignoring goal: occupied in terrain or dynamic map");
+  if (!terrain->traversable(target)) {
+    RCLCPP_WARN(node_->get_logger(), "Ignoring goal: occupied in static terrain");
     return false;
   }
   geometry_msgs::msg::PoseStamped start;

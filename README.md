@@ -12,7 +12,7 @@ ROS 2 Jazzy，运行链路统一为独立 `nav_executor`：不依赖 Nav2 server
 | `small_point_lio` | 融合点云 + IMU → `/Odometry`、`/cloud_registered` |
 | `odom_localizer` | GICP 六自由度先验定位（`lab3.pcd`）→ `/tf_maintainer/map_to_odom` |
 | `tf_maintainer` | 唯一动态 TF 发布者：`map→odom`、`odom→base_link` |
-| `terrain_map_server` | `map_server` 包的 `map_server_node` → `/cost_map`、`/direction_map`、`/dynamic_cost_map` |
+| `terrain_map_server` | `map_server` 包的静态地形服务 → `/cost_map`、`/direction_map` |
 | `nav_executor` | 单进程：TaskManager + ROGMap + 全局搜索 + MINCO + MPC → `/opt_path`、`/cmd_vel` |
 | `ros2_comm`（可选） | `/cmd_vel` 唯一消费者 → UDP 底盘协议 |
 | `robot_state_publisher` | URDF → 车体 / 雷达外参 |
@@ -27,12 +27,12 @@ MID360 ×2 → mid360_driver → small_point_lio → /Odometry + /cloud_register
                      ├─→ odom_localizer → map→odom → tf_maintainer → odom→base_link
                      └─→ ROGMap（进程内：在线占据 / 距离场）
 
-lab3_terrain.msgpack → terrain_map_server → /cost_map + /direction_map + /dynamic_cost_map
-                                                        └─→ 全局搜索 → MINCO → MPC → /cmd_vel
+lab3_terrain.msgpack → terrain_map_server → /cost_map + /direction_map
+                                                    └─→ 全局搜索 → MINCO → MPC → /cmd_vel
 ```
 
-- 全局主搜索是移植的 **SMAC 2D**（`path_planner/search/smac/`）：在静态地形图与 `/dynamic_cost_map`
-  合并的栅格上做 8 邻域 A\*，用同图距离场做 ESDF 软代价（`smac_2d.*`）。输出是纯几何折线，时间
+- 全局主搜索是移植的 **SMAC 2D**（`path_planner/search/smac/`）：在静态地形栅格上做
+  8 邻域 A\*，用同图距离场做 ESDF 软代价（`smac_2d.*`）。输出是纯几何折线，时间
   参数化与运动学可行性交给弧长速度剖面 + MINCO；`planner.use_smac: false` 退回 Astar，SMAC 失败
   **不自动回退**。
 - MINCO 的走廊、优化与碰撞检查用 ROGMap 在线占据/距离场。全局折线进局部滑窗后逐段验净空：
@@ -48,12 +48,11 @@ lab3_terrain.msgpack → terrain_map_server → /cost_map + /direction_map + /dy
 |---|---|
 | `/goal_pose`、`/Odometry`、`/cloud_registered` | 目标入口、里程计、配准点云 |
 | `/cost_map`、`/direction_map` | 静态地形代价 / 方向层（方向层实测全 0） |
-| `/dynamic_cost_map` | 动态层，**默认旁路恒为全 0** |
 | `/opt_path`、`/cmd_vel`、`/cmd_spin` | MINCO 轨迹（MPC 输入）、底盘速度、自旋叠加 |
 | `/nav_executor/global_plan`、`/nav_executor/debug/global_plan` | 全局折线的 Path / Marker（0.15 m 青粗线） |
-| `/nav_executor/global_path` | **历史遗留名字，发的是 MINCO 轨迹** |
+| `/nav_executor/minco_path` | MINCO 局部优化轨迹的 Path 可视化 |
 | `/nav_executor/debug/minco_trajectory` | MINCO 轨迹 Marker（0.07 m，按速度染色） |
-| `/planning_constraints`（+`_markers`）、`/nav_executor/debug/dynamic_obstacles` | 规划约束图、动态障碍 |
+| `/planning_constraints`（+`_markers`） | 静态地形规划约束图 |
 
 ## TF 与坐标系
 
@@ -131,52 +130,80 @@ source /home/mas/mas_nav_2027_native/install/setup.bash
 ros2 launch mas2027_nav_bringup nav_executor_launch.py
 ```
 
-常用参数：`use_rviz`、`use_odom_localizer`、`use_ros2_comm`、`output_topic`、`map_pcd`。
+常用参数：`use_rviz`、`use_odom_localizer`、`use_ros2_comm`、`output_topic`。地图不再通过
+launch 参数切换，统一在 `mas2027_nav_bringup/config/navigation_map.yaml` 中选择。
 `use_ros2_comm` 默认 `True`——它是 `/cmd_vel` 的唯一消费者，不开会「指令一直有值但车不动」；
 只想看导航时置 `False` 并确认底盘与急停状态。RViz 的 2D Goal Pose 发到 `/goal_pose`。
 
 ## 核心配置
 
-- `mas2027_nav_executor/config/node_params.yaml`：频率、话题、坐标系、`node.rog_map_clearance`。
+- `mas2027_nav_executor/config/node_params.yaml`：频率、话题、坐标系、`node.rog_map_clearance`
+  与 `node.rog_map_timeout_s`。
 - `mas2027_nav_executor/config/planner_params.yaml`：全局搜索（`use_smac`、`smac_2d.*`、`tolerance`）、
   MINCO 与恢复参数、`planner.rog_map.*`。
 - `mas2027_nav_executor/config/mpc_params.yaml`：MPC 约束与权重。
 - `mas2027_nav_bringup/config/small_point_lio_params.yaml`：雷达与 LIO（含双雷达降级超时）。
+- `mas2027_nav_bringup/config/navigation_map.yaml`：导航地图唯一选择入口（定位 PCD、二维地图
+  YAML、terrain msgpack）。
 - `mas2027_perception/Localization/odom_localizer/config/params.yaml`：先验 PCD 定位。
-- `mas2027_nav_bringup/map/lab3_terrain.msgpack`：静态地形规划地图。
+- `mas2027_nav_bringup/map/`、`pcd/`：`navigation_map.yaml` 所选的地图产物目录；当前选择
+  `lab_map_20260921_211523` 这一组。
 
 源码：搜索与轨迹在 `src/path_planner/`，MPC 与安全监测在 `src/path_executor/`，
 第三方数值后端与 qpOASES 在 `vendor/`（均在 `mas2027_nav_executor` 内）。
 
 ## 地图更新
 
-两份同坐标系先验：`mas2027_nav_bringup/pcd/lab3.pcd`（定位 + 静态差异检测）与
-`mas2027_nav_bringup/map/lab3_terrain.msgpack`（静态地形规划与 RViz）。定位用 GICP 的完整六自由度
-`map→odom`；改点云或雷达外参后先在 RViz 确认地板、天花板重合，再启用动态点云差分。
+同一坐标系的一组导航地图由三份配置关联：PCD（GICP 定位）、Nav2 PGM/YAML（地图原点与
+分辨率元数据）和 terrain msgpack（静态地形规划与 RViz）。定位用 GICP 的完整六自由度
+`map→odom`；改点云或雷达外参后先在 RViz 确认地板、天花板重合。
 
-**动态层当前默认旁路**（launch 的 `bypass_dynamic_obstacle: True`）：节点连点云都不订阅，
-`/dynamic_cost_map` 由 500 ms 定时器发全 0 空图，`/cost_map` 与 `/direction_map` 照常发布；实时避障
-由 ROGMap 的在线占据负责。改 `False` 恢复点云差分（`global_cloud_path` 必须可用；动态层会明显偏厚，
-易触发 `Braking: current dynamic obstacle intersects ...`）。贴地障碍阈值 `low_obstacle_min_height`
-(0.06)、`low_obstacle_match_distance` (0.07)，短时漏检由 `dropout_hold_seconds`(0.3) 保留。
+**实时障碍由 ROGMap 独占负责**。主导航栈已删除 `/dynamic_cost_map`、其心跳闭锁、
+二维动态格融合和对应可视化；ROGMap 在在线快照、局部种子路径、轨迹发布/20 Hz
+监视与 MPC 指令前视中仍保持 fail closed。`node.rog_map_timeout_s` 直接检查进程内 ROGMap
+最后一次完成快照的时间：点云断流或工作线程停滞时拒绝新目标并制动，不需要替代心跳话题。
+`map_server` 仍然必要，但职责只是发布静态
+`/cost_map` 和 `/direction_map`，已不依赖点云、先验 PCD、PCL 或 TF。
 
-不依赖真机的烟测（脚本自行起 `map_server_node`、不设旁路项，故动态层有内容）：
+不依赖真机的静态地形 → 目标 → 轨迹烟测：
 
 ```bash
-ROS_DOMAIN_ID=231 python3 mas2027_perception/map_server/test/smoke_dynamic_cost_map.py \
-  mas2027_nav_bringup/map/lab3_terrain.msgpack mas2027_perception/map_server/test/fixture_static_floor.pcd
 ROS_DOMAIN_ID=232 python3 mas2027_nav_executor/test/smoke_goal.py \
-  mas2027_nav_bringup/map/lab3_terrain.msgpack mas2027_nav_executor/config \
-  mas2027_perception/map_server/test/fixture_static_floor.pcd
+  mas2027_nav_bringup/map/lab3_terrain.msgpack mas2027_nav_executor/config
 ```
 
-重生成地形图与离线建图（不进在线链路）：
+建图与换图（不进在线链路）统一走 `/home/mas/mapping_web_ui` 的三维建图控制台。本仓库不再自带
+`pcd2pgm`、`save_pcd_and_make_map.sh`、`pgm_to_terrain_msgpack.py` 与 `map_edit`：控制台一次完成
+累计点云 → PCD、二维占用图切片、PGM 修图、map 原点/朝向统一与 PGM→terrain 语义标注。它直接从
+`/cloud_registered` 累计，所以导出的 PCD 天然就是先验定位要的坐标系，不需要旧脚本那一步
+`T_odom_from_internal` 纠正。控制台默认把地图写在自己的 `data/` 下，产物要手动拷进本仓库：
 
 ```bash
-python3 mas2027_perception/map_server/scripts/pgm_to_terrain_msgpack.py \
-  mas2027_nav_bringup/map/lab3.yaml mas2027_nav_bringup/map/lab3_terrain.msgpack
-bash mas2027_nav_bringup/scripts/save_pcd_and_make_map.sh lab3
+cd /home/mas/mapping_web_ui && ./run.sh      # 建图 → 结束并保存 → 地图编辑 → 生成 terrain MSG
+
+DST=/home/mas/mas_nav_2027_native/src/mas2027_nav_bringup
+cp data/pcd/<名称>.pcd              "$DST"/pcd/
+cp data/map/<名称>.pgm              "$DST"/map/
+cp data/map/<名称>.yaml             "$DST"/map/
+cp data/map/<名称>_terrain.msgpack  "$DST"/map/
 ```
+
+复制完成后只改一个文件：
+
+```yaml
+# mas2027_nav_bringup/config/navigation_map.yaml
+map_files:
+  localization_pcd: pcd/<名称>.pcd
+  occupancy_yaml: map/<名称>.yaml
+  terrain_msgpack: map/<名称>_terrain.msgpack
+```
+
+相对路径以安装后的 `mas2027_nav_bringup` share 目录为基准，也可以填写绝对路径。随后重新执行
+`colcon build --symlink-install --packages-select mas2027_nav_bringup`，让新增地图文件与配置进入
+`install/`，再启动导航。`map_server` 会直接读取 `occupancy_yaml` 中的
+`origin: [x, y, yaw]` 和 `resolution`，不再接受手填 `origin_x/origin_y`；同时核对该 YAML 引用的 PGM
+与 terrain msgpack 的宽、高、分辨率，防止误配不同批次地图。当前地形查询只支持 `yaw: 0`，控制台
+导出时应先把 PCD、PGM 和 terrain 成组旋转到最终 map 坐标系。
 
 ## 快速检查
 

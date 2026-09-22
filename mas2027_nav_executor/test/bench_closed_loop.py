@@ -26,6 +26,7 @@
       src/mas2027_nav_bringup/map/lab3_terrain.msgpack \
       src/mas2027_nav_executor/config \
       /home/mas/mas_nav_2027/mas2027_nav_bringup/pcd/lab3.pcd \
+      --map-yaml src/mas2027_nav_bringup/map/lab3.yaml \
       --goal 5.55,3.52 --seconds 40
 """
 import argparse
@@ -125,6 +126,10 @@ def main():
     parser.add_argument("terrain_map")
     parser.add_argument("executor_config_dir")
     parser.add_argument("prior_pcd")
+    parser.add_argument(
+        "--map-yaml",
+        help="matching Nav2 map YAML (defaults to <name>.yaml beside <name>_terrain.msgpack)",
+    )
     parser.add_argument("--goal", default="5.55,3.52", help="goal in odom: x,y")
     parser.add_argument("--goals", default="",
                         help="多航段：\"x1,y1;x2,y2;...\"，到达当前目标（<0.6 m）后自动发下一个")
@@ -143,6 +148,12 @@ def main():
     parser.add_argument("--stdout", default=".scratch/closed_loop_node_stdout.log")
     parser.add_argument("--domain", default="241")
     args = parser.parse_args()
+    map_yaml = args.map_yaml
+    if map_yaml is None:
+        suffix = "_terrain.msgpack"
+        if not args.terrain_map.endswith(suffix):
+            raise SystemExit("--map-yaml is required when terrain map lacks _terrain.msgpack suffix")
+        map_yaml = args.terrain_map[:-len(suffix)] + ".yaml"
 
     gx, gy = (float(v) for v in args.goal.split(","))
     mission = []
@@ -180,8 +191,7 @@ def main():
     config_dir = os.path.abspath(args.executor_config_dir)
     server = subprocess.Popen([
         map_exe, "--ros-args", "-p", f"terrain_map_path:={args.terrain_map}",
-        "-p", "origin_x:=-4.6", "-p", "origin_y:=-7.94",
-        "-p", f"global_cloud_path:={args.prior_pcd}",
+        "-p", f"map_yaml_path:={map_yaml}",
     ], env=env)
     stdout_file = open(args.stdout, "w")
     nav = subprocess.Popen([
@@ -220,7 +230,7 @@ def main():
         "cmd_stamps": [],
         "traj": None,
         "last_traj_at": 0.0,
-        "maps": 0,
+        "terrain_maps": 0,
     }
     rows = []
 
@@ -237,8 +247,9 @@ def main():
                              QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE,
                                         durability=DurabilityPolicy.VOLATILE))
     from nav_msgs.msg import OccupancyGrid
-    node.create_subscription(OccupancyGrid, "/dynamic_cost_map",
-                             lambda m: state.__setitem__("maps", state["maps"] + 1),
+    node.create_subscription(OccupancyGrid, "/cost_map",
+                             lambda m: state.__setitem__(
+                                 "terrain_maps", state["terrain_maps"] + 1),
                              QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                                         durability=DurabilityPolicy.TRANSIENT_LOCAL))
 
@@ -279,7 +290,7 @@ def main():
             odom.twist.twist.angular.z = vel[2]
             odom_pub.publish(odom)
 
-            if state["maps"]:
+            if state["terrain_maps"]:
                 if map_ready_at is None:
                     map_ready_at = now
                 if (goal_sent_at is not None and mission_index + 1 < len(mission) and

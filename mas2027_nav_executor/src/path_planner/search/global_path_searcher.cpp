@@ -264,8 +264,7 @@ bool GlobalPathSearcher::planExploration(const geometry_msgs::msg::PoseStamped &
     return !rclcpp::ok();
   };
 
-  // Static terrain owns global topology; map_server supplies the current dynamic layer.
-  // Fail closed if either static layer or its frame transform is unavailable.
+  // Static terrain owns global topology; ROGMap owns all online-obstacle handling.
   if (terrain_) {
     const auto terrain = terrain_->snapshot();
     if (!terrain) {
@@ -280,14 +279,7 @@ bool GlobalPathSearcher::planExploration(const geometry_msgs::msg::PoseStamped &
       geometry_msgs::msg::PoseStamped start_map, goal_map;
       tf2::doTransform(start_rog, start_map, rog_to_map);
       tf2::doTransform(goal_rog, goal_map, rog_to_map);
-      // 动态层必须先就绪：TerrainMapQuery 的取值来自 terrain_->planningConstraints()，
-      // 而它只在 dynamic_snapshot_ 存在时才把当前动态障碍并进地形图。
-      if (!terrain_->dynamicSnapshot()) {
-        RCLCPP_WARN(logger_, "Current dynamic cost map is not ready");
-        return false;
-      }
-
-      // 【2026-09-15 现场改为主搜索】地形图（静态地形 + 当前动态层）上的纯栅格 A*。
+      // 【2026-09-15 现场改为主搜索】静态地形图上的纯栅格 A*。
       // 这与 mas_nav_2027 的 SMAC2D/PRIORMAP 同口径：不含速度/加速度可行性约束、没有扩展
       // 预算，只要目标可通行就能给出路径，远处目标毫秒级出解。
       // 旧的全向 Kino 状态格点搜索（searchOmniKinoPath）已移出关键路径，原因（现场实测）：

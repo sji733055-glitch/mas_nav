@@ -130,17 +130,6 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /planning_constraints_markers
       Value: true
-    - Class: rviz_default_plugins/Marker
-      Enabled: true
-      Name: Dynamic Obstacles (cyan, current)
-      Topic:
-        Depth: 1
-        Durability Policy: Transient Local
-        Filter size: 10
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /nav_executor/debug/dynamic_obstacles
-      Value: true
     - Class: rviz_default_plugins/Image
       Enabled: false
       Max Value: 1
@@ -349,7 +338,7 @@ Visualization Manager:
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /nav_executor/global_path
+        Value: /nav_executor/minco_path
       Value: true
     - Class: rviz_default_plugins/Marker
       Enabled: true

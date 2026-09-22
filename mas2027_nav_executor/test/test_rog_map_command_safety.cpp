@@ -12,6 +12,7 @@ class FakeQuery final : public rog_map::MapQueryInterface
 {
 public:
   double distance{1.0};
+  double snapshot_stamp{1.0};
   /// 净空随 +x 的线性变化量，用来模拟「朝障碍走 / 离开障碍」两种预测轨迹。
   double slope_x{0.0};
   bool worldToMap(double, double, unsigned int &, unsigned int &) const override { return false; }
@@ -21,6 +22,7 @@ public:
   double resolution() const override { return 1.0; }
   double originX() const override { return 0.0; }
   double originY() const override { return 0.0; }
+  double snapshotStampSeconds() const override { return snapshot_stamp; }
   uint8_t value(unsigned int, unsigned int) const override { return 0; }
   const unsigned char * values() const override { return nullptr; }
   bool isValid(unsigned int, unsigned int) const override { return false; }
@@ -59,7 +61,6 @@ int main(int argc, char ** argv)
   direction.data.assign(300, 0);
   terrain->updateCost(grid);
   terrain->updateDirection(direction);
-  terrain->updateDynamic(grid);
 
   auto tf = std::make_shared<tf2_ros::Buffer>(std::make_shared<rclcpp::Clock>());
   geometry_msgs::msg::TransformStamped transform;
@@ -72,15 +73,13 @@ int main(int argc, char ** argv)
   minco_controller::State current;
   current.x = current.y = 5.5;
   minco_controller::Control command;
-  const std::vector<minco_controller::ReferencePoint> reference;
   const rclcpp::Time stamp(grid.header.stamp);
   using mas2027_nav_executor::ExecutorStatus;
-  // 生产默认值（node.dynamic_map_timeout_s）。
-  constexpr double kDynamicMapTimeoutS = 1.5;
+  constexpr double kRogMapTimeoutS = 0.5;
   const auto check = [&]() {
     return mas2027_nav_executor::checkCommandSafety(
-      terrain, query, tf, "odom", 0.30, kDynamicMapTimeoutS, 0.05, current, command, reference,
-      stamp);
+      terrain, query, tf, "odom", 0.30, kRogMapTimeoutS, 0.05,
+      current, command, stamp);
   };
   assert(check() == ExecutorStatus::PUBLISHED);
 
@@ -94,8 +93,8 @@ int main(int argc, char ** argv)
   forward.vx = 1.0;
   const auto check_forward = [&]() {
     return mas2027_nav_executor::checkCommandSafety(
-      terrain, query, tf, "odom", 0.30, kDynamicMapTimeoutS, 0.05, current, forward, reference,
-      stamp);
+      terrain, query, tf, "odom", 0.30, kRogMapTimeoutS, 0.05,
+      current, forward, stamp);
   };
   query->distance = 0.28;
   query->slope_x = -0.6;
@@ -117,8 +116,8 @@ int main(int argc, char ** argv)
     fast.vx = 1.0;
     const auto check_fast = [&]() {
       return mas2027_nav_executor::checkCommandSafety(
-        terrain, query, tf, "odom", 0.30, kDynamicMapTimeoutS, 0.05, current, fast, reference,
-        stamp);
+        terrain, query, tf, "odom", 0.30, kRogMapTimeoutS, 0.05,
+        current, fast, stamp);
     };
     query->distance = 0.45;
     query->slope_x = -0.46;
@@ -130,23 +129,27 @@ int main(int argc, char ** argv)
     query->slope_x = 0.0;
   }
 
-  // 4) 动态层新鲜度阈值必须留余量，且阈值来自参数而不是硬编码。
-  // 现场（2026-09-17）：map_server 在 bypass_dynamic_obstacle:=True 下由 500 ms 定时器发
-  // 全 0 空图，旧硬编码 0.5 s 与发布周期零余量，实测 age 恒在 0.509~0.521 ⇒ 每个周期末尾
-  // 必有一拍清零指令 + 丢 MPC 热启动，车"一卡一卡"。这里锁住：0.51 s 必须放行。
-  query->distance = 1.0;
+  // 4) 不存在二维动态快照时，地形转移门与 ROGMap 净空门仍然 fail closed。
   query->slope_x = 0.0;
-  const auto check_age = [&](double age_s, mas2027_nav_executor::CommandSafetyDetail * detail) {
-    return mas2027_nav_executor::checkCommandSafety(
-      terrain, query, tf, "odom", 0.30, kDynamicMapTimeoutS, 0.05, current, command, reference,
-      stamp + rclcpp::Duration::from_seconds(age_s), detail);
-  };
+  query->distance = 1.0;
+  assert(mas2027_nav_executor::checkCommandSafety(
+      terrain, query, tf, "odom", 0.30, kRogMapTimeoutS, 0.05,
+      current, command, stamp) == ExecutorStatus::PUBLISHED);
+  query->distance = 0.28;
+  query->slope_x = -0.6;
+  assert(mas2027_nav_executor::checkCommandSafety(
+      terrain, query, tf, "odom", 0.30, kRogMapTimeoutS, 0.05,
+      current, forward, stamp) == ExecutorStatus::DYNAMIC_BLOCKED);
+
+  // 5) 新鲜度直接来自 ROGMap 最后一次完成的快照，超时时 fail closed。
+  query->snapshot_stamp = 0.0;
   mas2027_nav_executor::CommandSafetyDetail detail;
-  assert(check_age(0.51, &detail) == ExecutorStatus::PUBLISHED);
-  assert(check_age(2.0, &detail) == ExecutorStatus::TERRAIN_BLOCKED);
-  assert(std::string(detail.reason) == "dynamic_stale");
-  assert(detail.value == 2.0);
-  assert(detail.threshold == kDynamicMapTimeoutS);
+  assert(mas2027_nav_executor::checkCommandSafety(
+      terrain, query, tf, "odom", 0.30, kRogMapTimeoutS, 0.05,
+      current, command, stamp, &detail) == ExecutorStatus::DYNAMIC_BLOCKED);
+  assert(std::string(detail.reason) == "rog_map_stale");
+  assert(detail.value == 1.0);
+  assert(detail.threshold == kRogMapTimeoutS);
 
   rclcpp::shutdown();
 }

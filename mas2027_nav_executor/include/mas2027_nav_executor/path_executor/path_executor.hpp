@@ -23,8 +23,8 @@ struct PathExecutorParams
   bool output_in_body_frame{};
   std::string odom_frame;
   double rog_map_clearance{};
-  /// 动态层新鲜度上限（秒）。见 node.dynamic_map_timeout_s 与 command_safety.cpp 的说明。
-  double dynamic_map_timeout_s{};
+  /// ROGMap 最后一次完成更新允许的最大年龄（秒）。
+  double rog_map_timeout_s{};
 };
 
 // Owns the MPC and the whole trajectory-tracking step: staleness check, frame

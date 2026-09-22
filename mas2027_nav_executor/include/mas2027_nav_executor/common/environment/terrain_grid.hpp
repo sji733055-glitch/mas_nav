@@ -4,7 +4,6 @@
 #include <mutex>
 #include <atomic>
 #include <cstdint>
-#include <functional>
 #include <optional>
 #include <vector>
 
@@ -20,14 +19,6 @@ class TerrainGrid final
 public:
   void updateCost(const nav_msgs::msg::OccupancyGrid & grid);
   void updateDirection(const sensor_msgs::msg::Image & image);
-  void updateDynamic(const nav_msgs::msg::OccupancyGrid & grid);
-
-  struct DynamicSnapshot
-  {
-    nav_msgs::msg::OccupancyGrid grid;
-    bool freeAt(const Eigen::Vector2d & point) const;
-  };
-  std::shared_ptr<const DynamicSnapshot> dynamicSnapshot() const;
   uint64_t revision() const noexcept { return revision_.load(std::memory_order_acquire); }
 
   struct Snapshot
@@ -39,8 +30,7 @@ public:
     bool traversable(const Eigen::Vector2d & point) const;
     bool transition(const Eigen::Vector2d & from, const Eigen::Vector2d & to) const;
     bool search(const Eigen::Vector2d & start, const Eigen::Vector2d & goal,
-      std::vector<Eigen::Vector2d> & path,
-      const std::function<bool(const Eigen::Vector2d &)> & dynamic_free = {}) const;
+      std::vector<Eigen::Vector2d> & path) const;
 
   private:
     bool cell(const Eigen::Vector2d & point, int & x, int & y) const;
@@ -60,7 +50,6 @@ private:
   nav_msgs::msg::OccupancyGrid cost_;
   sensor_msgs::msg::Image direction_;
   std::shared_ptr<const Snapshot> snapshot_;
-  std::shared_ptr<const DynamicSnapshot> dynamic_snapshot_;
   std::atomic<uint64_t> revision_{0};
 };
 

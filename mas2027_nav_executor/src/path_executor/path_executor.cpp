@@ -121,8 +121,7 @@ ExecutorOutput PathExecutor::computeCommand(const ExecutorInput & input)
   CommandSafetyDetail safety_detail;
   output.status = checkCommandSafety(
     terrain_, rog_query_, tf_buffer_, params_.odom_frame, params_.rog_map_clearance,
-    params_.dynamic_map_timeout_s, config_.dt, current, control, reference, input.stamp,
-    &safety_detail);
+    params_.rog_map_timeout_s, config_.dt, current, control, input.stamp, &safety_detail);
   last_safety_detail_ = safety_detail;
   if (output.status != ExecutorStatus::PUBLISHED) {
     anchor_to_measured();

@@ -29,44 +29,6 @@ void TerrainGrid::updateDirection(const sensor_msgs::msg::Image & image)
   revision_.fetch_add(1, std::memory_order_release);
 }
 
-void TerrainGrid::updateDynamic(const nav_msgs::msg::OccupancyGrid & grid)
-{
-  std::lock_guard<std::mutex> lock(mutex_);
-  const auto previous = dynamic_snapshot_;
-  dynamic_snapshot_.reset();
-  if (!snapshot_ || grid.header.frame_id != snapshot_->cost.header.frame_id ||
-    grid.info.width != snapshot_->cost.info.width || grid.info.height != snapshot_->cost.info.height ||
-    std::abs(grid.info.resolution - snapshot_->cost.info.resolution) > 1e-6 ||
-    std::abs(grid.info.origin.position.x - snapshot_->cost.info.origin.position.x) > 1e-6 ||
-    std::abs(grid.info.origin.position.y - snapshot_->cost.info.origin.position.y) > 1e-6 ||
-    grid.data.size() != snapshot_->cost.data.size()) {
-    if (previous) revision_.fetch_add(1, std::memory_order_release);
-    return;
-  }
-  dynamic_snapshot_ = std::make_shared<DynamicSnapshot>(DynamicSnapshot{grid});
-  if (!previous || previous->grid.data != grid.data) {
-    revision_.fetch_add(1, std::memory_order_release);
-  }
-}
-
-std::shared_ptr<const TerrainGrid::DynamicSnapshot> TerrainGrid::dynamicSnapshot() const
-{
-  std::lock_guard<std::mutex> lock(mutex_);
-  return dynamic_snapshot_;
-}
-
-bool TerrainGrid::DynamicSnapshot::freeAt(const Eigen::Vector2d & point) const
-{
-  if (!point.allFinite()) return false;
-  const double x = (point.x() - grid.info.origin.position.x) / grid.info.resolution;
-  const double y = (point.y() - grid.info.origin.position.y) / grid.info.resolution;
-  if (!std::isfinite(x) || !std::isfinite(y) || x < 0.0 || y < 0.0 ||
-    x >= grid.info.width || y >= grid.info.height) return false;
-  const size_t index = static_cast<size_t>(std::floor(y)) * grid.info.width +
-    static_cast<size_t>(std::floor(x));
-  return grid.data[index] >= 0 && grid.data[index] < kOccupiedCost;
-}
-
 void TerrainGrid::refresh()
 {
   snapshot_.reset();
@@ -112,17 +74,6 @@ std::optional<nav_msgs::msg::OccupancyGrid> TerrainGrid::planningConstraints() c
     const uint8_t magnitude = direction.data[pixel + 1U];
     const uint8_t label = direction.data[pixel + 2U];
     result.data[index] = magnitude == 255U && label >= 2U && label <= 6U ? 50 : 0;
-  }
-  if (!dynamic_snapshot_) return result;
-  // Merge the current dynamic layer with static terrain for the shared 2D distance field.
-  const auto & dynamic = dynamic_snapshot_->grid;
-  result.header.stamp = dynamic.header.stamp;
-  if (dynamic.data.size() == result.data.size()) {
-    for (size_t index = 0; index < result.data.size(); ++index) {
-      if (dynamic.data[index] >= kOccupiedCost) {
-        result.data[index] = 100;
-      }
-    }
   }
   return result;
 }
@@ -192,14 +143,12 @@ bool TerrainGrid::Snapshot::transition(
 }
 
 bool TerrainGrid::Snapshot::search(const Eigen::Vector2d & start,
-  const Eigen::Vector2d & goal, std::vector<Eigen::Vector2d> & path,
-  const std::function<bool(const Eigen::Vector2d &)> & dynamic_free) const
+  const Eigen::Vector2d & goal, std::vector<Eigen::Vector2d> & path) const
 {
   path.clear();
   int sx = 0, sy = 0, gx = 0, gy = 0;
   if (!cell(start, sx, sy) || !cell(goal, gx, gy) ||
-    !traversable(start) || !traversable(goal) ||
-    (dynamic_free && (!dynamic_free(start) || !dynamic_free(goal)))) return false;
+    !traversable(start) || !traversable(goal)) return false;
   if (sx == gx && sy == gy) {
     if (!transition(start, goal)) return false;
     path = {start, goal};
@@ -211,14 +160,7 @@ bool TerrainGrid::Snapshot::search(const Eigen::Vector2d & start,
   const auto index = [width](int x, int y) { return y * width + x; };
   const int source = index(sx, sy), target = index(gx, gy);
   const auto edge_free = [&](const Eigen::Vector2d & a, const Eigen::Vector2d & b) {
-    if (!transition(a, b)) return false;
-    if (!dynamic_free) return true;
-    const int steps = std::max(1, static_cast<int>(std::ceil(
-      (b - a).norm() / (0.5 * cost.info.resolution))));
-    for (int i = 0; i <= steps; ++i) {
-      if (!dynamic_free(a + (b - a) * (static_cast<double>(i) / steps))) return false;
-    }
-    return true;
+    return transition(a, b);
   };
   const auto heuristic = [gx, gy](int x, int y) {
     const int dx = std::abs(x - gx), dy = std::abs(y - gy);
