@@ -187,7 +187,7 @@
           wall_height_delta_min: 0.80
           wall_occupancy_ratio_min: 0.90
           tunnel_height_delta_min: 0.25
-          tunnel_height_delta_max: 0.40
+          tunnel_height_delta_max: 0.75
           tunnel_occupancy_ratio_max: 0.45
           passable_as_free: true
           hysteresis_enable: false

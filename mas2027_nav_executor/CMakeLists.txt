@@ -81,8 +81,7 @@ add_executable(${PROJECT_NAME}_node src/nav_executor_node.cpp
   src/task_manager/task_manager.cpp
   src/common/environment/terrain_grid.cpp
   # 静态地形全局搜索使用 TerrainMapQuery（见 global_path_searcher.cpp），
-  # 实现必须编进本目标；此前它只出现在 test_terrain_map_query 里，故不加会报
-  # undefined reference to TerrainMapQuery::TerrainMapQuery / vtable。
+  # 其实现必须直接编进节点目标。
   src/common/environment/terrain_map_query.cpp)
 target_include_directories(${PROJECT_NAME}_node PRIVATE
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -108,52 +107,5 @@ install(TARGETS ${PROJECT_NAME}_node DESTINATION lib/${PROJECT_NAME})
 # 是个会静默跑在"没有地形图"状态的重复入口；生产唯一入口是
 # mas2027_nav_bringup/launch/nav_executor_launch.py）。故这里不再安装 launch 目录。
 install(DIRECTORY config DESTINATION share/${PROJECT_NAME})
-
-if(BUILD_TESTING)
-  enable_testing()
-  add_executable(test_terrain_grid test/test_terrain_grid.cpp src/common/environment/terrain_grid.cpp)
-  target_include_directories(test_terrain_grid PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
-  target_link_libraries(test_terrain_grid Eigen3::Eigen)
-  ament_target_dependencies(test_terrain_grid nav_msgs sensor_msgs)
-  add_test(NAME terrain_grid COMMAND test_terrain_grid)
-  add_executable(test_terrain_map_query test/test_terrain_map_query.cpp
-    src/common/environment/terrain_grid.cpp src/common/environment/terrain_map_query.cpp)
-  target_include_directories(test_terrain_map_query PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/include" "${minco_source_dir}/include")
-  target_link_libraries(test_terrain_map_query Eigen3::Eigen ${OpenCV_LIBS})
-  ament_target_dependencies(test_terrain_map_query nav_msgs rog_map sensor_msgs)
-  add_test(NAME terrain_map_query COMMAND test_terrain_map_query)
-  add_executable(test_mpc_horizon test/test_mpc_horizon.cpp)
-  target_include_directories(test_mpc_horizon PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
-  target_link_libraries(test_mpc_horizon ${PROJECT_NAME}_mpc)
-  add_test(NAME mpc_horizon COMMAND test_mpc_horizon)
-  add_executable(test_smac_planner_2d_simple test/test_smac_planner_2d_simple.cpp
-    src/path_planner/search/smac/smac_planner_2d_simple.cpp
-    src/common/environment/terrain_grid.cpp src/common/environment/terrain_map_query.cpp)
-  target_include_directories(test_smac_planner_2d_simple PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/include" "${minco_source_dir}/include")
-  target_link_libraries(test_smac_planner_2d_simple Eigen3::Eigen ${OpenCV_LIBS})
-  ament_target_dependencies(test_smac_planner_2d_simple nav_msgs rclcpp rog_map sensor_msgs)
-  add_test(NAME smac_planner_2d_simple COMMAND test_smac_planner_2d_simple)
-  add_executable(test_arc_length_speed_profile test/test_arc_length_speed_profile.cpp
-    src/path_planner/trajectory/arc_length_speed_profile.cpp)
-  target_include_directories(test_arc_length_speed_profile PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
-  add_test(NAME arc_length_speed_profile COMMAND test_arc_length_speed_profile)
-  add_executable(test_rog_map_command_safety test/test_rog_map_command_safety.cpp
-    src/path_executor/monitoring/command_safety.cpp src/common/environment/terrain_grid.cpp)
-  target_include_directories(test_rog_map_command_safety PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
-  ament_target_dependencies(test_rog_map_command_safety
-    geometry_msgs interfaces nav_msgs rclcpp rog_map sensor_msgs tf2 tf2_geometry_msgs tf2_ros)
-  add_test(NAME rog_map_command_safety COMMAND test_rog_map_command_safety)
-  add_executable(test_trajectory_safety_checker test/test_trajectory_safety_checker.cpp)
-  # 复用 planner 静态库：geometry_utils::Trajectory / Piece 都在其中。
-  target_link_libraries(test_trajectory_safety_checker ${PROJECT_NAME}_planner)
-  ament_target_dependencies(test_trajectory_safety_checker rclcpp)
-  add_test(NAME trajectory_safety_checker COMMAND test_trajectory_safety_checker)
-  add_executable(test_local_path_processor test/test_local_path_processor.cpp)
-  target_link_libraries(test_local_path_processor ${PROJECT_NAME}_planner)
-  ament_target_dependencies(test_local_path_processor geometry_msgs rclcpp rog_map)
-  add_test(NAME local_path_processor COMMAND test_local_path_processor)
-endif()
 
 ament_package()

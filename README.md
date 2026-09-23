@@ -182,13 +182,6 @@ launch 参数切换，统一在 `mas2027_nav_bringup/config/navigation_map.yaml`
 `map_server` 仍然必要，但职责只是发布静态
 `/cost_map` 和 `/direction_map`，已不依赖点云、先验 PCD、PCL 或 TF。
 
-不依赖真机的静态地形 → 目标 → 轨迹烟测：
-
-```bash
-ROS_DOMAIN_ID=232 python3 mas2027_nav_executor/test/smoke_goal.py \
-  mas2027_nav_bringup/map/lab3_terrain.msgpack mas2027_nav_executor/config
-```
-
 建图与换图（不进在线链路）统一走 `/home/mas/mapping_web_ui` 的三维建图控制台。本仓库不再自带
 `pcd2pgm`、`save_pcd_and_make_map.sh`、`pgm_to_terrain_msgpack.py` 与 `map_edit`：控制台一次完成
 累计点云 → PCD、二维占用图切片、PGM 修图、map 原点/朝向统一与 PGM→terrain 语义标注。它直接从

@@ -2,6 +2,43 @@
 
 本文件记录由开发任务产生的代码、配置、脚本、资源和文档变更。新记录追加在最上方，不改写旧记录。
 
+## 2026-09-23 — 移除项目自有测试与烟测文件
+
+- 改动：删除 `mas2027_nav_executor/test/` 下 12 个单元测试、闭环/烟测和记录脚本，以及
+  `mas2027_perception/mid360_driver/test/` 下 2 个测试文件；同步移除两个包 `CMakeLists.txt`
+  中的测试目标，并删除 README 中指向已删除测试脚本的命令。
+- 范围：保留 `third_party/`、`vendor/` 和 `3rdparty/` 中随外部依赖携带的测试源码；保留历史
+  审计与变更文档中对过去测试的记录。
+- 验证：执行 `colcon build --packages-select mas2027_nav_executor mid360_driver --symlink-install
+  --parallel-workers 4 --cmake-args -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON`，
+  两个包均构建成功；`git diff --check` 通过，并检查项目自有测试目录、对应 CMake 目标和 README
+  命令均已清除。未运行测试（测试源码已按要求移除），未上实车验证。
+
+## 2026-09-23 — 新增方案文档：定向区域偏航（坡道关小陀螺 + 正对坡）
+
+- 起因：用户要求"导航到特定区域（如上坡）时以指定 yaw 姿态通过，不要小陀螺"，且指出底盘自转由下位机控制。
+- 改动：**纯文档，无代码/配置改动**。新增 `src/docs/yaw_region_alignment_plan_2026-09-23.md`，内容包括：
+  1. 现状取证（三个断点：`path_executor.cpp:134-135` 算得出 ω、`ros2_comm.cpp:49-54/180-186` 只发 vx/vy/nav_state 不出桥、`/cmd_spin` 全仓无发布者且底盘自转由下位机内部产生；`minco_planner.cpp:1267-1300` 的坡道块触发太晚且产物同样卡在断点 ②）；
+  2. 复用既有方向层语义（`map_server/utils.hpp:12-20`、`terrain_grid.cpp:105-113`，`|travel·dir| ≥ 0.85` 仅 ±31.8°）；
+  3. 四层方案（方向层为区域唯一真源 + `terrain_traversal.yaml` 策略；新增 `TraversalDirector` 产出 `YawDirective`；执行器按 `CHASSIS_SPIN / NAV_ALIGN` 权限分路，`NAV_ALIGN` 时清零自转前馈、覆盖 MPC 参考 yaw、限幅限速；下行协议 v2 增 `omega`+`mode`、上行增 `chassis_status` 回执与交接互锁/降级）；
+  4. 改动清单（11 项，含新增 `interfaces/msg/navigation/ChassisCmd.msg`）、三期落地与验证路径、取舍（不改固件时只能"停在区域外"）、7 条风险。
+  5. 与上游 HW 参考实现（`/home/mas/下载/out_flat/`）对齐：自转是模式交接而非 yaw 指令、`chassis_cmd` 带 `omega`+`mode`、地形区 `run_up` 提前激活、区域内 ω 阻尼与朝向对齐残差、上游无绝对 yaw 设定点。
+- 验证（本地，只读）：
+  1. 逐条对照源码取证，行号见文档内引用；核对 `project_audit_2026-09-17.md` §2.10 与 README:99、launch:190 关于"协议只发 vx/vy/nav_state"的口径一致。
+  2. 用一次性解码脚本实测两张 terrain msgpack：`lab3_terrain.msgpack`（770×347 @0.05，仅 FLAT/OBSTACLE，direction 全 0）与 `lab_map_20260921_211523_terrain.msgpack`（772×308 @0.05，同样无方向内容）⇒ 现场坡道尚未标注，方案第一步依赖 `mapping_web_ui` 标注。
+  3. 上游参考由子代理逐文件核对（`control_arbitration.hpp`、`chassis_defs.hpp`、`state_machine.cpp`、`traversal_annotator.cpp`、`follow_problem.cpp`、`config__terrain_traversal.yaml`、`config__path_executor.yaml` 等），结论已写入文档 §1.4。
+- 未验证：未编译、未运行、未改任何代码；协议 v2 的下位机行为、`omega` 闭环参数、`align_dist`/`yaw_tol` 等默认值均未实车标定，文档中的数值是待调默认值。
+
+## 2026-09-22 — Foxglove 默认端口改为 8766
+
+- 起因：本机 `mapping_web_ui/backend/mapping_server.py` 已监听 `0.0.0.0:8765`，导致随导航启动的
+  `foxglove_bridge` 报 `Address already in use` 并退出。
+- 改动：`mas2027_nav_bringup/launch/nav_executor_launch.py` 将 `foxglove_port` 默认值从 `8765`
+  改为 `8766`；`docs/foxglove_remote_debug.md` 同步更新 bridge 启动、SSH 转发、直连、防火墙和排障命令。
+- 验证：执行 Python 语法编译检查；检查 ROS 2 launch 参数展开结果中 `foxglove_port` 默认为
+  `8766`；单独启动 bridge 烟雾测试，确认它在 `127.0.0.1:8766` 监听并广播 ROS 话题，测试后
+  正常关闭。未重启完整导航栈，未在 Foxglove Studio 中手工检查面板数据。
+
 ## 2026-09-22 — 修复 clangd 满屏报错/无法跳转：导出并合并 compile_commands.json
 
 - 起因：用户报"本项目 clangd 报错无法转跳"。

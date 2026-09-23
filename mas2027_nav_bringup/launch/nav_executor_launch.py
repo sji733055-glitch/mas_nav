@@ -163,7 +163,8 @@ def generate_launch_description():
             "rviz_config": os.path.join(bringup_dir, "rviz", "nav_executor_view.rviz"),
         }.items(),
     )
-    # 默认随 nav 栈起 bridge：SSH 隧道场景绑 127.0.0.1；直连改 foxglove_address:=0.0.0.0。
+    # 默认随 nav 栈起 bridge：8766 避开 mapping Web UI 占用的 8765。
+    # SSH 隧道场景绑 127.0.0.1；直连改 foxglove_address:=0.0.0.0。
     # 不需要可视化时用 use_foxglove:=False；已有独立 bridge 时也关掉，避免端口冲突。
     foxglove_bridge = IncludeLaunchDescription(
         FrontendLaunchDescriptionSource(
@@ -192,7 +193,7 @@ def generate_launch_description():
         DeclareLaunchArgument("use_odom_localizer", default_value="True"),
         DeclareLaunchArgument("use_foxglove", default_value="True"),
         DeclareLaunchArgument("foxglove_address", default_value="127.0.0.1"),
-        DeclareLaunchArgument("foxglove_port", default_value="8765"),
+        DeclareLaunchArgument("foxglove_port", default_value="8766"),
         DeclareLaunchArgument("output_topic", default_value="/cmd_vel"),
         robot_state_publisher,
         mid360_driver,

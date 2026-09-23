@@ -14,7 +14,7 @@
 ## 1. 链路
 
 ```text
-笔记本 Foxglove ──ws://127.0.0.1:8765──▶ SSH 隧道 ──▶ 机器人 127.0.0.1:8765
+笔记本 Foxglove ──ws://127.0.0.1:8766──▶ SSH 隧道 ──▶ 机器人 127.0.0.1:8766
                                                         foxglove_bridge
                                                               │ DDS
                                                               ▼
@@ -22,8 +22,9 @@
 ```
 
 `foxglove_bridge` 已默认挂进 `nav_executor_launch.py`（`use_foxglove:=True`，
-`foxglove_address:=127.0.0.1`，`foxglove_port:=8765`）。bridge 只负责把 DDS 图暴露成
-WebSocket；关掉 bridge 时 nav 栈照常跑，单独起 bridge、nav 没起时 Foxglove 能连上但没数据。
+`foxglove_address:=127.0.0.1`，`foxglove_port:=8766`）。bridge 只负责把 DDS 图暴露成
+WebSocket；`8766` 用于避开 mapping Web UI 已占用的 `8765`。关掉 bridge 时 nav 栈照常跑，
+单独起 bridge、nav 没起时 Foxglove 能连上但没数据。
 
 ## 2. 机器人端
 
@@ -31,7 +32,7 @@ WebSocket；关掉 bridge 时 nav 栈照常跑，单独起 bridge、nav 没起�
 
 ```bash
 source install/setup.bash
-# 默认已起 bridge，绑 127.0.0.1:8765（配合 SSH 隧道）
+# 默认已起 bridge，绑 127.0.0.1:8766（配合 SSH 隧道）
 ros2 launch mas2027_nav_bringup nav_executor_launch.py
 
 # 直连（笔记本装桌面版 Foxglove，直接连机器人 IP）
@@ -45,10 +46,10 @@ ros2 launch mas2027_nav_bringup nav_executor_launch.py use_foxglove:=False
 
 ```bash
 # 方式 A：只绑回环 + SSH 隧道（推荐：端口不外露，不用动防火墙）
-ros2 launch foxglove_bridge foxglove_bridge_launch.xml address:=127.0.0.1 port:=8765
+ros2 launch foxglove_bridge foxglove_bridge_launch.xml address:=127.0.0.1 port:=8766
 
 # 方式 B：直连（笔记本装桌面版 Foxglove，直接连机器人 IP）
-ros2 launch foxglove_bridge foxglove_bridge_launch.xml address:=0.0.0.0 port:=8765
+ros2 launch foxglove_bridge foxglove_bridge_launch.xml address:=0.0.0.0 port:=8766
 ```
 
 **不要**在 nav 栈已默认起 bridge 的同时再单独起一份，会
@@ -57,13 +58,13 @@ ros2 launch foxglove_bridge foxglove_bridge_launch.xml address:=0.0.0.0 port:=87
 确认活着：
 
 ```bash
-ss -tln | grep 8765        # 看到 127.0.0.1:8765 或 0.0.0.0:8765
+ss -tln | grep 8766        # 看到 127.0.0.1:8766 或 0.0.0.0:8766
 ```
 
 正常启动日志：
 
 ```text
-[foxglove_bridge-1] [INFO] [foxglove_bridge]: Server listening on port 8765
+[foxglove_bridge-1] [INFO] [foxglove_bridge]: Server listening on port 8766
 [foxglove_bridge-1] [INFO] [foxglove_bridge]: Advertising new channel 46 for topic "/cmd_spin"
 ```
 
@@ -76,7 +77,7 @@ pkill -f foxglove_bridge
 ### 限流白名单（点云太多、走 WiFi 卡时用）
 
 ```bash
-ros2 launch foxglove_bridge foxglove_bridge_launch.xml address:=127.0.0.1 port:=8765 \
+ros2 launch foxglove_bridge foxglove_bridge_launch.xml address:=127.0.0.1 port:=8766 \
   topic_whitelist:="['^/cloud_registered$','^/opt_path_vis$','^/Odometry$','^/tf.*']"
 ```
 
@@ -85,7 +86,7 @@ ros2 launch foxglove_bridge foxglove_bridge_launch.xml address:=127.0.0.1 port:=
 ### 方式 A：SSH 隧道（配合 `address:=127.0.0.1`）
 
 ```bash
-ssh -N -L 8765:127.0.0.1:8765 mas@192.168.77.79
+ssh -N -L 8766:127.0.0.1:8766 mas@192.168.77.79
 ```
 
 这条命令要一直挂着。建议写进 `~/.ssh/config` 免得每次敲：
@@ -94,7 +95,7 @@ ssh -N -L 8765:127.0.0.1:8765 mas@192.168.77.79
 Host mas-robot
     HostName 192.168.77.79
     User mas
-    LocalForward 8765 127.0.0.1:8765
+    LocalForward 8766 127.0.0.1:8766
     ServerAliveInterval 30
     ServerAliveCountMax 3
 ```
@@ -103,14 +104,14 @@ Host mas-robot
 
 ### 方式 B：直连（配合 `address:=0.0.0.0`）
 
-Foxglove 桌面版直接填 `ws://192.168.77.79:8765`。
+Foxglove 桌面版直接填 `ws://192.168.77.79:8766`。
 
 ### 连接
 
 Foxglove → `Open connection` → 选 **Foxglove WebSocket** → 填 URL → `Open`。
 
-- 方式 A 填 `ws://127.0.0.1:8765`
-- 方式 B 填 `ws://192.168.77.79:8765`
+- 方式 A 填 `ws://127.0.0.1:8766`
+- 方式 B 填 `ws://192.168.77.79:8766`
 
 ## 4. 面板配置
 
@@ -152,7 +153,7 @@ ERROR foxglove::websocket::server] Dropping client 127.0.0.1:58700: handshake fa
 HTTP 响应体是 `Missing expected sec-websocket-protocol header`（该字符串在
 `/opt/ros/jazzy/lib/libfoxglove.so` 里）。
 
-实测（向 8765 发原始握手请求）：
+实测（向 bridge 端口发原始握手请求）：
 
 | 客户端声明的子协议 | 结果 |
 |---|---|
@@ -173,7 +174,7 @@ HTTP 响应体是 `Missing expected sec-websocket-protocol header`（该字符�
 
 `https://studio.foxglove.dev` 是 https 页面，浏览器只允许它连 **localhost** 的
 `ws://`。所以网页版**必须走 SSH 隧道**（隧道把服务映射到笔记本本机），不能填
-`ws://192.168.77.79:8765`。
+`ws://192.168.77.79:8766`。
 
 ### 5.4 自定义消息类型在 3D 面板里加不了
 
@@ -197,7 +198,7 @@ HTTP 响应体是 `Missing expected sec-websocket-protocol header`（该字符�
 若哪天启用了 ufw，直连需要：
 
 ```bash
-sudo ufw allow from 192.168.77.0/24 to any port 8765 proto tcp
+sudo ufw allow from 192.168.77.0/24 to any port 8766 proto tcp
 ```
 
 ### 5.8 SSH 转发
@@ -209,7 +210,7 @@ sudo ufw allow from 192.168.77.0/24 to any port 8765 proto tcp
 
 | 现象 | 查什么 |
 |---|---|
-| Foxglove 连不上、无报错 | `ss -tln \| grep 8765`；是不是绑了 `127.0.0.1` 又没开隧道 |
+| Foxglove 连不上、无报错 | `ss -tln \| grep 8766`；是不是绑了 `127.0.0.1` 又没开隧道 |
 | 连上立刻断、日志 `handshake failed` | 客户端太旧，不认 `foxglove.sdk.v1`（见 5.1） |
 | 启动报 `Address already in use` | 已有一个 bridge 在跑，`pkill -f foxglove_bridge` 后再起 |
 | 连上但没数据 | nav 栈没起，或 topic 被白名单滤掉 |
