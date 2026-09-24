@@ -2,6 +2,84 @@
 
 本文件记录由开发任务产生的代码、配置、脚本、资源和文档变更。新记录追加在最上方，不改写旧记录。
 
+## 2026-09-24 — 统一特殊地形标签与底盘 mode
+
+- 改动：特殊地形仅保留上坡 `5`、隧道 `6`、起伏路段 `7`，标签与各自底盘 mode 相同；`map_server` 拒绝旧的 2～4 和 8 标签，`nav_executor` 按 5/6/7 标注区域并校验 mode 与标签一致。当前导航 terrain 地图的 2,752 个旧上坡格由 `2` 迁至 `5`，其余格位和地图几何不变。按用户补充要求，地图文件移除 `direction` 通道，`map_server` 删除方向图解析、膨胀和相关接口；RViz/Foxglove 说明清除方向图入口。`mapping_web_ui` 独立仓库的编辑选项、单通道格式和对应地图也同步调整。
+- 验证：核对导航与网页端两份地图均为 `{0:211299, 1:23725, 5:2752}`，且文件不含方向通道；`colcon build --packages-select map_server mas2027_nav_executor` 成功，`map_server` 实际加载单通道 772×308 地图成功；网页端 30 个相关单元测试、前端语法/轨迹 harness 和 `git diff --check` 通过。未做实车底盘 mode 联调，也未在浏览器中手工验收编辑器。
+
+## 2026-09-24 — Foxglove 连接说明改用当前机器人地址
+
+- 改动：`docs/foxglove_remote_debug.md` 标明旧 Wi-Fi IP 仅是历史记录，新增连接前查询 `wlo1` 当前 IPv4 和检查 `8766` 监听的步骤；SSH 隧道、直连及排障示例改为使用当前地址，并注明 bridge 默认只绑定本机。
+- 验证：本机 `wlo1` 当前为 `192.168.77.141`，mapping Web UI 占用 `8765`，`8766` 当前无人监听；最近一次 nav launch 日志显示 bridge 曾在 `127.0.0.1:8766` 正常启动并广播话题，随后随 Ctrl-C 退出。检查文档差异和空白错误。未从笔记本实际建立 Foxglove 连接。
+
+## 2026-09-24 — 区域模式速度与平地一致
+
+- 改动：将 `mas2027_nav_executor/config/region_control.yaml` 的坡道、隧道、起伏路最大平移速度统一从 `1.0` 调为 `3.0 m/s`，最大平移加速度从 `2.0` 调为 `4.0 m/s²`，与普通路段的 MINCO/MPC 上限一致；mode 编号及区域切换距离不变。更新区域控制说明。区域模式切换本身不再额外限速。
+- 验证：使用 PyYAML 解析三个参数文件，断言三种区域上限均与 MINCO `3.0/4.0` 一致，并核对 MPC X/Y 轴的 `3.0/4.0`；`git diff --check` 通过。仅改参数与文档，未重新编译或做实车速度验证。
+
+## 2026-09-24 — 平地机器人移除运行时方向图依赖
+
+- 改动：保持现有地形标签与 mode 编号，`nav_executor` 的 `TerrainGrid` 改由 `/cost_map` 和 `/terrain_label_map` 构成快照，搜索、轨迹与指令安全门只按静态占据栅格判定地形通过，不再订阅或要求 `/direction_map`；`map_server` 停止计算、发布方向图，旧 terrain msgpack 的 `direction` 字段保留兼容但可省略。同步更新启动映射、参数、规划拒绝原因及说明文档。在线 ROGMap 净空与区域 mode/限速继续工作。
+- 验证：`colcon build --packages-select map_server mas2027_nav_executor --symlink-install --parallel-workers 2 --cmake-args -DCMAKE_BUILD_TYPE=Release` 通过；启动文件 `python3 -m py_compile` 与 `git diff --check` 通过。未做实车行驶验证。
+
+## 2026-09-24 — 平地坡道模式测试区解除方向阻断
+
+- 改动：`TerrainGrid` 增加 `node.enforce_slope_direction` 开关，统一用于规划搜索、MINCO 轨迹检查、执行命令安全门和规划约束可视化；关闭时 `SLOPE=2` 仍触发区域 mode 与限速，但不再按方向图限制行进角度。当前 `node_params.yaml` 关闭此开关，以适配将平地标作坡道的测试地图；`region_control.md` 说明真实坡道需重新开启。静态占据与其他定向地形约束保持原判据。
+- 验证：核对最新运行日志中 `TERRAIN_COLLISION_OR_DIRECTION`、`terrain_transition` 刹车，以及当前地图中 2,752 个坡道格方向值均为 0；`colcon build --packages-select mas2027_nav_executor --symlink-install --parallel-workers 2 --cmake-args -DCMAKE_BUILD_TYPE=Release` 通过，`git diff --check` 通过。未做实车行驶验证。
+
+## 2026-09-24 — 同步下位机 mode 编号到导航默认值
+
+- 改动：按当前 `region_control.yaml` 中的普通 4、坡道 5、隧道 6、起伏路 7，同步 `nav_executor_node`、`ros2_comm` 和 bringup 的普通 mode 默认值；更新 nav_executor 总览和区域控制文档中的编号说明。保留 YAML 当前配置。
+- 验证：检查配置、导航/桥接默认值与文档映射一致，并执行 `git diff --check`。本次未编译、未运行测试或实车验证。
+
+## 2026-09-24 — 细化 nav_executor_node 功能分层注释
+
+- 改动：进一步把 `nav_executor_node.cpp` 标注为参数读取、区域策略、MPC 配置、地图/规划装配、轨迹标注、机器人状态输入、实时命令输出、规划诊断、可视化、任务接入、控制计算、共享状态和 ROS 调度等功能层，并标明各层之间的数据职责。仅调整注释，不改行为。
+- 验证：执行 `git diff --check`；未编译或运行测试（仅注释修改）。
+
+## 2026-09-24 — 按职责整理 nav_executor_node 注释
+
+- 改动：在 `mas2027_nav_executor/src/nav_executor_node.cpp` 为参数配置、区域控制、核心模块组装、输入订阅、输出发布、定时任务、可视化、目标接纳、控制周期、成员状态分组和主线程生命周期增加中文分区说明；不改函数逻辑和运行行为。
+- 验证：执行 `git diff --check` 并检查差异仅涉及注释和本历史记录；不运行测试或编译（仅注释修改）。
+
+## 2026-09-24 — 更正 mas_vision 修改目标为桌面工程
+
+- 改动：按用户澄清，将 mode 透传修改落实到 `/home/mas/桌面/mas_vision` 的 `ROS2_RECV_PACKET`、ROS2 接收线程、`UserSerial::sendNav` 与串口 `SendPacket`；`uint8 mode` 位于 `nav_state` 前。撤回此前误改的 `/home/mas/vision_opensource/mas_vision` 副本中的对应改动，并在 `mas2027_nav_executor/docs/region_control.md` 标明实际工程路径。导航侧协议和 0/1/2/3 映射保持不变。
+- 验证：在独立临时目录配置并完整构建桌面 `mas_vision`，`base` 目标通过；检查桌面工程及导航仓库的 `git diff --check`。未上实车，下位机接收协议仍需同步更新。
+
+## 2026-09-24 — 模式字节固定为独立字段并贯通 mas_vision
+
+- 改动：模式映射设为普通路段 0、坡道 1、隧道 2、起伏路 3，更新 `mas2027_nav_executor/config/region_control.yaml` 与默认值；`ros2_comm` 删除 legacy/nav_state/extended 选择，固定发送 `vx, vy, mode, nav_state` 的 10 字节 UDP 载荷，超时零速保留最近 mode。bringup 不再暴露 `mode_transport`。
+- 视觉链路：`/home/mas/vision_opensource/mas_vision` 的 UDP 接收结构、ROS2 线程转发、`UserSerial::sendNav` 和串口 `SendPacket` 增加独立 `uint8 mode`，均位于 `nav_state` 前；同步更新导航包总览和区域控制文档。串口发送包从 21 字节变为 22 字节，需下位机同步升级接收协议。
+- 验证：`colcon build --packages-select ros2_comm mas2027_nav_executor mas2027_nav_bringup --symlink-install --parallel-workers 3 --cmake-args -DCMAKE_BUILD_TYPE=Release` 通过，增加报文偏移断言后单独重编 `ros2_comm` 通过；在独立临时目录配置并完整构建 `mas_vision`，增加报文偏移断言后重编仍通过；执行 `git diff --check`。未运行测试或实车联调；下位机接收代码不在上述两个源码目录内，未修改，必须同步更新串口协议后才能部署。
+
+## 2026-09-24 — 新增 nav_executor 整体讲解文档
+
+- 改动：在 `mas2027_nav_executor/README.md` 新增包级总览，按目标接纳、全局搜索、MINCO、任务状态机、区域标注、MPC、安全门和底盘桥接的实际顺序解释导航链路，并列出地图/坐标系、话题、配置、零速降级与排障入口；在 `mas2027_nav_executor/docs/region_control.md` 新增隧道、坡道、起伏路的区域控制细节，作为总览的延伸阅读。本次仅改文档。
+- 验证：对照入口节点、`PathPlanner`、`TaskManager`、`PathExecutor`、配置与 bringup 启动文件核对描述，并检查 Markdown 链接及 `git diff --check`。未编译、未运行测试或实车验证（文档修改不影响可执行代码）。
+
+## 2026-09-24 — 导航侧接入隧道、坡道、起伏路模式与速度控制
+
+- 改动：`map_server` 接受 `TUNNEL=7`、`UNDULATING=8`，保留 `SLOPE=2`，并发布原始
+  `/terrain_label_map`；`TerrainGrid` 将标签与代价、方向图作为同一快照提供给规划和执行。
+  `MincoPlanner` 在三类区域的准备到释放距离内降低分段速度上限。导航节点沿最终
+  `/opt_path` 采样生成 `RegionSegment`，`RegionController` 按单调路径进度管理准备、
+  激活、进入、释放和重规划后的模式保持；不同 mode 控制窗重叠会拒绝轨迹。
+  `PathExecutor` 按区域参数调整 MPC 的平移速度和加速度约束，准备段逐周期过渡，
+  到 commit 前钳到目标上限，并发布同周期的
+  `/nav_executor/chassis_cmd` 与诊断用 `/nav_executor/region_status`。
+- 桥接：新增 `interfaces/ChassisCommand`、`RegionStatus`；`ros2_comm` 改消费
+  `/nav_executor/chassis_cmd`，支持 `legacy`（默认 9 字节原协议）、`nav_state`（旧字节
+  承载 mode）和 `extended`（10 字节独立 mode）三种可配置下行格式。默认兼容当前
+  `mas_vision` 的固定 9 字节接收格式；未擅自改动仓库外的 `mas_vision`。
+- 配置与说明：新增 `mas2027_nav_executor/config/region_control.yaml`，三类区域分别
+  配置 mode、最大速度、最大加速度和四个距离参数；更新 bringup、README 与
+  `docs/region_control_2026-09-24.md`。mode 默认 `-1`，经过未配置区域时停止执行。
+- 验证：`colcon build --packages-select interfaces map_server ros2_comm mas2027_nav_executor
+  --symlink-install --parallel-workers 4 --cmake-args -DCMAKE_BUILD_TYPE=Release` 编译检查；
+  `git diff --check` 检查空白格式。未运行测试、未上实车，也未验证 mas_vision/下位机模式
+  编码与 UDP/串口透传；需要确认四个 mode 编号及 `nav_state` 是否即 mode 后再启用模式传输。
+
 ## 2026-09-23 — 移除项目自有测试与烟测文件
 
 - 改动：删除 `mas2027_nav_executor/test/` 下 12 个单元测试、闭环/烟测和记录脚本，以及

@@ -67,7 +67,7 @@ bool PathPlanner::acceptGoal(const geometry_msgs::msg::PoseStamped & goal)
   const auto terrain = terrain_->snapshot();
   if (!terrain) {
     RCLCPP_WARN(node_->get_logger(),
-      "Ignoring goal until static terrain cost and direction maps are ready");
+      "Ignoring goal until static terrain cost and label maps are ready");
     return false;
   }
   const auto query = rog_map_->queryInterface();

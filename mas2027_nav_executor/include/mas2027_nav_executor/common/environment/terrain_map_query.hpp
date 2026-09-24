@@ -12,7 +12,7 @@
 
 namespace mas2027_nav_executor {
 
-// MapQueryInterface backed by the static cost/direction terrain in TerrainGrid.
+// MapQueryInterface backed by the static cost and label terrain in TerrainGrid.
 // Builds a 2D signed distance field from planningConstraints() for global search.
 class TerrainMapQuery final : public rog_map::MapQueryInterface
 {

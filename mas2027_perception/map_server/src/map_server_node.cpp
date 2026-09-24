@@ -100,8 +100,6 @@ MapServerNode::MapServerNode(const rclcpp::NodeOptions& options) : Node("map_ser
     inflation.full_cost_radius_m = declare_parameter<double>("full_cost_radius_m", 0.0);
     inflation.cutoff_radius_m = declare_parameter<double>("cutoff_radius_m", 0.25);
     inflation.decay_rate_per_m = declare_parameter<double>("decay_rate_per_m", 8.0);
-    inflation.direction_non_body_magnitude_cap = declare_parameter<double>(
-        "direction_non_body_magnitude_cap", 0.9);
     if (terrain_path.empty()) {
         throw std::invalid_argument("terrain_map_path must point to a converted msgpack map");
     }
@@ -111,10 +109,10 @@ MapServerNode::MapServerNode(const rclcpp::NodeOptions& options) : Node("map_ser
 
     cost_grid_ = to_occupancy_grid(maps_.cost_map, maps_.width, maps_.height,
         maps_.resolution, metadata.origin_x, metadata.origin_y, frame_id_);
-    direction_image_ = to_image(maps_.direction_map, "bgr8", frame_id_, now());
+    terrain_label_image_ = to_image(maps_.terrain_label_map, "mono8", frame_id_, now());
     const auto map_qos = rclcpp::QoS(1).reliable().transient_local();
     cost_pub_ = create_publisher<nav_msgs::msg::OccupancyGrid>("cost_map", map_qos);
-    direction_pub_ = create_publisher<sensor_msgs::msg::Image>("direction_map", map_qos);
+    terrain_label_pub_ = create_publisher<sensor_msgs::msg::Image>("terrain_label_map", map_qos);
     timer_ = create_wall_timer(std::chrono::milliseconds(500), [this] { publish_maps(); });
     RCLCPP_INFO(get_logger(),
         "loaded %dx%d static terrain map at %.3f m/px, origin=(%.6f, %.6f) from %s",
@@ -125,9 +123,9 @@ MapServerNode::MapServerNode(const rclcpp::NodeOptions& options) : Node("map_ser
 void MapServerNode::publish_maps() {
     const auto stamp = now();
     cost_grid_.header.stamp = stamp;
-    direction_image_.header.stamp = stamp;
+    terrain_label_image_.header.stamp = stamp;
     cost_pub_->publish(cost_grid_);
-    direction_pub_->publish(direction_image_);
+    terrain_label_pub_->publish(terrain_label_image_);
 }
 
 nav_msgs::msg::OccupancyGrid MapServerNode::to_occupancy_grid(

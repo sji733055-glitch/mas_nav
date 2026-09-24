@@ -6,6 +6,7 @@
 #include "visualization_msgs/msg/marker_array.hpp"
 
 #include <limits>
+#include <array>
 #include <map>
 #include <string>
 
@@ -194,6 +195,9 @@ private:
   std::unique_ptr<PlannerModeContext> mode_context_;
   std::unique_ptr<GlobalPathSearcher> global_path_searcher_;
   std::shared_ptr<mas2027_nav_executor::TerrainGrid> terrain_;
+  std::array<double, 9> region_speed_caps_{};
+  std::array<double, 9> region_prepare_distances_{};
+  std::array<double, 9> region_release_distances_{};
   std::unique_ptr<LocalPathProcessor> local_path_processor_;
   std::unique_ptr<TrajectorySafetyChecker> safety_checker_;
   SimpleCorridorGenerator::Ptr corridor_gen_;

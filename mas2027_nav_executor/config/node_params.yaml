@@ -25,13 +25,15 @@
         global_plan_pub: /nav_executor/global_plan
         global_plan_marker_pub: /nav_executor/debug/global_plan
         minco_trajectory_pub: /nav_executor/debug/minco_trajectory
-        # RViz 规划约束图：100 当前不可通行，50 仅限指定方向通过；不显示预测帧。
+        # RViz 规划约束图：100 不可通行，0 可通行；不显示预测帧。
         planning_constraints_pub: /planning_constraints
         planning_constraints_marker_pub: /planning_constraints_markers
         # 独立执行器直接输出到底盘入口。
         cmd_vel_pub: /cmd_vel
+        chassis_cmd_pub: /nav_executor/chassis_cmd
+        region_status_pub: /nav_executor/region_status
         terrain_cost_sub: /cost_map
-        terrain_direction_sub: /direction_map
+        terrain_label_sub: /terrain_label_map
       visualization:
         velocity_color_min: 0.0
         velocity_color_max: 3.0

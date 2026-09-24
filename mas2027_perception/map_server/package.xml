@@ -5,7 +5,7 @@
   <version>0.0.1</version>
   <description>
     先验地形图服务：加载 msgpack 地形图（语义标签 + 方向场），发布膨胀后的
-    静态全局代价图与方向图。在线障碍由 nav_executor 内的 ROGMap 独占负责。
+    静态全局代价图与区域标签图。在线障碍由 nav_executor 内的 ROGMap 独占负责。
   </description>
   <maintainer email="mitsuha.2213@gmail.com">@Polyacetone</maintainer>
   <license>MIT</license>

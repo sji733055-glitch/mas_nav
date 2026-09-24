@@ -9,8 +9,6 @@
 namespace mas2027_nav_executor {
 namespace {
 constexpr int kOccupiedCost = 95;
-constexpr double kMinAlignment = 0.85;
-constexpr double kPi = 3.14159265358979323846;
 }
 
 void TerrainGrid::updateCost(const nav_msgs::msg::OccupancyGrid & grid)
@@ -21,10 +19,10 @@ void TerrainGrid::updateCost(const nav_msgs::msg::OccupancyGrid & grid)
   revision_.fetch_add(1, std::memory_order_release);
 }
 
-void TerrainGrid::updateDirection(const sensor_msgs::msg::Image & image)
+void TerrainGrid::updateLabels(const sensor_msgs::msg::Image & image)
 {
   std::lock_guard<std::mutex> lock(mutex_);
-  direction_ = image;
+  labels_ = image;
   refresh();
   revision_.fetch_add(1, std::memory_order_release);
 }
@@ -37,17 +35,17 @@ void TerrainGrid::refresh()
   if (width == 0 || height == 0 || !std::isfinite(cost_.info.resolution) ||
     cost_.info.resolution <= 0.0F ||
     cost_.data.size() != static_cast<size_t>(width) * height ||
-    direction_.width != width || direction_.height != height ||
-    direction_.encoding != "bgr8" || direction_.step < width * 3U ||
-    direction_.data.size() < static_cast<size_t>(direction_.step) * height ||
-    cost_.header.frame_id.empty() || cost_.header.frame_id != direction_.header.frame_id ||
+    labels_.width != width || labels_.height != height ||
+    labels_.encoding != "mono8" || labels_.step < width ||
+    labels_.data.size() < static_cast<size_t>(labels_.step) * height ||
+    cost_.header.frame_id.empty() || cost_.header.frame_id != labels_.header.frame_id ||
     std::abs(cost_.info.origin.orientation.x) > 1e-6 ||
     std::abs(cost_.info.origin.orientation.y) > 1e-6 ||
     std::abs(cost_.info.origin.orientation.z) > 1e-6 ||
     std::abs(cost_.info.origin.orientation.w - 1.0) > 1e-6) {
     return;
   }
-  snapshot_ = std::make_shared<Snapshot>(Snapshot{cost_, direction_});
+  snapshot_ = std::make_shared<Snapshot>(Snapshot{cost_, labels_});
 }
 
 std::shared_ptr<const TerrainGrid::Snapshot> TerrainGrid::snapshot() const
@@ -62,18 +60,9 @@ std::optional<nav_msgs::msg::OccupancyGrid> TerrainGrid::planningConstraints() c
   if (!snapshot_) return std::nullopt;
 
   nav_msgs::msg::OccupancyGrid result = snapshot_->cost;
-  const auto & direction = snapshot_->direction;
   for (size_t index = 0; index < result.data.size(); ++index) {
     const int8_t cost = snapshot_->cost.data[index];
-    if (cost < 0 || cost >= kOccupiedCost) {
-      result.data[index] = 100;
-      continue;
-    }
-    const size_t pixel = (index / result.info.width) * direction.step +
-      (index % result.info.width) * 3U;
-    const uint8_t magnitude = direction.data[pixel + 1U];
-    const uint8_t label = direction.data[pixel + 2U];
-    result.data[index] = magnitude == 255U && label >= 2U && label <= 6U ? 50 : 0;
+    result.data[index] = cost < 0 || cost >= kOccupiedCost ? 100 : 0;
   }
   return result;
 }
@@ -98,19 +87,10 @@ Eigen::Vector2d TerrainGrid::Snapshot::center(int x, int y) const
     cost.info.origin.position.y + (y + 0.5) * res};
 }
 
-bool TerrainGrid::Snapshot::permitted(int x, int y, const Eigen::Vector2d & travel) const
+bool TerrainGrid::Snapshot::freeCell(int x, int y) const
 {
   const size_t index = static_cast<size_t>(y) * cost.info.width + x;
-  if (cost.data[index] < 0 || cost.data[index] >= kOccupiedCost) return false;
-  const size_t pixel = static_cast<size_t>(y) * direction.step + static_cast<size_t>(x) * 3U;
-  const uint8_t angle = direction.data[pixel];
-  const uint8_t magnitude = direction.data[pixel + 1U];
-  const uint8_t label = direction.data[pixel + 2U];
-  if (magnitude != 255U) return true;  // Inflated direction halo is soft, not a terrain body.
-  if (label < 2U || label > 6U || travel.squaredNorm() < 1e-12) return false;
-  const double radians = static_cast<double>(angle) * 2.0 * kPi / 255.0;
-  const double alignment = travel.normalized().dot(Eigen::Vector2d(std::cos(radians), std::sin(radians)));
-  return std::abs(alignment) >= kMinAlignment && (label != 6U || alignment > 0.0);
+  return cost.data[index] >= 0 && cost.data[index] < kOccupiedCost;
 }
 
 bool TerrainGrid::Snapshot::contains(const Eigen::Vector2d & point) const
@@ -124,7 +104,14 @@ bool TerrainGrid::Snapshot::traversable(const Eigen::Vector2d & point) const
   int x = 0, y = 0;
   if (!cell(point, x, y)) return false;
   const size_t index = static_cast<size_t>(y) * cost.info.width + x;
-  return cost.data[index] >= 0 && cost.data[index] < kOccupiedCost;
+  return freeCell(x, y);
+}
+
+std::optional<uint8_t> TerrainGrid::Snapshot::terrainLabelAt(const Eigen::Vector2d & point) const
+{
+  int x = 0, y = 0;
+  if (!cell(point, x, y)) return std::nullopt;
+  return labels.data[static_cast<size_t>(y) * labels.step + static_cast<size_t>(x)];
 }
 
 bool TerrainGrid::Snapshot::transition(
@@ -137,7 +124,7 @@ bool TerrainGrid::Snapshot::transition(
   for (int i = 0; i <= steps; ++i) {
     const Eigen::Vector2d point = from + delta * (static_cast<double>(i) / steps);
     int x = 0, y = 0;
-    if (!cell(point, x, y) || !permitted(x, y, delta)) return false;
+    if (!cell(point, x, y) || !freeCell(x, y)) return false;
   }
   return true;
 }

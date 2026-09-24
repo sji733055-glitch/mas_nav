@@ -1,0 +1,32 @@
+/**:
+  ros__parameters:
+    region_control:
+      # Special terrain labels equal chassis modes: slope=5, tunnel=6, undulating=7.
+      # Current flat-ground robot: region speed/acceleration limits match normal MINCO/MPC limits.
+      normal_mode: 4
+      speed_blend_rate: 2.0
+      acceleration_blend_rate: 4.0
+      slope:
+        mode: 5
+        max_speed: 3.0
+        max_acceleration: 4.0
+        prepare_distance: 1.0
+        activation_distance: 0.8
+        commit_distance: 0.2
+        release_distance: 0.5
+      tunnel:
+        mode: 6
+        max_speed: 3.0
+        max_acceleration: 4.0
+        prepare_distance: 1.0
+        activation_distance: 0.8
+        commit_distance: 0.2
+        release_distance: 0.5
+      undulating:
+        mode: 7
+        max_speed: 3.0
+        max_acceleration: 4.0
+        prepare_distance: 1.0
+        activation_distance: 0.8
+        commit_distance: 0.2
+        release_distance: 0.5

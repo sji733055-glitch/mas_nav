@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 
 #include "geometry_msgs/msg/twist.hpp"
 #include "interfaces/msg/mpc_position_command.hpp"
@@ -25,6 +26,8 @@ struct ExecutorInput
   interfaces::msg::MpcPositionCommand::ConstSharedPtr trajectory;
   nav_msgs::msg::Odometry::ConstSharedPtr odom;
   double spin_speed{};
+  double region_speed_limit{std::numeric_limits<double>::infinity()};
+  double region_acceleration_limit{std::numeric_limits<double>::infinity()};
   bool allow_motion{false};
   rclcpp::Time stamp;
 };

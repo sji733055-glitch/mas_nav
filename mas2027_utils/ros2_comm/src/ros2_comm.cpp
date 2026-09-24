@@ -1,13 +1,16 @@
 #include <rclcpp/rclcpp.hpp>
 #include "ros2_comm/msg/referee_data.hpp"
-#include "geometry_msgs/msg/twist.hpp"
+#include "interfaces/msg/chassis_command.hpp"
 
 #include <thread>
 #include <mutex>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstring>
 #include <vector>
+#include <stdexcept>
+#include <string>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -50,8 +53,13 @@ struct __attribute__((packed)) RawControlPacket
 {
     float vx;
     float vy;
+    uint8_t mode;
     uint8_t nav_state;
 };
+static_assert(sizeof(RawControlPacket) == 10, "Control payload must be 10 bytes");
+static_assert(offsetof(RawControlPacket, mode) == 8 &&
+              offsetof(RawControlPacket, nav_state) == 9,
+              "Control mode must precede nav_state");
 
 // ROS2 节点类 
 class UdpBridgeNode : public rclcpp::Node
@@ -59,19 +67,25 @@ class UdpBridgeNode : public rclcpp::Node
 public:
     UdpBridgeNode() : Node("udp_bridge_node"), m_running(false), m_sock_fd(-1)
     {
+        const int normal_mode = declare_parameter<int>("normal_mode", 4);
+        if (normal_mode < 0 || normal_mode > 255) {
+            throw std::invalid_argument("normal_mode must be in [0,255]");
+        }
+        normal_mode_ = static_cast<uint8_t>(normal_mode);
         // 初始化 ROS2 接口
         pub_referee_ = this->create_publisher<ros2_comm::msg::RefereeData>("referee_data", 10);
         
         // 深度 1：指令是最新值优先的量，积压的旧指令没有价值，不该在恢复后被补发
-        sub_cmd_vel_ = this->create_subscription<geometry_msgs::msg::Twist>(
-            "/cmd_vel", 1,
-            std::bind(&UdpBridgeNode::cmd_vel_callback, this, std::placeholders::_1));
+        sub_chassis_cmd_ = this->create_subscription<interfaces::msg::ChassisCommand>(
+            "/nav_executor/chassis_cmd", 1,
+            std::bind(&UdpBridgeNode::chassis_cmd_callback, this, std::placeholders::_1));
 
         // 初始化控制数据
         {
             std::lock_guard<std::mutex> lock(m_ctrl_mutex);
             m_latest_ctrl.vx = 0.0f;
             m_latest_ctrl.vy = 0.0f;
+            m_latest_ctrl.mode = normal_mode_;
             m_latest_ctrl.nav_state = 0;
             m_last_cmd_time = this->now();
             m_last_send_time = std::chrono::steady_clock::now() - KEEPALIVE_INTERVAL;
@@ -80,7 +94,7 @@ public:
         // 初始化 UDP Socket
         if (init_udp())
         {
-            // 接收线程只负责收，发送由 /cmd_vel 回调和保活定时器触发
+            // 接收线程只负责收，发送由底盘命令回调和保活定时器触发
             m_running = true;
             m_comm_thread = std::thread(&UdpBridgeNode::comm_thread_loop, this);
             m_keepalive_timer = this->create_wall_timer(
@@ -106,7 +120,7 @@ public:
 private:
     // ROS2 接口
     rclcpp::Publisher<ros2_comm::msg::RefereeData>::SharedPtr pub_referee_;
-    rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr sub_cmd_vel_;
+    rclcpp::Subscription<interfaces::msg::ChassisCommand>::SharedPtr sub_chassis_cmd_;
 
     // 线程与状态
     std::thread m_comm_thread;
@@ -115,6 +129,7 @@ private:
     rclcpp::TimerBase::SharedPtr m_keepalive_timer;
 
     RawControlPacket m_latest_ctrl;
+    uint8_t normal_mode_{4};
     rclcpp::Time m_last_cmd_time;
     std::chrono::steady_clock::time_point m_last_send_time;
     // 0.3 s 超时：0.4 m/s 下失联最多多滑 12 cm；不得放宽，滑行距离与超时成正比
@@ -171,14 +186,15 @@ private:
         }
     }
 
-    // /cmd_vel 回调：更新最新值后立即尝试发送，新指令不必等定时器
-    void cmd_vel_callback(const geometry_msgs::msg::Twist::SharedPtr msg)
+    // 底盘命令回调：更新最新值后立即尝试发送，新指令不必等定时器
+    void chassis_cmd_callback(const interfaces::msg::ChassisCommand::SharedPtr msg)
     {
         {
             std::lock_guard<std::mutex> lock(m_ctrl_mutex);
-            m_latest_ctrl.vx = msg->linear.x;
-            m_latest_ctrl.vy = msg->linear.y;
-            if (msg->linear.x == 0 && msg->linear.y == 0) {
+            m_latest_ctrl.vx = msg->vx;
+            m_latest_ctrl.vy = msg->vy;
+            m_latest_ctrl.mode = msg->mode;
+            if (msg->vx == 0 && msg->vy == 0) {
                 m_latest_ctrl.nav_state = 0;
             } else {
                 m_latest_ctrl.nav_state = 1;
@@ -202,13 +218,13 @@ private:
             }
             m_last_send_time = now;
             timed_out = (this->now() - m_last_cmd_time).seconds() > CMD_TIMEOUT_SEC;
-            pkt = timed_out ? RawControlPacket {0.0f, 0.0f, 0} : m_latest_ctrl;
+            pkt = timed_out ? RawControlPacket {0.0f, 0.0f, m_latest_ctrl.mode, 0} : m_latest_ctrl;
         }
         // 系统调用放在锁外，避免阻塞 /cmd_vel 回调
         send_to_host(pkt);
         if (timed_out) {
             RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
-                                 "/cmd_vel timeout, sending zero velocity");
+                                 "chassis command timeout, sending zero velocity");
         }
     }
 
@@ -216,16 +232,17 @@ private:
     bool send_to_host(const RawControlPacket& pkt)
     {
         if (m_sock_fd < 0) return false;
-
+        const size_t payload_size = sizeof(pkt);
         uint8_t frame[sizeof(RawControlPacket) + 3];
         frame[0] = RECV_FRAME_HEADER;
-        frame[1] = static_cast<uint8_t>(sizeof(RawControlPacket));
-        memcpy(frame + 2, &pkt, sizeof(RawControlPacket));
-        frame[2 + sizeof(RawControlPacket)] = RECV_FRAME_TAIL;
+        frame[1] = static_cast<uint8_t>(payload_size);
+        memcpy(frame + 2, &pkt, payload_size);
+        frame[2 + payload_size] = RECV_FRAME_TAIL;
 
-        const ssize_t sent = sendto(m_sock_fd, frame, sizeof(frame), 0,
+        const size_t frame_size = payload_size + 3;
+        const ssize_t sent = sendto(m_sock_fd, frame, frame_size, 0,
                                     (sockaddr*)&m_target_addr, sizeof(m_target_addr));
-        if (sent != static_cast<ssize_t>(sizeof(frame)))
+        if (sent != static_cast<ssize_t>(frame_size))
         {
             RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
                                  "sendto failed: %s", strerror(errno));

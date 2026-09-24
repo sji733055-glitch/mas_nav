@@ -18,16 +18,17 @@ class TerrainGrid final
 {
 public:
   void updateCost(const nav_msgs::msg::OccupancyGrid & grid);
-  void updateDirection(const sensor_msgs::msg::Image & image);
+  void updateLabels(const sensor_msgs::msg::Image & image);
   uint64_t revision() const noexcept { return revision_.load(std::memory_order_acquire); }
 
   struct Snapshot
   {
     nav_msgs::msg::OccupancyGrid cost;
-    sensor_msgs::msg::Image direction;
+    sensor_msgs::msg::Image labels;
 
     bool contains(const Eigen::Vector2d & point) const;
     bool traversable(const Eigen::Vector2d & point) const;
+    std::optional<uint8_t> terrainLabelAt(const Eigen::Vector2d & point) const;
     bool transition(const Eigen::Vector2d & from, const Eigen::Vector2d & to) const;
     bool search(const Eigen::Vector2d & start, const Eigen::Vector2d & goal,
       std::vector<Eigen::Vector2d> & path) const;
@@ -35,20 +36,20 @@ public:
   private:
     bool cell(const Eigen::Vector2d & point, int & x, int & y) const;
     Eigen::Vector2d center(int x, int y) const;
-    bool permitted(int x, int y, const Eigen::Vector2d & travel) const;
+    bool freeCell(int x, int y) const;
   };
 
   std::shared_ptr<const Snapshot> snapshot() const;
 
-  // RViz-facing map of the exact hard/directional constraints used by the planner.
-  // 100: currently blocked; 50: direction-limited terrain.
+  // RViz-facing map of the hard static occupancy constraints used by the planner.
+  // 100: blocked; 0: traversable.
   std::optional<nav_msgs::msg::OccupancyGrid> planningConstraints() const;
 
 private:
   void refresh();
   mutable std::mutex mutex_;
   nav_msgs::msg::OccupancyGrid cost_;
-  sensor_msgs::msg::Image direction_;
+  sensor_msgs::msg::Image labels_;
   std::shared_ptr<const Snapshot> snapshot_;
   std::atomic<uint64_t> revision_{0};
 };

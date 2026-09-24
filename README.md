@@ -12,13 +12,13 @@ ROS 2 Jazzy，运行链路统一为独立 `nav_executor`：不依赖 Nav2 server
 | `small_point_lio` | 融合点云 + IMU → `/Odometry`、`/cloud_registered` |
 | `odom_localizer` | GICP 六自由度先验定位（`lab3.pcd`）→ `/tf_maintainer/map_to_odom` |
 | `tf_maintainer` | 唯一动态 TF 发布者：`map→odom`、`odom→base_link` |
-| `terrain_map_server` | `map_server` 包的静态地形服务 → `/cost_map`、`/direction_map` |
-| `nav_executor` | 单进程：TaskManager + ROGMap + 全局搜索 + MINCO + MPC → `/opt_path`、`/cmd_vel` |
-| `ros2_comm`（可选） | `/cmd_vel` 唯一消费者 → UDP 底盘协议 |
+| `terrain_map_server` | 静态地形服务 → `/cost_map`、`/terrain_label_map` |
+| `nav_executor` | TaskManager + ROGMap + 全局搜索 + MINCO + MPC + 区域控制 → `/opt_path`、`/cmd_vel`、`/nav_executor/chassis_cmd` |
+| `ros2_comm`（可选） | 消费 `/nav_executor/chassis_cmd` → UDP 底盘协议 |
 | `robot_state_publisher` | URDF → 车体 / 雷达外参 |
 
 `ROGMap` 在 `nav_executor` 进程内（`nav_executor_planner`），无独立节点，参数在 `planner.rog_map.*`；
-地形代价与方向图**是规划输入**（搜索、轨迹验收、MPC 制动都读）；没有 `Global/Local Costmap` 是预期行为。
+静态地形代价图是搜索、轨迹验收和 MPC 制动的规划输入；标签图用于区域 mode 和限速。没有 `Global/Local Costmap` 是预期行为。
 
 ## 在线链路
 
@@ -27,8 +27,8 @@ MID360 ×2 → mid360_driver → small_point_lio → /Odometry + /cloud_register
                      ├─→ odom_localizer → map→odom → tf_maintainer → odom→base_link
                      └─→ ROGMap（进程内：在线占据 / 距离场）
 
-lab3_terrain.msgpack → terrain_map_server → /cost_map + /direction_map
-                                                    └─→ 全局搜索 → MINCO → MPC → /cmd_vel
+lab3_terrain.msgpack → terrain_map_server → /cost_map + /terrain_label_map
+                                                    └─→ 全局搜索 → MINCO → MPC + 区域控制 → /nav_executor/chassis_cmd
 ```
 
 - 全局主搜索是移植的 **SMAC 2D**（`path_planner/search/smac/`）：在静态地形栅格上做
@@ -47,8 +47,8 @@ lab3_terrain.msgpack → terrain_map_server → /cost_map + /direction_map
 | 话题 | 说明 |
 |---|---|
 | `/goal_pose`、`/Odometry`、`/cloud_registered` | 目标入口、里程计、配准点云 |
-| `/cost_map`、`/direction_map` | 静态地形代价 / 方向层（方向层实测全 0） |
-| `/opt_path`、`/cmd_vel`、`/cmd_spin` | MINCO 轨迹（MPC 输入）、底盘速度、自旋叠加 |
+| `/cost_map`、`/terrain_label_map` | 静态地形代价 / 原始区域标签（当前地图已有平地坡道模式测试区） |
+| `/opt_path`、`/cmd_vel`、`/nav_executor/chassis_cmd` | MINCO 轨迹、观测用速度、速度与模式的同周期底盘命令 |
 | `/nav_executor/global_plan`、`/nav_executor/debug/global_plan` | 全局折线的 Path / Marker（0.15 m 青粗线） |
 | `/nav_executor/minco_path` | MINCO 局部优化轨迹的 Path 可视化 |
 | `/nav_executor/debug/minco_trajectory` | MINCO 轨迹 Marker（0.07 m，按速度染色） |
@@ -81,7 +81,7 @@ required(v) = collision_dist + max(v * replan_react_time, monitor_margin)
 
 失败原因按 `failure_log_first_n`(10) 逐条、每 `failure_log_every_n`(25) 次采样、每
 `failure_summary_every`(50) 次汇总。`LOCAL_SEED_INVALID` / `..._AFTER_REPAIR` = 没进优化器；
-`OPTIMIZER_FAILED` = 不收敛；`COLLISION` / `TERRAIN_COLLISION_OR_DIRECTION` = 硬校验被否。
+`OPTIMIZER_FAILED` = 不收敛；`COLLISION` / `TERRAIN_COLLISION` = 硬校验被否。
 四层兜底全败时 `Live obstacle blocks the local route...` 会带 `*_reject=` 现场与自动判读 `verdict=`：
 `GEOMETRY` 连近场规则都过不了（拒绝正确，别动阈值）、`SEED_GATE_STRICTER` 只被更严的种子门否掉
 （判据不一致）、`PREFIX_TOO_SHORT` 卡安全段长度、`TERRAIN` 死在 terrain/动态层、`NONE` 未捕获。
@@ -94,11 +94,13 @@ required(v) = collision_dist + max(v * replan_react_time, monitor_margin)
 - ROGMap 订阅 `/cloud_registered` + `/Odometry`；RViz `ROGMAP` 分组默认显示紫色 `Occupied`（0.05 m）
   与 `2D Distance Field`。先验图融合关闭，`Static Layer Value` 不代表地形图；投影高度、地面/墙体
   阈值与 `node.rog_map_clearance` 需在静止实车上标定。已移除目标跟踪与未来预测（防振动误判）。
-- 不是 HW 规划/执行算法的完整等价实现；保留原 `/cmd_vel` 协议，不移植腿部模式与 LPV/FDDP 模型。
-  MPC 为全向模型（`linear.x/y`、`angular.z`，±2 rad/s、±4 rad/s²，需按底盘标定）；**`ros2_comm`
-  的 UDP 只发 `vx`/`vy`/`nav_state`，不转发 `angular.z`**。
+- MPC 仍为全向模型（`linear.x/y`、`angular.z`，±2 rad/s、±4 rad/s²，需按底盘标定）。
+  区域控制沿最终轨迹标注坡道、隧道和起伏路，以 `/nav_executor/chassis_cmd` 同步下发速度与
+  mode；`/cmd_vel` 保留供观测。`ros2_comm` 默认继续发兼容 mas_vision 的 9 字节
+  `vx`/`vy`/`nav_state`，不会转发 `angular.z` 或新 mode。模式透传需要按
+  [区域控制集成说明](docs/region_control_2026-09-24.md) 选定传输方式。
 - `lab3_terrain.msgpack` 只有平地/障碍，无坡道台阶与方向数据；方向层实测全 0，逐边方向约束只在
-  `validateTrajectory` 的 `terrain->transition()`（失败记 `TERRAIN_COLLISION_OR_DIRECTION`）。
+  `validateTrajectory` 的 `terrain->transition()`（失败记 `TERRAIN_COLLISION`）。
 - **折线与轨迹是两条线**：粗青线 = 搜索想怎么绕，细彩线 = 车准备怎么走，明显不重合时问题在 MINCO
   走廊/净空。粗青线末段从 `planner.tolerance`(0.30) 跳到精确目标点。RViz 视图
   `nav_executor_view.rviz`：`HW Cost Map` / `HW Direction Map` 显示两个地形话题，`Planning Constraints`
@@ -149,7 +151,7 @@ ros2 launch mas2027_nav_bringup nav_executor_launch.py
 
 常用参数：`use_rviz`、`use_odom_localizer`、`use_ros2_comm`、`output_topic`。地图不再通过
 launch 参数切换，统一在 `mas2027_nav_bringup/config/navigation_map.yaml` 中选择。
-`use_ros2_comm` 默认 `True`——它是 `/cmd_vel` 的唯一消费者，不开会「指令一直有值但车不动」；
+`use_ros2_comm` 默认 `True`——它消费 `/nav_executor/chassis_cmd`，不开会「指令一直有值但车不动」；
 只想看导航时置 `False` 并确认底盘与急停状态。RViz 的 2D Goal Pose 发到 `/goal_pose`。
 
 ## 核心配置
@@ -180,7 +182,7 @@ launch 参数切换，统一在 `mas2027_nav_bringup/config/navigation_map.yaml`
 监视与 MPC 指令前视中仍保持 fail closed。`node.rog_map_timeout_s` 直接检查进程内 ROGMap
 最后一次完成快照的时间：点云断流或工作线程停滞时拒绝新目标并制动，不需要替代心跳话题。
 `map_server` 仍然必要，但职责只是发布静态
-`/cost_map` 和 `/direction_map`，已不依赖点云、先验 PCD、PCL 或 TF。
+`/cost_map` 和 `/terrain_label_map`，已不依赖点云、先验 PCD、PCL 或 TF。
 
 建图与换图（不进在线链路）统一走 `/home/mas/mapping_web_ui` 的三维建图控制台。本仓库不再自带
 `pcd2pgm`、`save_pcd_and_make_map.sh`、`pgm_to_terrain_msgpack.py` 与 `map_edit`：控制台一次完成

@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <functional>
@@ -6,11 +7,15 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "geometry_msgs/msg/twist.hpp"
 #include "example_interfaces/msg/float32.hpp"
 #include "interfaces/msg/mpc_position_command.hpp"
+#include "interfaces/msg/chassis_command.hpp"
+#include "interfaces/msg/region_status.hpp"
+#include "mas2027_nav_executor/common/environment/region_control.hpp"
 #include "mas2027_nav_executor/path_executor/mpc/mpc_solver.hpp"
 #include "mas2027_nav_executor/path_planner/path_planner.hpp"
 #include "mas2027_nav_executor/path_executor/path_executor.hpp"
@@ -46,21 +51,25 @@ std_msgs::msg::ColorRGBA velocity_color(
 
 }  // namespace
 
-// A deliberately small standalone navigation loop. The node only wires ROS up:
-// PathPlanner owns the map-server distance query and MINCO; PathExecutor owns the MPC tracking step,
-// and this class subscribes, ticks the control loop and publishes.
+// 导航 ROS 总装配层：接收地图、轨迹、里程计和目标，驱动规划/执行模块，并发布控制结果。
+// 全局搜索与 MINCO 由 PathPlanner 管理，MPC 跟踪由 PathExecutor 管理。
 class NavExecutorNode final : public rclcpp::Node
 {
 public:
   NavExecutorNode()
   : Node("nav_executor")
   {
+    // ── 参数层：读取 ROS 话题名、坐标系和控制周期。
     control_rate_hz_ = declare_parameter<double>("node.control_rate_hz");
     planner_frequency_ = declare_parameter<double>("node.planner_frequency");
     odom_topic_ = declare_parameter<std::string>("node.topics.odom_sub");
     trajectory_topic_ = declare_parameter<std::string>("node.topics.trajectory_sub");
     odom_frame_ = declare_parameter<std::string>("node.frames.odom");
     output_topic_ = declare_parameter<std::string>("node.topics.cmd_vel_pub");
+    chassis_cmd_topic_ = declare_parameter<std::string>(
+      "node.topics.chassis_cmd_pub", "/nav_executor/chassis_cmd");
+    region_status_topic_ = declare_parameter<std::string>(
+      "node.topics.region_status_pub", "/nav_executor/region_status");
     cmd_spin_topic_ = declare_parameter<std::string>("node.topics.spin_cmd_sub");
     goal_topic_ = declare_parameter<std::string>("node.topics.goal_sub");
     minco_path_topic_ = declare_parameter<std::string>("node.topics.minco_path_pub");
@@ -70,7 +79,51 @@ public:
     planning_constraints_marker_topic_ = declare_parameter<std::string>(
       "node.topics.planning_constraints_marker_pub", "/planning_constraints_markers");
     const auto cost_map_topic = declare_parameter<std::string>("node.topics.terrain_cost_sub", "/cost_map");
-    const auto direction_map_topic = declare_parameter<std::string>("node.topics.terrain_direction_sub", "/direction_map");
+    const auto label_map_topic = declare_parameter<std::string>(
+      "node.topics.terrain_label_sub", "/terrain_label_map");
+    // ── 区域策略层：把 label 映射到 mode，并读取每类区域的速度、加速度和阶段距离。
+    const int normal_mode = declare_parameter<int>("region_control.normal_mode", 4);
+    if (normal_mode < 0 || normal_mode > 255) {
+      throw std::invalid_argument("region_control.normal_mode must be in [0,255]");
+    }
+    const double speed_blend_rate = declare_parameter<double>(
+      "region_control.speed_blend_rate", 2.0);
+    const double acceleration_blend_rate = declare_parameter<double>(
+      "region_control.acceleration_blend_rate", 4.0);
+    if (!std::isfinite(speed_blend_rate) || speed_blend_rate <= 0.0 ||
+      !std::isfinite(acceleration_blend_rate) || acceleration_blend_rate <= 0.0) {
+      throw std::invalid_argument("region_control blend rates must be finite and positive");
+    }
+    const std::array<std::pair<const char *, uint8_t>, 3> region_names{{
+      {"slope", 5}, {"tunnel", 6}, {"undulating", 7}}};
+    for (size_t i = 0; i < region_names.size(); ++i) {
+      const std::string prefix = std::string("region_control.") + region_names[i].first + ".";
+      RegionRule & rule = region_rules_[i];
+      rule.label = region_names[i].second;
+      rule.mode = declare_parameter<int>(prefix + "mode", rule.label);
+      if (rule.mode != rule.label) {
+        throw std::invalid_argument(prefix + "mode must equal terrain label " +
+          std::to_string(rule.label));
+      }
+      rule.max_speed = declare_parameter<double>(prefix + "max_speed", 1.0);
+      rule.max_acceleration = declare_parameter<double>(prefix + "max_acceleration", 2.0);
+      rule.prepare_distance = declare_parameter<double>(prefix + "prepare_distance", 1.0);
+      rule.activation_distance = declare_parameter<double>(prefix + "activation_distance", 0.8);
+      rule.commit_distance = declare_parameter<double>(prefix + "commit_distance", 0.2);
+      rule.release_distance = declare_parameter<double>(prefix + "release_distance", 0.5);
+      if (rule.mode < -1 || rule.mode > 255 ||
+        !std::isfinite(rule.max_speed) || rule.max_speed <= 0.0 ||
+        !std::isfinite(rule.max_acceleration) || rule.max_acceleration <= 0.0 ||
+        !std::isfinite(rule.prepare_distance) || rule.prepare_distance < 0.0 ||
+        !std::isfinite(rule.activation_distance) || rule.activation_distance < 0.0 ||
+        rule.activation_distance > rule.prepare_distance ||
+        !std::isfinite(rule.commit_distance) || rule.commit_distance < 0.0 ||
+        rule.commit_distance > rule.activation_distance ||
+        !std::isfinite(rule.release_distance) || rule.release_distance < 0.0) {
+        throw std::invalid_argument(prefix + " has an invalid mode or speed/extent parameter");
+      }
+    }
+    // ── 可视化配置层：轨迹速度配色、全局路径显示频率与样式。
     velocity_color_min_ = declare_parameter<double>("node.visualization.velocity_color_min");
     velocity_color_max_ = declare_parameter<double>("node.visualization.velocity_color_max");
     // 全局搜索折线（SMAC 2D / Astar 的输出），专门给 RViz 看。
@@ -91,6 +144,7 @@ public:
       global_plan_line_width_ = 0.15;
     }
 
+    // ── 执行参数层：数据超时、安全净空、输出坐标系等 PathExecutor 参数。
     PathExecutorParams executor_params;
     executor_params.planner_frequency = planner_frequency_;
     executor_params.trajectory_timeout_s = declare_parameter<double>("node.trajectory_timeout_s");
@@ -102,6 +156,7 @@ public:
     executor_params.output_in_body_frame = declare_parameter<bool>("node.output_in_body_frame");
     executor_params.odom_frame = odom_frame_;
 
+    // ── MPC 参数层：采样周期、预测时域、运动约束与代价权重。
     MPCConfig config;
     config.dt = declare_parameter<double>("mpc.dt");
     config.lookahead_time = declare_parameter<double>("mpc.lookahead_time");
@@ -128,6 +183,12 @@ public:
     config.Q = Eigen::Vector3d(q[0], q[1], q[2]);
     config.R = Eigen::Vector3d(r[0], r[1], r[2]);
 
+    // ── 区域执行层：普通能力作为基线；特殊区域命中后平滑切换 mode 和运动限制。
+    region_controller_ = std::make_unique<RegionController>(
+      static_cast<uint8_t>(normal_mode), std::max(config.vx_max, config.vy_max),
+      std::max(config.ax_max, config.ay_max),
+      speed_blend_rate, acceleration_blend_rate);
+
     if (control_rate_hz_ <= 0.0 || planner_frequency_ <= 0.0 || config.dt <= 0.0 ||
       !std::isfinite(executor_params.odom_timeout_s) || executor_params.odom_timeout_s <= 0.0 ||
       !std::isfinite(executor_params.rog_map_timeout_s) || executor_params.rog_map_timeout_s <= 0.0 ||
@@ -141,35 +202,53 @@ public:
       throw std::invalid_argument("visualization velocity color range must be finite and ordered");
     }
 
+    // ── 地图与规划层：TerrainGrid 管静态语义地图；PathPlanner 管全局搜索、MINCO 和在线 ROGMap。
     terrain_grid_ = std::make_shared<TerrainGrid>();
     path_planner_ = std::make_shared<PathPlanner>(
       terrain_grid_, executor_params.odom_timeout_s, odom_frame_,
       executor_params.rog_map_timeout_s);
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
     tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
+    // ── 跟踪执行层：PathExecutor 用 MPC 跟踪轨迹，并在发布前执行命令安全检查。
     path_executor_ = std::make_unique<PathExecutor>(
       config, executor_params, tf_buffer_, terrain_grid_, path_planner_->mapQuery());
 
+    // ── 静态地图输入层：代价图与标签图构成 TerrainGrid 快照；变化后刷新规划约束可视化。
     const auto map_qos = rclcpp::QoS(1).reliable().transient_local();
     terrain_cost_sub_ = create_subscription<nav_msgs::msg::OccupancyGrid>(
       cost_map_topic, map_qos, [this](nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg) {
         terrain_grid_->updateCost(*msg);
         publish_planning_constraints();
       });
-    terrain_direction_sub_ = create_subscription<sensor_msgs::msg::Image>(
-      direction_map_topic, map_qos, [this](sensor_msgs::msg::Image::ConstSharedPtr msg) {
-        terrain_grid_->updateDirection(*msg);
-        publish_planning_constraints();
+    terrain_label_sub_ = create_subscription<sensor_msgs::msg::Image>(
+      label_map_topic, map_qos, [this](sensor_msgs::msg::Image::ConstSharedPtr msg) {
+        terrain_grid_->updateLabels(*msg);
       });
+
+    // ── 轨迹输入与区域标注层：对 MINCO 最终轨迹采样地图 label，生成与轨迹绑定的 RegionPlan。
     trajectory_sub_ = create_subscription<interfaces::msg::MpcPositionCommand>(
       trajectory_topic_, rclcpp::QoS(1),
       [this](const interfaces::msg::MpcPositionCommand::SharedPtr msg) {
+        std::shared_ptr<const RegionPlan> region_plan;
+        if (const auto terrain = terrain_grid_->snapshot()) {
+          if (auto annotated = annotateRegions(*msg, *terrain, *tf_buffer_, region_rules_, odom_frame_)) {
+            region_plan = std::make_shared<RegionPlan>(std::move(*annotated));
+          }
+        }
+        const bool annotation_valid = static_cast<bool>(region_plan);
         {
           std::lock_guard<std::mutex> lock(data_mutex_);
           trajectory_ = msg;
+          region_plan_ = std::move(region_plan);
+        }
+        if (!annotation_valid) {
+          RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+            "Region annotation unavailable; trajectory will be held");
         }
         publish_trajectory_visualization(*msg);
       });
+
+    // ── 机器人状态输入层：缓存 odometry；自转前馈和目标分别交给控制与规划入口。
     odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
       odom_topic_, rclcpp::SensorDataQoS(),
       [this](const nav_msgs::msg::Odometry::SharedPtr msg) {
@@ -185,7 +264,15 @@ public:
     goal_sub_ = create_subscription<geometry_msgs::msg::PoseStamped>(
       goal_topic_, rclcpp::QoS(1),
       [this](const geometry_msgs::msg::PoseStamped::SharedPtr goal) { accept_goal(goal); });
+
+    // ── 实时命令输出层：/cmd_vel 用于 ROS 速度接口；ChassisCommand 将 vx/vy/mode 同周期交给底盘桥。
     command_pub_ = create_publisher<geometry_msgs::msg::Twist>(output_topic_, rclcpp::QoS(1));
+    chassis_command_pub_ = create_publisher<interfaces::msg::ChassisCommand>(
+      chassis_cmd_topic_, rclcpp::QoS(1));
+    region_status_pub_ = create_publisher<interfaces::msg::RegionStatus>(
+      region_status_topic_, rclcpp::QoS(1));
+
+    // ── 规划诊断输出层：发布 MINCO 轨迹、全局搜索路线、规划约束和区域控制状态。
     minco_path_pub_ = create_publisher<nav_msgs::msg::Path>(
       minco_path_topic_, rclcpp::QoS(1).transient_local());
     global_plan_pub_ = create_publisher<nav_msgs::msg::Path>(
@@ -201,6 +288,7 @@ public:
     planning_constraints_marker_pub_ = create_publisher<visualization_msgs::msg::Marker>(
       planning_constraints_marker_topic_, rclcpp::QoS(1).reliable().transient_local());
 
+    // ── 调度层：固定频率计算控制命令；较低频率重发全局路线供后打开的 RViz 显示。
     timer_ = create_wall_timer(
       std::chrono::duration<double>(1.0 / control_rate_hz_),
       std::bind(&NavExecutorNode::control_tick, this));
@@ -220,6 +308,7 @@ public:
   }
 
 private:
+  // 地图可视化层：把 TerrainGrid 约束栅格和受限/禁止点转换成 OccupancyGrid 与 Marker。
   void publish_planning_constraints()
   {
     auto constraints = terrain_grid_->planningConstraints();
@@ -258,6 +347,7 @@ private:
     planning_constraints_marker_pub_->publish(markers);
   }
 
+  // 局部轨迹可视化层：把 MINCO 命令点转换为 Path，并按速度生成着色轨迹 Marker。
   void publish_trajectory_visualization(const interfaces::msg::MpcPositionCommand & trajectory)
   {
     if (trajectory.cmds.empty()) return;
@@ -291,7 +381,7 @@ private:
     minco_trajectory_pub_->publish(marker);
   }
 
-  // 全局搜索折线（SMAC 2D / Astar 的输出，odom 系）。与 MINCO 轨迹分开显示：轨迹是
+  // 全局路线可视化层：显示全局搜索器（SMAC 2D / Astar，odom 系）的折线。与 MINCO 轨迹分开显示：轨迹是
   // 「车准备怎么走」，这条线是「搜索给出的拓扑引导」，两者对不上时一眼就能看出来。
   void publish_global_plan()
   {
@@ -366,6 +456,7 @@ private:
     global_plan_published_ = true;
   }
 
+  // 任务接入层：检查目标消息基本有效性，再交给 PathPlanner 检查地图、定位、TF 和在线地图。
   void accept_goal(const geometry_msgs::msg::PoseStamped::SharedPtr & goal)
   {
     RCLCPP_INFO(get_logger(), "Received goal on %s", goal_topic_.c_str());
@@ -380,21 +471,50 @@ private:
     }
   }
 
+  // 实时控制层：快照输入 → 判断轨迹许可 → 更新区域进度/限速 → MPC 与安全门 → 发布命令和状态。
   void control_tick()
   {
     ExecutorInput input;
+    std::shared_ptr<const RegionPlan> region_plan;
     {
       std::lock_guard<std::mutex> lock(data_mutex_);
       input.trajectory = trajectory_;
       input.odom = odom_;
       input.spin_speed = spin_speed_;
+      region_plan = region_plan_;
     }
     input.stamp = now();
     input.allow_motion = input.trajectory &&
-      path_planner_->acceptsTrajectory(rclcpp::Time(input.trajectory->header.stamp));
+      region_plan && path_planner_->acceptsTrajectory(rclcpp::Time(input.trajectory->header.stamp));
 
-    const ExecutorOutput output = path_executor_->computeCommand(input);
+    region_controller_->setPlan(region_plan);
+    if (input.odom) {
+      region_controller_->update({input.odom->pose.pose.position.x,
+        input.odom->pose.pose.position.y});
+    }
+    region_controller_->tickProfile(1.0 / control_rate_hz_);
+    input.region_speed_limit = region_controller_->speedLimit();
+    input.region_acceleration_limit = region_controller_->accelerationLimit();
+
+    ExecutorOutput output = path_executor_->computeCommand(input);
     command_pub_->publish(output.command);
+    interfaces::msg::ChassisCommand chassis_command;
+    chassis_command.header.stamp = input.stamp;
+    chassis_command.header.frame_id = "base_link";
+    chassis_command.vx = static_cast<float>(output.command.linear.x);
+    chassis_command.vy = static_cast<float>(output.command.linear.y);
+    chassis_command.mode = region_controller_->mode();
+    chassis_command_pub_->publish(chassis_command);
+    interfaces::msg::RegionStatus region_status;
+    region_status.header.stamp = input.stamp;
+    region_status.header.frame_id = odom_frame_;
+    region_status.trajectory_id = region_plan ? region_plan->trajectory_id : 0;
+    region_status.terrain_label = region_controller_->label().value_or(0);
+    region_status.mode = region_controller_->mode();
+    region_status.phase = static_cast<uint8_t>(region_controller_->phase());
+    region_status.path_progress = static_cast<float>(region_controller_->progress());
+    region_status.speed_limit = static_cast<float>(region_controller_->speedLimit());
+    region_status_pub_->publish(region_status);
     if (output.status == ExecutorStatus::REFERENCE_FAILED) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
         "Braking: trajectory cannot be expressed in %s", odom_frame_.c_str());
@@ -414,13 +534,19 @@ private:
     }
   }
 
+  // 算法组件层：规划器、轨迹执行器、静态地形快照和区域状态机。
   std::unique_ptr<PathExecutor> path_executor_;
   std::shared_ptr<TerrainGrid> terrain_grid_;
+  std::array<RegionRule, 3> region_rules_{};
+  std::unique_ptr<RegionController> region_controller_;
+  std::shared_ptr<const RegionPlan> region_plan_;
+  // 地图输入接口层：静态代价和 label 地图；动态 ROGMap 由 PathPlanner 内部维护。
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr terrain_cost_sub_;
-  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr terrain_direction_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr terrain_label_sub_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
   std::shared_ptr<PathPlanner> path_planner_;
+  // 共享运行状态层：订阅回调更新缓存；控制周期加锁复制后独立计算。
   std::mutex data_mutex_;
   interfaces::msg::MpcPositionCommand::SharedPtr trajectory_;
   nav_msgs::msg::Odometry::SharedPtr odom_;
@@ -428,7 +554,11 @@ private:
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Subscription<example_interfaces::msg::Float32>::SharedPtr spin_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
+  // 实时控制输出接口层：常规速度、带 mode 的底盘命令及区域阶段诊断。
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr command_pub_;
+  rclcpp::Publisher<interfaces::msg::ChassisCommand>::SharedPtr chassis_command_pub_;
+  rclcpp::Publisher<interfaces::msg::RegionStatus>::SharedPtr region_status_pub_;
+  // 可视化输出接口层：局部/全局路径、优化轨迹和地图规划约束。
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr minco_path_pub_;
   // 全局搜索折线；MINCO 局部优化轨迹由 minco_path_pub_ 发布。
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr global_plan_pub_;
@@ -443,6 +573,7 @@ private:
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr minco_trajectory_pub_;
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr planning_constraints_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr planning_constraints_marker_pub_;
+  // 调度与可视化参数层：控制定时器、全局路线重发频率和显示样式。
   rclcpp::TimerBase::SharedPtr timer_;
   double control_rate_hz_{};
   double planner_frequency_{};
@@ -451,6 +582,8 @@ private:
   std::string trajectory_topic_;
   std::string odom_frame_;
   std::string output_topic_;
+  std::string chassis_cmd_topic_;
+  std::string region_status_topic_;
   std::string minco_path_topic_;
   std::string global_plan_topic_;
   std::string global_plan_marker_topic_;
@@ -469,10 +602,14 @@ int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
   auto node = std::make_shared<mas2027_nav_executor::NavExecutorNode>();
+
+  // ROS 运行容器层：同一 executor 同时调度接口节点与 PathPlanner 内部生命周期节点。
   rclcpp::executors::MultiThreadedExecutor executor;
   executor.add_node(node);
   executor.add_node(node->planner_node()->get_node_base_interface());
   executor.spin();
+
+  // 先释放规划器及其 ROGMap/MINCO 资源，再关闭 ROS。
   node->shutdown_planner();
   rclcpp::shutdown();
   return 0;

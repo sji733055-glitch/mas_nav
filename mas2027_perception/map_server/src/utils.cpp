@@ -1,11 +1,9 @@
 #include <map_server/utils.hpp>
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <fstream>
 #include <limits>
-#include <numbers>
 #include <stdexcept>
 
 #include <msgpack.hpp>
@@ -14,11 +12,7 @@ namespace map_server::map_utils {
 
 namespace {
 
-constexpr uint8_t FIRST_DIRECTIONAL_LABEL = static_cast<uint8_t>(TerrainType::SLOPE);
-constexpr uint8_t TERRAIN_LABEL_COUNT = static_cast<uint8_t>(TerrainType::STEP_HIGH) + 1;
-constexpr size_t MAX_OVERLAP_SAMPLES = 8;
-constexpr double MAX_DIRECTION_NON_BODY_MAGNITUDE_CAP = 0.9;
-
+constexpr uint8_t TERRAIN_LABEL_COUNT = static_cast<uint8_t>(TerrainType::UNDULATING) + 1;
 // 每个膨胀区域的固定调用开销（阈值化 / 距离变换的启动成本）折算为等价的整图格数；
 // 经实测标定，使分区/整图路径的回退阈值与两者实际耗时的交叉点吻合。
 constexpr size_t PER_REGION_INFLATION_OVERHEAD_CELLS = 48;
@@ -63,22 +57,6 @@ void validate_common_inflation_params(const MapInflationParams& params) {
             "map inflation decay_rate_per_m must be finite and non-negative"
         );
     }
-}
-
-void validate_direction_inflation_params(const MapInflationParams& params) {
-    validate_common_inflation_params(params);
-    if (!std::isfinite(params.direction_non_body_magnitude_cap)
-        || params.direction_non_body_magnitude_cap <= 0.0
-        || params.direction_non_body_magnitude_cap
-            > MAX_DIRECTION_NON_BODY_MAGNITUDE_CAP) {
-        throw std::invalid_argument(
-            "direction_non_body_magnitude_cap must be finite and in (0, 0.9]"
-        );
-    }
-}
-
-uint8_t quantize_magnitude(const double magnitude) {
-    return static_cast<uint8_t>(std::clamp(magnitude * 255.0, 0.0, 255.0));
 }
 
 } // anonymous namespace
@@ -192,8 +170,7 @@ TerrainMapData load_terrain_msgpack(const std::string& path) {
             data.resolution = m.ptr[i].val.as<double>();
         } else if (key == "terrain") {
             data.terrain.clear(); for (uint32_t j = 0; j < m.ptr[i].val.via.array.size; ++j) data.terrain.push_back(m.ptr[i].val.via.array.ptr[j].as<uint8_t>());
-        } else if (key == "direction") {
-            data.direction.clear(); for (uint32_t j = 0; j < m.ptr[i].val.via.array.size; ++j) data.direction.push_back(m.ptr[i].val.via.array.ptr[j].as<uint8_t>());
+
         }
     }
 
@@ -210,14 +187,10 @@ TerrainMapData load_terrain_msgpack(const std::string& path) {
             ", got " + std::to_string(data.terrain.size())
         );
     }
-    if (data.direction.size() != expected) {
-        throw std::runtime_error(
-            "direction data size mismatch: expected " + std::to_string(expected) +
-            ", got " + std::to_string(data.direction.size())
-        );
-    }
     for (size_t i = 0; i < data.terrain.size(); ++i) {
-        if (data.terrain[i] >= TERRAIN_LABEL_COUNT) {
+        if (data.terrain[i] >= TERRAIN_LABEL_COUNT ||
+            (data.terrain[i] > static_cast<uint8_t>(TerrainType::OBSTACLE) &&
+             data.terrain[i] < static_cast<uint8_t>(TerrainType::SLOPE))) {
             throw std::runtime_error(
                 "invalid terrain label " + std::to_string(data.terrain[i])
                 + " at flat index " + std::to_string(i)
@@ -234,7 +207,6 @@ NavigationMapData load_navigation_maps(
 ) {
     const TerrainMapData terrain_data = load_terrain_msgpack(path);
     inflation_params.resolution = terrain_data.resolution;
-    validate_direction_inflation_params(inflation_params);
 
     cv::Mat obstacle_mask = cv::Mat::zeros(terrain_data.height, terrain_data.width, CV_8UC1);
     for (int y = 0; y < terrain_data.height; ++y) {
@@ -249,24 +221,15 @@ NavigationMapData load_navigation_maps(
     }
     cv::Mat cost_map = inflate_cost_map(obstacle_mask, inflation_params);
 
-    InflatedDirectionField direction_field = inflate_direction_field(
-        terrain_data, inflation_params
-    );
-    cv::Mat direction_map;
-    build_terrain_3chan(
-        direction_field.angle,
-        direction_field.magnitude,
-        direction_field.terrain,
-        direction_map
-    );
+    cv::Mat terrain_label_map(terrain_data.height, terrain_data.width, CV_8UC1);
+    std::copy(terrain_data.terrain.begin(), terrain_data.terrain.end(), terrain_label_map.ptr<uint8_t>(0));
 
     return {
         .width = terrain_data.width,
         .height = terrain_data.height,
         .resolution = terrain_data.resolution,
         .cost_map = std::move(cost_map),
-        .direction_map = std::move(direction_map),
-        .direction_overlaps = std::move(direction_field.overlaps),
+        .terrain_label_map = std::move(terrain_label_map),
     };
 }
 
@@ -371,219 +334,6 @@ cv::Mat inflate_cost_map_bounded(
         cv::max(result_region, inflated_region, result_region);
     }
     return result;
-}
-
-InflatedDirectionField inflate_direction_field(
-    const TerrainMapData& data,
-    const MapInflationParams& params
-) {
-    validate_direction_inflation_params(params);
-    const int h = data.height;
-    const int w = data.width;
-    if (w <= 0 || h <= 0) {
-        throw std::invalid_argument("direction inflation map dimensions must be positive");
-    }
-    const size_t cell_count = static_cast<size_t>(h) * static_cast<size_t>(w);
-    if (data.terrain.size() != cell_count || data.direction.size() != cell_count) {
-        throw std::invalid_argument("direction inflation map data size mismatch");
-    }
-    if (std::any_of(data.terrain.begin(), data.terrain.end(), [](const uint8_t label) {
-            return label >= TERRAIN_LABEL_COUNT;
-        })) {
-        throw std::invalid_argument("direction inflation map contains an invalid terrain label");
-    }
-
-    const int radius = std::min(
-        enclosing_radius_cells(params.cutoff_radius_m, params.resolution),
-        std::max(w, h)
-    );
-
-    InflatedDirectionField result {
-        .angle = cv::Mat::zeros(h, w, CV_8UC1),
-        .magnitude = cv::Mat::zeros(h, w, CV_8UC1),
-        .terrain = cv::Mat::zeros(h, w, CV_8UC1),
-        .overlaps = {},
-    };
-    std::copy(data.terrain.begin(), data.terrain.end(), result.terrain.ptr<uint8_t>(0));
-
-    std::vector<double> sum_vx(cell_count, 0.0);
-    std::vector<double> sum_vy(cell_count, 0.0);
-    std::vector<float> max_magnitude(cell_count, 0.0F);
-    std::vector<size_t> fallback_source(
-        cell_count, std::numeric_limits<size_t>::max()
-    );
-    std::vector<uint8_t> support_masks(cell_count, 0);
-    std::vector<uint8_t> winning_labels(cell_count, 0);
-
-    for (uint8_t label = FIRST_DIRECTIONAL_LABEL; label < TERRAIN_LABEL_COUNT; ++label) {
-        std::fill(sum_vx.begin(), sum_vx.end(), 0.0);
-        std::fill(sum_vy.begin(), sum_vy.end(), 0.0);
-        std::fill(max_magnitude.begin(), max_magnitude.end(), 0.0F);
-        std::fill(
-            fallback_source.begin(), fallback_source.end(),
-            std::numeric_limits<size_t>::max()
-        );
-
-        for (int sy = 0; sy < h; ++sy) {
-            for (int sx = 0; sx < w; ++sx) {
-                const size_t source_index = static_cast<size_t>(sy) * static_cast<size_t>(w)
-                    + static_cast<size_t>(sx);
-                if (data.terrain[source_index] != label) continue;
-
-                const double raw_angle = static_cast<double>(data.direction[source_index])
-                    / 255.0 * 2.0 * std::numbers::pi;
-                const double source_vx = std::cos(raw_angle);
-                const double source_vy = std::sin(raw_angle);
-
-                const int y0 = std::max(0, sy - radius);
-                const int y1 = static_cast<int>(std::min<int64_t>(
-                    h,
-                    static_cast<int64_t>(sy) + radius + 1
-                ));
-                const int x0 = std::max(0, sx - radius);
-                const int x1 = static_cast<int>(std::min<int64_t>(
-                    w,
-                    static_cast<int64_t>(sx) + radius + 1
-                ));
-
-                for (int ny = y0; ny < y1; ++ny) {
-                    const int dy = ny - sy;
-                    const double dy_double = static_cast<double>(dy);
-                    for (int nx = x0; nx < x1; ++nx) {
-                        const int dx = nx - sx;
-                        const double dx_double = static_cast<double>(dx);
-                        const double distance_m = std::hypot(dx_double, dy_double)
-                            * params.resolution;
-                        if (distance_m > params.cutoff_radius_m) continue;
-
-                        double magnitude = 1.0;
-                        if (distance_m > params.full_cost_radius_m) {
-                            magnitude = std::exp(
-                                -params.decay_rate_per_m
-                                * (distance_m - params.full_cost_radius_m)
-                            );
-                        }
-
-                        const size_t index = static_cast<size_t>(ny) * static_cast<size_t>(w)
-                            + static_cast<size_t>(nx);
-                        sum_vx[index] += source_vx * magnitude;
-                        sum_vy[index] += source_vy * magnitude;
-                        const float magnitude_f = static_cast<float>(magnitude);
-                        if (magnitude_f > max_magnitude[index]
-                            || (magnitude_f == max_magnitude[index]
-                                && source_index < fallback_source[index])) {
-                            max_magnitude[index] = magnitude_f;
-                            fallback_source[index] = source_index;
-                        }
-                    }
-                }
-            }
-        }
-
-        for (size_t index = 0; index < cell_count; ++index) {
-            if (max_magnitude[index] <= 0.0F) continue;
-            const double capped_magnitude = std::min(
-                static_cast<double>(max_magnitude[index]),
-                params.direction_non_body_magnitude_cap
-            );
-            const uint8_t encoded_magnitude = quantize_magnitude(capped_magnitude);
-            if (encoded_magnitude == 0) continue;
-            support_masks[index] |= static_cast<uint8_t>(1U << (label - FIRST_DIRECTIONAL_LABEL));
-
-            const uint8_t original_label = data.terrain[index];
-            if (original_label == static_cast<uint8_t>(TerrainType::OBSTACLE)
-                || is_directional_label(original_label)
-                || label <= winning_labels[index]) {
-                continue;
-            }
-
-            double angle_rad = 0.0;
-            if (std::hypot(sum_vx[index], sum_vy[index]) > 1e-12) {
-                angle_rad = std::atan2(sum_vy[index], sum_vx[index]);
-            } else {
-                const size_t source_index = fallback_source[index];
-                angle_rad = static_cast<double>(data.direction[source_index])
-                    / 255.0 * 2.0 * std::numbers::pi;
-            }
-            if (angle_rad < 0) angle_rad += 2.0 * std::numbers::pi;
-
-            result.angle.ptr<uint8_t>(0)[index] = static_cast<uint8_t>(
-                angle_rad / (2.0 * std::numbers::pi) * 255.0
-            );
-            result.magnitude.ptr<uint8_t>(0)[index] = encoded_magnitude;
-            result.terrain.ptr<uint8_t>(0)[index] = label;
-            winning_labels[index] = label;
-        }
-    }
-
-    for (size_t index = 0; index < cell_count; ++index) {
-        const uint8_t original_label = data.terrain[index];
-        if (original_label == static_cast<uint8_t>(TerrainType::OBSTACLE)) {
-            result.angle.ptr<uint8_t>(0)[index] = 0;
-            result.magnitude.ptr<uint8_t>(0)[index] = 0;
-            result.terrain.ptr<uint8_t>(0)[index] = original_label;
-        } else if (is_directional_label(original_label)) {
-            result.angle.ptr<uint8_t>(0)[index] = data.direction[index];
-            result.magnitude.ptr<uint8_t>(0)[index] = 255;
-            result.terrain.ptr<uint8_t>(0)[index] = original_label;
-        } else if (result.magnitude.ptr<uint8_t>(0)[index] == 0) {
-            result.angle.ptr<uint8_t>(0)[index] = 0;
-            result.terrain.ptr<uint8_t>(0)[index] = original_label;
-        }
-
-        const bool has_direction = result.magnitude.ptr<uint8_t>(0)[index] > 0;
-        if (is_directional_label(result.terrain.ptr<uint8_t>(0)[index]) != has_direction) {
-            throw std::logic_error("inflated direction map violates label/magnitude invariant");
-        }
-    }
-
-    std::array<std::array<size_t, TERRAIN_LABEL_COUNT>, TERRAIN_LABEL_COUNT> pair_counts {};
-    for (size_t index = 0; index < cell_count; ++index) {
-        const uint8_t mask = support_masks[index];
-        if ((mask & static_cast<uint8_t>(mask - 1U)) == 0) continue;
-        ++result.overlaps.cell_count;
-        for (uint8_t first = FIRST_DIRECTIONAL_LABEL; first < TERRAIN_LABEL_COUNT; ++first) {
-            const uint8_t first_bit = static_cast<uint8_t>(1U << (first - FIRST_DIRECTIONAL_LABEL));
-            if ((mask & first_bit) == 0) continue;
-            for (uint8_t second = static_cast<uint8_t>(first + 1);
-                 second < TERRAIN_LABEL_COUNT; ++second) {
-                const uint8_t second_bit = static_cast<uint8_t>(
-                    1U << (second - FIRST_DIRECTIONAL_LABEL)
-                );
-                if ((mask & second_bit) != 0) ++pair_counts[first][second];
-            }
-        }
-        if (result.overlaps.samples.size() < MAX_OVERLAP_SAMPLES) {
-            result.overlaps.samples.push_back({
-                .x = static_cast<int>(index % static_cast<size_t>(w)),
-                .y = static_cast<int>(index / static_cast<size_t>(w)),
-                .label_mask = mask,
-            });
-        }
-    }
-    for (uint8_t first = FIRST_DIRECTIONAL_LABEL; first < TERRAIN_LABEL_COUNT; ++first) {
-        for (uint8_t second = static_cast<uint8_t>(first + 1);
-             second < TERRAIN_LABEL_COUNT; ++second) {
-            if (pair_counts[first][second] == 0) continue;
-            result.overlaps.pairs.push_back({
-                .first_label = first,
-                .second_label = second,
-                .cell_count = pair_counts[first][second],
-            });
-        }
-    }
-
-    return result;
-}
-
-void build_terrain_3chan(
-    const cv::Mat& angle,
-    const cv::Mat& magnitude,
-    const cv::Mat& terrain,
-    cv::Mat& out
-) {
-    std::vector<cv::Mat> channels = {angle, magnitude, terrain};
-    cv::merge(channels, out);
 }
 
 } // namespace map_server::map_utils

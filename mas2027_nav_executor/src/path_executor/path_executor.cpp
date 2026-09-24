@@ -105,11 +105,36 @@ ExecutorOutput PathExecutor::computeCommand(const ExecutorInput & input)
     output.status = ExecutorStatus::REFERENCE_FAILED;
     return output;
   }
+  MPCConfig effective_config = config_;
+  if (std::isfinite(input.region_speed_limit)) {
+    const double limit = input.region_speed_limit;
+    effective_config.vx_min = std::max(effective_config.vx_min, -limit);
+    effective_config.vx_max = std::min(effective_config.vx_max, limit);
+    effective_config.vy_min = std::max(effective_config.vy_min, -limit);
+    effective_config.vy_max = std::min(effective_config.vy_max, limit);
+  }
+  if (std::isfinite(input.region_acceleration_limit)) {
+    const double limit = input.region_acceleration_limit;
+    effective_config.ax_min = std::max(effective_config.ax_min, -limit);
+    effective_config.ax_max = std::min(effective_config.ax_max, limit);
+    effective_config.ay_min = std::max(effective_config.ay_min, -limit);
+    effective_config.ay_max = std::min(effective_config.ay_max, limit);
+  }
+  solver_->setConfig(effective_config);
   Control control;
   if (!solver_->solve(current, reference, control)) {
     anchor_to_measured();
     output.status = ExecutorStatus::SOLVER_FAILED;
     return output;
+  }
+  if (std::isfinite(input.region_speed_limit)) {
+    const double speed = std::hypot(control.vx, control.vy);
+    if (speed > input.region_speed_limit) {
+      const double scale = input.region_speed_limit / speed;
+      control.vx *= scale;
+      control.vy *= scale;
+      solver_->setLastControl(Eigen::Vector3d(control.vx, control.vy, control.omega));
+    }
   }
 
   CommandSafetyDetail safety_detail;

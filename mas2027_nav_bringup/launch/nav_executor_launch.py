@@ -15,6 +15,7 @@ from launch.launch_description_sources import (
 )
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def _load_navigation_map_files(bringup_dir):
@@ -59,6 +60,8 @@ def generate_launch_description():
     foxglove_address = LaunchConfiguration("foxglove_address")
     foxglove_port = LaunchConfiguration("foxglove_port")
     output_topic = LaunchConfiguration("output_topic")
+    normal_mode = LaunchConfiguration("normal_mode")
+    normal_mode_parameter = ParameterValue(normal_mode, value_type=int)
 
     lio_params = os.path.join(bringup_dir, "config", "small_point_lio_params.yaml")
     map_files = _load_navigation_map_files(bringup_dir)
@@ -128,7 +131,8 @@ def generate_launch_description():
             "OMP_WAIT_POLICY": "PASSIVE",
         },
         parameters=executor_params
-        + [{"use_sim_time": use_sim_time, "node.topics.cmd_vel_pub": output_topic}],
+        + [{"use_sim_time": use_sim_time, "node.topics.cmd_vel_pub": output_topic,
+            "region_control.normal_mode": normal_mode_parameter}],
     )
     terrain_map_server = Node(
         package="map_server",
@@ -144,7 +148,7 @@ def generate_launch_description():
         }],
         remappings=[
             ("cost_map", "/cost_map"),
-            ("direction_map", "/direction_map"),
+            ("terrain_label_map", "/terrain_label_map"),
         ],
     )
     ros2_comm = Node(
@@ -154,6 +158,7 @@ def generate_launch_description():
         output="screen",
         emulate_tty=True,
         condition=IfCondition(use_ros2_comm),
+        parameters=[{"normal_mode": normal_mode_parameter}],
     )
     rviz = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(launch_dir, "rviz_launch.py")),
@@ -186,8 +191,8 @@ def generate_launch_description():
         DeclareLaunchArgument("use_sim_time", default_value="False"),
         # Headless/SSH 默认关；有显示器时用 use_rviz:=True。
         DeclareLaunchArgument("use_rviz", default_value="False"),
-        # 底盘转发桥默认开启：ros2_comm 是 /cmd_vel 的唯一消费者，不启动它就会出现
-        # 「cmd_vel 一直有值但车不动」。协议只发 vx/vy/nav_state，不含角速度。
+        # 底盘转发桥默认开启，消费速度与模式组成的 /nav_executor/chassis_cmd。
+        # 下行固定为 vx/vy/mode/nav_state 10 字节；需配套新版 mas_vision 与底盘协议。
         # 上机前确认底盘上电与急停状态；只想看导航不发车时用 use_ros2_comm:=False 关掉。
         DeclareLaunchArgument("use_ros2_comm", default_value="True"),
         DeclareLaunchArgument("use_odom_localizer", default_value="True"),
@@ -195,6 +200,7 @@ def generate_launch_description():
         DeclareLaunchArgument("foxglove_address", default_value="127.0.0.1"),
         DeclareLaunchArgument("foxglove_port", default_value="8766"),
         DeclareLaunchArgument("output_topic", default_value="/cmd_vel"),
+        DeclareLaunchArgument("normal_mode", default_value="4"),
         robot_state_publisher,
         mid360_driver,
         small_point_lio,

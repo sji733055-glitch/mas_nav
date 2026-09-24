@@ -80,6 +80,7 @@ add_executable(${PROJECT_NAME}_node src/nav_executor_node.cpp
   src/path_executor/monitoring/command_safety.cpp
   src/task_manager/task_manager.cpp
   src/common/environment/terrain_grid.cpp
+  src/common/environment/region_control.cpp
   # 静态地形全局搜索使用 TerrainMapQuery（见 global_path_searcher.cpp），
   # 其实现必须直接编进节点目标。
   src/common/environment/terrain_map_query.cpp)

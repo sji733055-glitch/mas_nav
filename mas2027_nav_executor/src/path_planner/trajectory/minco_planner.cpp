@@ -396,6 +396,30 @@ void MincoPlanner::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & pa
   declareParameterIfMissing(
     node, prefix + "minco_optimizer.max_velocity", rclcpp::ParameterValue(2.0));
   node->get_parameter(prefix + "minco_optimizer.max_velocity", minco_config.max_vel);
+  region_speed_caps_.fill(std::numeric_limits<double>::infinity());
+  region_prepare_distances_.fill(0.0);
+  region_release_distances_.fill(0.0);
+  for (const auto & entry : std::array<std::pair<const char *, size_t>, 3>{{
+      {"slope", 2}, {"tunnel", 7}, {"undulating", 8}}}) {
+    const std::string key = std::string("region_control.") + entry.first + ".max_speed";
+    declareParameterIfMissing(node, key, rclcpp::ParameterValue(1.0));
+    node->get_parameter(key, region_speed_caps_[entry.second]);
+    if (!std::isfinite(region_speed_caps_[entry.second]) || region_speed_caps_[entry.second] <= 0.0) {
+      throw std::invalid_argument(key + " must be finite and positive");
+    }
+    const std::string prepare_key = std::string("region_control.") + entry.first + ".prepare_distance";
+    const std::string release_key = std::string("region_control.") + entry.first + ".release_distance";
+    declareParameterIfMissing(node, prepare_key, rclcpp::ParameterValue(1.0));
+    declareParameterIfMissing(node, release_key, rclcpp::ParameterValue(0.5));
+    node->get_parameter(prepare_key, region_prepare_distances_[entry.second]);
+    node->get_parameter(release_key, region_release_distances_[entry.second]);
+    if (!std::isfinite(region_prepare_distances_[entry.second]) ||
+      region_prepare_distances_[entry.second] < 0.0 ||
+      !std::isfinite(region_release_distances_[entry.second]) ||
+      region_release_distances_[entry.second] < 0.0) {
+      throw std::invalid_argument("region_control distances must be finite and nonnegative");
+    }
+  }
 
   declareParameterIfMissing(
     node, prefix + "minco_optimizer.max_acceleration", rclcpp::ParameterValue(4.0));
@@ -1415,6 +1439,51 @@ void MincoPlanner::PTAllocation(const std::vector<Eigen::Vector3d> & sparse_path
       minco_config.min_turn_vel,
       minco_config.decay_power);
   }
+  if (terrain_ && tf_) {
+    if (const auto terrain = terrain_->snapshot()) {
+      try {
+        const auto transform = tf_->lookupTransform(
+          terrain->cost.header.frame_id, output_frame_, tf2::TimePointZero);
+        const double yaw = tf2::getYaw(transform.transform.rotation);
+        const double c = std::cos(yaw), s = std::sin(yaw);
+        const Eigen::Vector2d offset(transform.transform.translation.x,
+          transform.transform.translation.y);
+        const double spacing = 0.5 * terrain->cost.info.resolution;
+        std::vector<double> node_s(static_cast<size_t>(N + 1), 0.0);
+        for (int i = 0; i < N; ++i) {
+          node_s[static_cast<size_t>(i + 1)] = node_s[static_cast<size_t>(i)] +
+            seg_len[static_cast<size_t>(i)];
+        }
+        for (int i = 0; i < N; ++i) {
+          const Eigen::Vector2d a = sparse_path[static_cast<size_t>(i)].head<2>();
+          const Eigen::Vector2d b = sparse_path[static_cast<size_t>(i + 1)].head<2>();
+          const int samples = std::max(1, static_cast<int>(std::ceil((b - a).norm() / spacing)));
+          for (int j = 0; j <= samples; ++j) {
+            const Eigen::Vector2d p = a + (static_cast<double>(j) / samples) * (b - a);
+            const auto label = terrain->terrainLabelAt(
+              {c * p.x() - s * p.y() + offset.x(),
+               s * p.x() + c * p.y() + offset.y()});
+            if (!label) continue;
+            if (*label < region_speed_caps_.size()) {
+              const double sample_s = node_s[static_cast<size_t>(i)] +
+                (static_cast<double>(j) / samples) * seg_len[static_cast<size_t>(i)];
+              const double affected_start = sample_s - region_prepare_distances_[*label];
+              const double affected_end = sample_s + region_release_distances_[*label];
+              for (int k = 0; k < N; ++k) {
+                if (node_s[static_cast<size_t>(k)] <= affected_end &&
+                  node_s[static_cast<size_t>(k + 1)] >= affected_start) {
+                  local_vmax_vec[static_cast<size_t>(k)] = std::min(
+                    local_vmax_vec[static_cast<size_t>(k)], region_speed_caps_[*label]);
+                }
+              }
+            }
+          }
+        }
+      } catch (const tf2::TransformException &) {
+        // The final trajectory safety check still rejects an unavailable terrain transform.
+      }
+    }
+  }
   utils::VelPropogation(seg_len, amax, local_vmax_vec);
   for (int i = 0; i < N; ++i) {
     local_vmaxs(i) = local_vmax_vec[static_cast<size_t>(i)];
@@ -1799,7 +1868,7 @@ bool MincoPlanner::validateTrajectory(
         const Eigen::Vector2d current = to_map(pos_odom);
         if (!terrain->transition(previous, current)) {
           log_terrain_reject("edge_static", current, pos_odom, &previous);
-          last_validation_failure_reason_ = "TERRAIN_COLLISION_OR_DIRECTION";
+          last_validation_failure_reason_ = "TERRAIN_COLLISION";
           return false;
         }
         previous = current;

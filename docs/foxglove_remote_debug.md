@@ -2,7 +2,7 @@
 
 在另一台机器上通过 SSH 远程使用 Foxglove 观察/调试本仓库 nav 栈的操作手册。
 
-现场环境（2026-09-17 实测）：
+现场环境（2026-09-17 实测，IP 仅为当日记录，连接前需重新查询）：
 
 - 机器人：Ubuntu 24.04 + ROS 2 Jazzy，主机名 `mas-intel-1`，用户 `mas`
   - `wlo1`：`192.168.77.79`（SSH 从这里进来）
@@ -10,6 +10,10 @@
   - 机器上装了 `FlClash`（TUN，`198.18.0.0/30`）
 - 上位机/笔记本：`192.168.77.15`（与机器人同一网段）
 - 机器人已装 `ros-jazzy-foxglove-bridge 3.5.0` 与 Foxglove Studio 桌面版 `3.1.1`
+
+机器人 Wi-Fi 地址会变化。连接前在机器人上运行 `ip -4 -brief addr show wlo1`，
+把输出中的 IPv4 地址填入下面的 `ROBOT_IP`。2026-09-24 实测为 `192.168.77.141`。
+在机器人上运行 `ss -lntp | grep 8766` 确认 bridge 正在监听；若没有输出，先启动 nav 栈或独立 bridge。
 
 ## 1. 链路
 
@@ -86,14 +90,16 @@ ros2 launch foxglove_bridge foxglove_bridge_launch.xml address:=127.0.0.1 port:=
 ### 方式 A：SSH 隧道（配合 `address:=127.0.0.1`）
 
 ```bash
-ssh -N -L 8766:127.0.0.1:8766 mas@192.168.77.79
+ROBOT_IP=192.168.77.141  # 换成机器人当前 wlo1 地址
+ssh -N -L 8766:127.0.0.1:8766 mas@"$ROBOT_IP"
 ```
 
-这条命令要一直挂着。建议写进 `~/.ssh/config` 免得每次敲：
+这条命令要一直挂着。建议写进 `~/.ssh/config` 免得每次敲；`HostName`
+也要在机器人 Wi-Fi 地址变化后更新：
 
 ```sshconfig
 Host mas-robot
-    HostName 192.168.77.79
+    HostName 192.168.77.141
     User mas
     LocalForward 8766 127.0.0.1:8766
     ServerAliveInterval 30
@@ -104,14 +110,16 @@ Host mas-robot
 
 ### 方式 B：直连（配合 `address:=0.0.0.0`）
 
-Foxglove 桌面版直接填 `ws://192.168.77.79:8766`。
+Foxglove 桌面版直接填 `ws://<机器人当前 wlo1 IPv4>:8766`；例如
+2026-09-24 的地址是 `ws://192.168.77.141:8766`。此方式还需以
+`foxglove_address:=0.0.0.0` 启动 bridge。
 
 ### 连接
 
 Foxglove → `Open connection` → 选 **Foxglove WebSocket** → 填 URL → `Open`。
 
 - 方式 A 填 `ws://127.0.0.1:8766`
-- 方式 B 填 `ws://192.168.77.79:8766`
+- 方式 B 填 `ws://<机器人当前 wlo1 IPv4>:8766`
 
 ## 4. 面板配置
 
@@ -131,7 +139,6 @@ Foxglove → `Open connection` → 选 **Foxglove WebSocket** → 填 URL → `O
 | MarkerArray | `/nav_executor/debug/safe_corridor` | MINCO 安全走廊 |
 | Marker | `/nav_executor/debug/dynamic_obstacles` | 当前帧动态障碍 |
 | Odometry | `/Odometry` | 位姿 |
-| Image | `/direction_map` | 地形方向图 |
 
 Plot 面板排查"慢/卡顿"最直观：`/cmd_vel` 的 `twist.linear.x` / `twist.angular.z`，
 `/Odometry` 的 `twist.twist.linear.x`。
@@ -174,7 +181,7 @@ HTTP 响应体是 `Missing expected sec-websocket-protocol header`（该字符�
 
 `https://studio.foxglove.dev` 是 https 页面，浏览器只允许它连 **localhost** 的
 `ws://`。所以网页版**必须走 SSH 隧道**（隧道把服务映射到笔记本本机），不能填
-`ws://192.168.77.79:8766`。
+`ws://<机器人当前 wlo1 IPv4>:8766`。
 
 ### 5.4 自定义消息类型在 3D 面板里加不了
 
@@ -210,7 +217,7 @@ sudo ufw allow from 192.168.77.0/24 to any port 8766 proto tcp
 
 | 现象 | 查什么 |
 |---|---|
-| Foxglove 连不上、无报错 | `ss -tln \| grep 8766`；是不是绑了 `127.0.0.1` 又没开隧道 |
+| Foxglove 连不上、无报错 | `ss -tln \| grep 8766`；核对当前机器人 IP；是不是绑了 `127.0.0.1` 又没开隧道；nav launch 是否已退出 |
 | 连上立刻断、日志 `handshake failed` | 客户端太旧，不认 `foxglove.sdk.v1`（见 5.1） |
 | 启动报 `Address already in use` | 已有一个 bridge 在跑，`pkill -f foxglove_bridge` 后再起 |
 | 连上但没数据 | nav 栈没起，或 topic 被白名单滤掉 |
