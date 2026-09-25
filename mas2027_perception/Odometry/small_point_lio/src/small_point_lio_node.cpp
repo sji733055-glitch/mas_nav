@@ -222,15 +222,15 @@ namespace small_point_lio {
             }
             odometry_publisher->publish(odometry_msg);
         });
-        small_point_lio->set_pointcloud_callback([this, save_pcd, odom_frame](const std::vector<Eigen::Vector3f> &pointcloud) {
+        small_point_lio->set_pointcloud_callback([this, save_pcd, odom_frame](const std::vector<Eigen::Vector3f> &pointcloud, double stamp) {
             // 只在真有订阅者时才组装这一帧稠密点云，无人订阅时序列化它纯属浪费。
             // get_subscription_count() 只统计 QoS 兼容（matched）的订阅，reliable 端不计入、收不到点云。
             const bool has_full_subscriber = pointcloud_full_publisher->get_subscription_count() > 0;
             const bool has_legacy_subscriber = pointcloud_publisher->get_subscription_count() > 0;
             if (has_full_subscriber || has_legacy_subscriber) {
                 builtin_interfaces::msg::Time time_msg;
-                time_msg.sec = std::floor(last_odometry.timestamp);
-                time_msg.nanosec = static_cast<uint32_t>((last_odometry.timestamp - time_msg.sec) * 1e9);
+                time_msg.sec = std::floor(stamp);
+                time_msg.nanosec = static_cast<uint32_t>((stamp - time_msg.sec) * 1e9);
 
                 if (!odom_frame_initialized) {
                     return;

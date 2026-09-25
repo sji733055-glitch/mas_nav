@@ -132,6 +132,8 @@ Foxglove → `Open connection` → 选 **Foxglove WebSocket** → 填 URL → `O
 | PointCloud2 | `/cloud_registered` | 实时配准点云（首选） |
 | PointCloud2 | `/rog_map/occupied` | ROGMap 动态占据 |
 | PointCloud2 | `/rog_map/field` | 2D 距离场 |
+| MarkerArray | `/rog_map/terrain_markers` | 在线坡道（橙）/隧道（青）候选区域 |
+| OccupancyGrid | `/rog_map/terrain_label` | 在线地形原始标签：5=坡道、6=隧道 |
 | OccupancyGrid | `/cost_map`、`/planning_constraints` | 静态地形代价图 / 导航实际使用的静态约束图 |
 | Path | `/opt_path_vis` | 实际执行的轨迹 |
 | Path | `/nav_executor/global_plan` | 全局路径 |
@@ -139,6 +141,12 @@ Foxglove → `Open connection` → 选 **Foxglove WebSocket** → 填 URL → `O
 | MarkerArray | `/nav_executor/debug/safe_corridor` | MINCO 安全走廊 |
 | Marker | `/nav_executor/debug/dynamic_obstacles` | 当前帧动态障碍 |
 | Odometry | `/Odometry` | 位姿 |
+
+### 在 3D 面板查看在线坡道与隧道
+
+连接机器人后，打开 Foxglove 的 **3D** 面板，将 Fixed frame 设为 `map`；在面板的 Topics 列表中找到并开启 `/rog_map/terrain_markers`。橙色方块是 ROGMap 在线识别的坡道候选格，青色方块是隧道候选格。这个显示只包含在线识别，不包含人工地图标注。需要核对原始标签时，再在同一个 3D 面板开启 `/rog_map/terrain_label`（`5`=坡道、`6`=隧道）；普通 OccupancyGrid 配色不会像彩色标记那样醒目。
+
+若彩色话题没有出现，在机器人上检查 `ros2 topic info /rog_map/terrain_markers --verbose`：应能看到 ROGMap 发布器和 Foxglove 连接后产生的订阅。若曾按本文“限流白名单”示例单独启动 bridge，要把 `^/rog_map/terrain_markers$` 加进白名单，否则 Foxglove 看不到该话题。话题可见但画面为空时，先确认 `/rog_map/terrain_label` 当前确实出现 `5/6`，并检查 `odom→map` TF；没有识别到特殊地形时不会显示色块。3D 面板支持 ROS 2 `visualization_msgs/msg/MarkerArray`，无需另装面板插件。
 
 Plot 面板排查"慢/卡顿"最直观：`/cmd_vel` 的 `twist.linear.x` / `twist.angular.z`，
 `/Odometry` 的 `twist.twist.linear.x`。

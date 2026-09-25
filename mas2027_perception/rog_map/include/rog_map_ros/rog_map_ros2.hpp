@@ -246,8 +246,9 @@ class ROGMapROS : public ROGMap
     sensor_msgs::msg::PointCloud2 occ, raw_occ, unknown, occ_inf, unknown_inf, frontier, esdf,
       height_delta, field, decay;
     /// 栅格类输出：融合 value、动态 value、静态先验、四分类类型图、分类置信度。
-    nav_msgs::msg::OccupancyGrid layer_value, layer_dynamic, layer_static, layer_type, layer_confidence;
-    visualization_msgs::msg::MarkerArray markers;
+    nav_msgs::msg::OccupancyGrid layer_value, layer_dynamic, layer_static, layer_type,
+      layer_confidence, terrain_label;
+    visualization_msgs::msg::MarkerArray markers, terrain_markers;
     // 以下 has_* 表示「本帧确实填充了对应字段」。发布端据此跳过未填充的字段，
     // 而填充本身只在对应话题有订阅者时才做（见 captureVizFrame），以此省掉无谓的拷贝。
     bool has_occ{false};
@@ -265,7 +266,9 @@ class ROGMapROS : public ROGMap
     bool has_layer_static{false};
     bool has_layer_type{false};
     bool has_layer_confidence{false};
+    bool has_terrain_label{false};
     bool has_markers{false};
+    bool has_terrain_markers{false};
   };
   /// 双缓冲：更新线程写、vizCallback 读，读写都持 viz_frame_mutex_。
   /// viz_heavy_ 只承载高成本项（未知/前沿/膨胀/ESDF），限频 2 Hz；为 null 表示本轮跳过重活。
@@ -558,6 +561,21 @@ class ROGMapROS : public ROGMap
         fillLayerGrid(types, frame->layer_type);
         frame->has_layer_type = true;
       }
+      const bool want_terrain_grid = vm_.terrain_label_pub &&
+        vm_.terrain_label_pub->get_subscription_count() >= 1;
+      const bool want_terrain_markers = vm_.terrain_markers_pub &&
+        vm_.terrain_markers_pub->get_subscription_count() >= 1;
+      if (want_terrain_grid || want_terrain_markers) {
+        const auto labels = layer_->terrainLabels();
+        if (want_terrain_grid) {
+          fillLayerGrid(labels, frame->terrain_label);
+          frame->has_terrain_label = true;
+        }
+        if (want_terrain_markers) {
+          fillTerrainMarkers(labels, frame->terrain_markers);
+          frame->has_terrain_markers = true;
+        }
+      }
       // 分类置信度按 0~100 百分数发布（CellData::confidence 本身是 0~1 的 float）。
       if (vm_.layer_confidence_pub && vm_.layer_confidence_pub->get_subscription_count() >= 1) {
         std::vector<uint8_t> confidence(layer_->cells().size(), 0U);
@@ -784,6 +802,9 @@ class ROGMapROS : public ROGMap
     if (frame->has_layer_confidence && vm_.layer_confidence_pub) {
       vm_.layer_confidence_pub->publish(frame->layer_confidence);
     }
+    if (frame->has_terrain_label && vm_.terrain_label_pub) {
+      vm_.terrain_label_pub->publish(frame->terrain_label);
+    }
     if (frame->has_height_delta && vm_.layer_height_delta_pub) {
       vm_.layer_height_delta_pub->publish(frame->height_delta);
     }
@@ -802,6 +823,9 @@ class ROGMapROS : public ROGMap
     if (frame->has_markers && vm_.mkr_arr_pub) {
       vm_.mkr_arr_pub->publish(frame->markers);
     }
+    if (frame->has_terrain_markers && vm_.terrain_markers_pub) {
+      vm_.terrain_markers_pub->publish(frame->terrain_markers);
+    }
   }
 
   /// 任一可视化话题有订阅者即返回 true。更新线程用它决定是否值得构建快照，
@@ -816,6 +840,8 @@ class ROGMapROS : public ROGMap
            (vm_.layer_value_static_pub &&
             vm_.layer_value_static_pub->get_subscription_count() >= 1) ||
            (vm_.layer_type_pub && vm_.layer_type_pub->get_subscription_count() >= 1) ||
+           (vm_.terrain_label_pub && vm_.terrain_label_pub->get_subscription_count() >= 1) ||
+           (vm_.terrain_markers_pub && vm_.terrain_markers_pub->get_subscription_count() >= 1) ||
            (vm_.layer_confidence_pub && vm_.layer_confidence_pub->get_subscription_count() >= 1) ||
            (vm_.layer_height_delta_pub && vm_.layer_height_delta_pub->get_subscription_count() >= 1) ||
            (vm_.field_pub && vm_.field_pub->get_subscription_count() >= 1) ||
@@ -865,6 +891,47 @@ class ROGMapROS : public ROGMap
     for (size_t i = 0; i < data.size(); ++i) {
       grid.data[i] = data[i] == kUnknownTypeValue ?
         static_cast<int8_t>(-1) : static_cast<int8_t>(std::min<int>(100, data[i]));
+    }
+  }
+
+  /// 在线特殊地形以两组彩色方块显示；每帧覆盖上一帧，空组显式删除旧标记。
+  void fillTerrainMarkers(const std::vector<uint8_t> & labels,
+    visualization_msgs::msg::MarkerArray & markers)
+  {
+    markers.markers.resize(2);
+    const auto stamp = now();
+    const double resolution = layer_->resolution();
+    for (size_t i = 0; i < markers.markers.size(); ++i) {
+      auto & marker = markers.markers[i];
+      marker.header.stamp = stamp;
+      marker.header.frame_id = cfg_.visualization_frame_id;
+      marker.ns = "online_terrain";
+      marker.id = static_cast<int32_t>(i);
+      marker.type = visualization_msgs::msg::Marker::CUBE_LIST;
+      marker.action = visualization_msgs::msg::Marker::ADD;
+      marker.pose.orientation.w = 1.0;
+      marker.scale.x = resolution;
+      marker.scale.y = resolution;
+      marker.scale.z = 0.03;
+      marker.color.r = i == 0 ? 1.0F : 0.0F;
+      marker.color.g = i == 0 ? 0.55F : 0.85F;
+      marker.color.b = i == 0 ? 0.0F : 1.0F;
+      marker.color.a = 0.8F;
+      marker.lifetime = rclcpp::Duration::from_seconds(
+        std::max(0.5, 2.5 / std::max(1.0, cfg_.visualization_rate)));
+    }
+    const int width = layer_->width();
+    for (size_t index = 0; index < labels.size(); ++index) {
+      const size_t marker_index = labels[index] == 5U ? 0U : labels[index] == 6U ? 1U : 2U;
+      if (marker_index >= markers.markers.size()) continue;
+      geometry_msgs::msg::Point point;
+      point.x = layer_->origin().x() + (static_cast<int>(index % width) + 0.5) * resolution;
+      point.y = layer_->origin().y() + (static_cast<int>(index / width) + 0.5) * resolution;
+      point.z = 0.06;
+      markers.markers[marker_index].points.push_back(point);
+    }
+    for (auto & marker : markers.markers) {
+      if (marker.points.empty()) marker.action = visualization_msgs::msg::Marker::DELETE;
     }
   }
 
@@ -1025,8 +1092,10 @@ class ROGMapROS : public ROGMap
       vm_.layer_value_dynamic_pub = pubs.layer_value_dynamic_pub;
       vm_.layer_value_static_pub = pubs.layer_value_static_pub;
       vm_.layer_type_pub = pubs.layer_type_pub;
+      vm_.terrain_label_pub = pubs.terrain_label_pub;
       vm_.layer_confidence_pub = pubs.layer_confidence_pub;
       vm_.mkr_arr_pub = pubs.mkr_arr_pub;
+      vm_.terrain_markers_pub = pubs.terrain_markers_pub;
     }
 
     if (cfg_.ros_callback_en) {

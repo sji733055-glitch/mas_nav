@@ -69,11 +69,17 @@ flowchart LR
 | `/rog_map/layer_value_dynamic` | 仅在线三维感知生成的动态二维障碍投影 |
 | `/rog_map/layer_value_static` | 仅 PGM 静态先验在当前 ROGMap 网格上的二维障碍投影 |
 | `/rog_map/layer_type` | 四类投影结果，按 OccupancyGrid 数值编码：`-1`=UNKNOWN、`33`=FREE、`66`=PASSABLE、`100`=OCCUPIED；RViz Map 使用 `costmap` 配色显示四档 |
+| `/rog_map/terrain_label` | 在线地形候选图（OccupancyGrid）：`-1`=未知/未观测地面、`0`=观测到的普通薄地面、`5`=坡道候选、`6`=隧道候选。仅在有订阅者时计算 |
+| `/rog_map/terrain_markers` | 在线候选区域的彩色 MarkerArray：橙色方块=坡道，青色方块=隧道；直接覆盖在 RViz 地图上，失去更新后短时间自动消失 |
 | `/rog_map/layer_confidence` | 分类置信度 |
 | `/rog_map/layer_height_delta` | 柱内高度变化：每格一个点，**z = 该柱占据最高点，intensity = height_delta**，是判读分类分支最直接的一条 |
 | `/rog_map/field` | 势场/距离场诊断 |
 | `/rog_map/decay_cells` | 衰减单元诊断 |
 | `/rog_map/map_bound` | 当前滑动地图边界 |
+
+`/rog_map/terrain_label` 与旧 `/rog_map/layer_type` 的判据不同。坡道候选要求中心为薄地面，在 11×11 邻域内至少有 30 个薄地面格，拟合平面坡度在约 8°～35°，高度变化至少 0.06 m，拟合均方根误差不超过 0.04 m。隧道候选要求同一柱内上下占据层相距 0.6～1.8 m、竖直占据率不超过 0.45、两层之间至少一半体素明确观测为空闲，且 3×3 邻域至少 5 格满足该条件。隧道优先于坡道。阈值目前是诊断初值，需要用现场点云标定；特别是局部地图垂直窗口只有 2.5 m，超出窗口的顶板无法识别。该话题为候选语义，不等同于可通行净空。`nav_executor` 优先采用在线 `5/6` 生成区域 mode，在线没有特殊地形结果或过期时回退静态 `/terrain_label_map`。
+
+RViz 的 `ROGMAP` 分组默认开启 `Online Terrain (orange=slope, cyan=tunnel)`；它显示的是 `/rog_map/terrain_markers` 中**在线识别的候选格**，不会把人工标注区涂成在线识别。若需核对数值，可临时开启同组的 `Online Terrain Labels (raw 5/6)`。两个话题来自同一次 `terrainLabels()` 计算，色块只负责显示，不参与规划或底盘控制。
 
 ## ⚙️ 关键配置
 

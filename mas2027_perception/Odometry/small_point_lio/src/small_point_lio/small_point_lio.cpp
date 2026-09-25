@@ -29,6 +29,7 @@ namespace small_point_lio {
     void SmallPointLio::reset() {
         preprocess.reset();
         estimator.reset();
+        pointcloud_odom_frame.clear();
         is_init = false;
     }
 
@@ -74,6 +75,7 @@ namespace small_point_lio {
                 // clear data
                 preprocess.point_deque.clear();
                 preprocess.dense_point_deque.clear();
+                preprocess.dense_frame_remaining.clear();
                 preprocess.imu_deque.clear();
                 is_init = true;
             }
@@ -83,6 +85,7 @@ namespace small_point_lio {
         // judge we should do point update or imu update
         bool is_publish_odometry = !preprocess.imu_deque.empty() && !preprocess.dense_point_deque.empty() && !preprocess.point_deque.empty() &&
                                    preprocess.imu_deque.front().timestamp < preprocess.point_deque.back().timestamp;
+        std::vector<std::pair<double, std::vector<Eigen::Vector3f>>> completed_clouds;
         while (!preprocess.imu_deque.empty() && !preprocess.dense_point_deque.empty() && !preprocess.point_deque.empty()) {
             const common::Point &point_lidar_frame = preprocess.point_deque.front();
             const common::Point &dense_point_lidar_frame = preprocess.dense_point_deque.front();
@@ -109,7 +112,11 @@ namespace small_point_lio {
                     pointcloud_odom_frame.emplace_back((estimator.kf.x.rotation * dense_point_imu_frame + estimator.kf.x.position).cast<float>());
                 }
 
-                preprocess.dense_point_deque.pop_front();
+                const double point_stamp = dense_point_lidar_frame.timestamp;
+                if (preprocess.finish_dense_point()) {
+                    completed_clouds.emplace_back(point_stamp, std::vector<Eigen::Vector3f>{});
+                    completed_clouds.back().second.swap(pointcloud_odom_frame);
+                }
             } else if (point_lidar_frame.timestamp < imu_msg.timestamp) {
                 // point update
                 if (point_lidar_frame.timestamp < time_current) {
@@ -155,20 +162,19 @@ namespace small_point_lio {
             }
         }
 
-        if (is_publish_odometry) {
+        if (is_publish_odometry || !completed_clouds.empty()) {
             if (!parameters.publish_odometry_without_downsample) {
                 publish_odometry(time_current);
             }
-            if (!pointcloud_odom_frame.empty()) {
-                if (pointcloud_callback) {
-                    pointcloud_callback(pointcloud_odom_frame);
+            if (pointcloud_callback) {
+                for (const auto &[stamp, cloud] : completed_clouds) {
+                    pointcloud_callback(cloud, stamp);
                 }
-                pointcloud_odom_frame.clear();
             }
         }
     }
 
-    void SmallPointLio::set_pointcloud_callback(const std::function<void(const std::vector<Eigen::Vector3f> &pointcloud)> &pointcloud_callback) {
+    void SmallPointLio::set_pointcloud_callback(const std::function<void(const std::vector<Eigen::Vector3f> &pointcloud, double stamp)> &pointcloud_callback) {
         this->pointcloud_callback = pointcloud_callback;
     }
 

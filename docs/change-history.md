@@ -2,6 +2,41 @@
 
 本文件记录由开发任务产生的代码、配置、脚本、资源和文档变更。新记录追加在最上方，不改写旧记录。
 
+## 2026-09-25 — LIO 按雷达输入帧发布去畸变点云
+
+- 改动：`small_point_lio` 的预处理层记录每次雷达输入的有效稠密点数，去畸变处理跨多个 IMU 回调完成整帧后，才向 `/cloud_registered` 和 `/cloud_registered_full` 发布一次，并使用该帧最后一个点的时间戳。`/Odometry` 继续按原有估计流程发布；新增分帧边界测试。当前运行中约 20 Hz 的驱动帧此前会拆成约 50–70 Hz 点云片段，导致 ROGMap 重复更新并跳过部分片段。此改动针对当前输入放大；历史上 20 Hz 输入时的投影耗时问题仍需独立监测。
+- 验证：`colcon build --packages-select small_point_lio --symlink-install --parallel-workers 2 --cmake-args -DCMAKE_BUILD_TYPE=Release` 通过；分帧测试与 `colcon test-result` 显示 2 项测试无失败，`git diff --check` 通过。用户退出原导航后，以 `use_ros2_comm:=False` 启动新版本做 128.4 秒静止现场验证：驱动采样 20.0 Hz、`/cloud_registered` 19.9 Hz，中位 14151 点/帧；ROGMap CSV 约 2569 帧输入、2553 次更新，处理比例 99.38%（旧运行最近约 56%）。仍观察到单帧丢弃告警，不能视为零丢帧；定位器持续接受配准。测试结束已关闭本次启动的全部进程。未带底盘行驶或动态障碍验证。
+
+## 2026-09-25 — 撤回未经验证的 LIO 合并方案并澄清积压历史
+
+- 改动：撤回上一条记录中的 `small_point_lio_node.*` 和 `small_point_lio_params.yaml` 点云合并改动；旧记录保留作为变更过程。重新核对 2026-09-16 至 17 日实车记录：即使点云输入约 20 Hz，ROGMap 也曾仅处理 12.8 Hz，全量二维投影是当时的主要耗时；改为脏列增量后丢帧下降但未消失。因此当前约 50–60 Hz 的 LIO 分片是额外负载，不能解释积压最初出现的原因。修改仅涉及上述回退和本历史说明。
+- 验证：核对旧实车 CSV 摘要、当前 `.scratch/rog_map_perf_summary.csv` 和 `/tmp/rog_map_perf_detailed.csv`，并确认 LIO/bringup 文件已恢复；恢复源码后重新执行 `colcon build --packages-select small_point_lio --symlink-install --parallel-workers 2 --cmake-args -DCMAKE_BUILD_TYPE=Release`，`git diff --check` 通过。未重启现场进程，未做实车运行或同场景 A/B 对比。
+
+## 2026-09-25 — 合并 LIO 去畸变点云分片以缓解 ROGMap 积压
+
+- 改动：`small_point_lio_node` 为 `/cloud_registered` 和 `/cloud_registered_full` 增加可配置的发布周期，合并 IMU 回调产生的点云片段；当前 bringup 配为 0.05 s，目标与 MID360 的 20 Hz 雷达帧频率一致。里程计及 PCD 保存仍按原回调处理，无订阅者时清空暂存点云。默认周期 0 保持其他启动配置的原发布行为。
+- 验证：现场采样确认 `/mid360_driver/lidar` 约 20 Hz，而 `/cloud_registered` 每雷达帧分成约 3 个片段，ROGMap 每秒接收约 50–60 帧但只能处理约 25–40 帧。`colcon build --packages-select small_point_lio --symlink-install --parallel-workers 2 --cmake-args -DCMAKE_BUILD_TYPE=Release` 和 `git diff --check` 通过。当前机器人仍运行旧进程，未重启验证新发布频率和 ROGMap 丢帧率，也未做实车行驶测试。
+
+## 2026-09-25 — 补充 Foxglove 在线地形可视化步骤
+
+- 改动：`docs/foxglove_remote_debug.md` 增加 3D 面板中开启 `/rog_map/terrain_markers` 的具体步骤、颜色含义、原始标签核对方法，以及话题白名单和 TF 排障说明。代码和消息格式未改。
+- 验证：核对 Foxglove 官方 3D 面板文档支持 ROS 2 `visualization_msgs/msg/MarkerArray`，并检查仓库 bridge 启动与话题名称；`git diff --check` 通过。未实际连接 Foxglove 客户端验收。
+
+## 2026-09-25 — RViz 显示在线坡道与隧道区域
+
+- 改动：ROGMap 新增 `/rog_map/terrain_markers`，把在线识别的坡道 `5` 画为橙色方块、隧道 `6` 画为青色方块；与 `/rog_map/terrain_label` 共用同一次语义计算，并给标记设置短寿命，感知停更后不会长期残留。`nav_executor_view.rviz` 的 ROGMAP 分组默认显示彩色标记，并提供默认关闭的原始标签栅格；更新 ROGMap 与 Foxglove 使用说明。涉及 ROGMap 可视化发布器、ROS 适配层、RViz 配置和文档。
+- 验证：`colcon build --packages-select rog_map --symlink-install --parallel-workers 2 --cmake-args -DCMAKE_BUILD_TYPE=Release` 通过；ROGMap 投影测试通过；PyYAML 解析 RViz 配置并确认彩色标记默认开启、原始标签默认关闭，`git diff --check` 通过。未连接实车点云或手工打开 RViz 验收。
+
+## 2026-09-24 — 区域模式优先采用 ROGMap 在线语义
+
+- 改动：`nav_executor` 订阅 `/rog_map/terrain_label`，轨迹区域标注优先采用新鲜的在线坡道 `5` 和隧道 `6`，在线未知、普通地面、覆盖范围外、过期或 TF 不可用时回退静态 `/terrain_label_map`；在线候选造成区域模式窗口冲突时整条轨迹回退静态标注。同一轨迹收到新语义图后重新标注，同时保留控制器路径进度。`rog_map` 的空柱不再输出普通地面 `0`，坡度拟合改为单遍统计以降低在线开销。涉及区域控制、导航节点、参数、ROGMap 投影、相关测试和说明文档。
+- 验证：`colcon build --packages-select rog_map mas2027_nav_executor --symlink-install --parallel-workers 2 --cmake-args -DCMAKE_BUILD_TYPE=Release` 通过；在线优先级测试 4 项、ROGMap 投影测试 5 项全部通过，`git diff --check` 通过。未以现场点云标定阈值，未做实车底盘 mode 联调。
+
+## 2026-09-24 — ROGMap 输出在线坡道与隧道候选图
+
+- 改动：`rog_map` 投影层增加 `/rog_map/terrain_label` 诊断栅格，分别输出普通区域 `0`、坡道候选 `5`、隧道候选 `6` 和未知 `-1`。坡道由邻域薄地面高度拟合，隧道由上下占据层、已观测的中间空隙和邻域支持共同筛选；修改 `projection_layer.*`、`rog_map.cpp`、`rog_map_visualizer.*`、`rog_map_ros2.hpp`、CMake、模块 README，并添加合成栅格测试。此候选图暂不控制底盘 mode，静态 `/terrain_label_map` 仍负责区域控制。
+- 验证：`colcon build --packages-select rog_map --symlink-install --parallel-workers 2 --cmake-args -DCMAKE_BUILD_TYPE=Release` 编译通过；`colcon test --packages-select rog_map --ctest-args -R test_projection_terrain --output-on-failure` 与 `colcon test-result` 显示 5 个测试全通过；`git diff --check` 通过。未以现场点云标定阈值，未实车验证坡道/隧道识别或底盘 mode。
+
 ## 2026-09-24 — 统一特殊地形标签与底盘 mode
 
 - 改动：特殊地形仅保留上坡 `5`、隧道 `6`、起伏路段 `7`，标签与各自底盘 mode 相同；`map_server` 拒绝旧的 2～4 和 8 标签，`nav_executor` 按 5/6/7 标注区域并校验 mode 与标签一致。当前导航 terrain 地图的 2,752 个旧上坡格由 `2` 迁至 `5`，其余格位和地图几何不变。按用户补充要求，地图文件移除 `direction` 通道，`map_server` 删除方向图解析、膨胀和相关接口；RViz/Foxglove 说明清除方向图入口。`mapping_web_ui` 独立仓库的编辑选项、单通道格式和对应地图也同步调整。

@@ -13,6 +13,7 @@ namespace small_point_lio {
         imu_deque.clear();
         point_deque.clear();
         dense_point_deque.clear();
+        dense_frame_remaining.clear();
         last_timestamp_lidar = -1;
         last_timestamp_imu = -1;
         last_timestamp_dense_point = -1;
@@ -68,6 +69,7 @@ namespace small_point_lio {
             }
         }
         if (!dense_points.empty()) {
+            dense_frame_remaining.push_back(dense_points.size());
             dense_point_deque.insert(dense_point_deque.end(), dense_points.begin(), dense_points.end());
         }
         if (!processed_pointcloud.empty()) {
@@ -83,6 +85,19 @@ namespace small_point_lio {
         }
         imu_deque.emplace_back(imu_msg);
         last_timestamp_imu = imu_msg.timestamp;
+    }
+
+    bool Preprocess::finish_dense_point() {
+        if (dense_point_deque.empty() || dense_frame_remaining.empty()) {
+            throw std::logic_error("dense point/frame boundary mismatch");
+        }
+        dense_point_deque.pop_front();
+        auto &remaining = dense_frame_remaining.front();
+        if (--remaining == 0) {
+            dense_frame_remaining.pop_front();
+            return true;
+        }
+        return false;
     }
 
 }// namespace small_point_lio

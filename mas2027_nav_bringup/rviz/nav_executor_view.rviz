@@ -174,6 +174,20 @@ Visualization Manager:
             Value: /rog_map/layer_type
           Use Timestamp: false
           Value: true
+        - Alpha: 0.5
+          Class: rviz_default_plugins/Map
+          Color Scheme: map
+          Draw Behind: true
+          Enabled: false
+          Name: Online Terrain Labels (raw 5/6)
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /rog_map/terrain_label
+          Use Timestamp: false
+          Value: false
         - Alpha: 0.55
           Class: rviz_default_plugins/Map
           Color Scheme: map
@@ -263,6 +277,16 @@ Visualization Manager:
             History Policy: Keep Last
             Reliability Policy: Best Effort
             Value: /rog_map/map_bound
+          Value: true
+        - Class: rviz_default_plugins/MarkerArray
+          Enabled: true
+          Name: Online Terrain (orange=slope, cyan=tunnel)
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /rog_map/terrain_markers
           Value: true
       Enabled: true
       Name: ROGMAP

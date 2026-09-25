@@ -44,6 +44,7 @@ struct CellData
   float occupied_z_max_abs{std::numeric_limits<float>::quiet_NaN()};
   float height_delta{0.0f};
   float vertical_occupancy_ratio{0.0f};
+  float free_gap_ratio{0.0f};
   ProjectionClassReason raw_reason{ProjectionClassReason::INSUFFICIENT_OBSERVATION};
   uint8_t traversable{0};
   bool hole_filled{false};
@@ -76,6 +77,7 @@ struct ColumnStats
 {
   int observed_count{0};
   int occupied_count{0};
+  int free_between_occupied_count{0};
   int occupied_z_index_min{std::numeric_limits<int>::max()};
   int occupied_z_index_max{std::numeric_limits<int>::min()};
   double occupied_z_min_abs{std::numeric_limits<double>::infinity()};
@@ -158,6 +160,9 @@ public:
   const std::vector<CellData> & cells() const { return cells_; }
   const std::vector<uint8_t> & values() const { return values_; }
   const std::vector<uint8_t> & mask() const { return mask_; }
+  // Diagnostic labels: 0=flat/ordinary, 5=slope, 6=tunnel candidate, 255=unknown.
+  // These labels do not change the collision mask or chassis mode.
+  std::vector<uint8_t> terrainLabels() const;
   bool empty() const { return values_.empty(); }
   size_t storageCapacity() const { return cell_buffer_.size(); }
 

@@ -510,6 +510,8 @@ void ROGMap::refreshLayers()
     }
     const int gx = min_id.x() + mx;
     const int gy = min_id.y() + my;
+    int free_since_occupied = 0;
+    bool seen_occupied = false;
     for (int gz = z_min; gz <= z_max; ++gz) {
       Vec3i id_g(gx, gy, gz);
       GridType gt = rawGridType(id_g);
@@ -518,6 +520,9 @@ void ROGMap::refreshLayers()
         stats.last_update_time = std::max(stats.last_update_time, cellLastUpdateTime(id_g));
       }
       if (gt == GridType::OCCUPIED) {
+        if (seen_occupied) stats.free_between_occupied_count += free_since_occupied;
+        seen_occupied = true;
+        free_since_occupied = 0;
         ++stats.occupied_count;
         stats.occupied_z_index_min = std::min(stats.occupied_z_index_min, gz);
         stats.occupied_z_index_max = std::max(stats.occupied_z_index_max, gz);
@@ -526,6 +531,8 @@ void ROGMap::refreshLayers()
         stats.occupied_z_min_abs = std::min(stats.occupied_z_min_abs, static_cast<double>(pos.z()));
         stats.occupied_z_max_abs = std::max(stats.occupied_z_max_abs, static_cast<double>(pos.z()));
         stats.last_hit_time = std::max(stats.last_hit_time, cellLastHitTime(id_g));
+      } else if (seen_occupied && gt == GridType::KNOWN_FREE) {
+        ++free_since_occupied;
       }
     }
     return stats;

@@ -44,6 +44,30 @@ const RegionRule * findRule(const std::array<RegionRule, 3> & rules, uint8_t lab
   return nullptr;
 }
 
+std::optional<uint8_t> onlineLabelAt(
+  const nav_msgs::msg::OccupancyGrid & grid, const Eigen::Vector2d & point)
+{
+  const auto & info = grid.info;
+  if (!point.allFinite() || info.width == 0 || info.height == 0 ||
+      !std::isfinite(info.resolution) || info.resolution <= 0.0F ||
+      grid.data.size() != static_cast<size_t>(info.width) * info.height ||
+      std::abs(info.origin.orientation.x) > 1e-6 ||
+      std::abs(info.origin.orientation.y) > 1e-6 ||
+      std::abs(info.origin.orientation.z) > 1e-6 ||
+      std::abs(info.origin.orientation.w - 1.0) > 1e-6) return std::nullopt;
+  const double fx = (point.x() - info.origin.position.x) / info.resolution;
+  const double fy = (point.y() - info.origin.position.y) / info.resolution;
+  if (!std::isfinite(fx) || !std::isfinite(fy) || fx < 0.0 || fy < 0.0 ||
+      fx >= info.width || fy >= info.height) return std::nullopt;
+  const auto x = static_cast<size_t>(fx);
+  const auto y = static_cast<size_t>(fy);
+  const int8_t value = grid.data[y * info.width + x];
+  // An ordinary observation is not enough to erase a manually marked
+  // special region; only positively identified online regions take priority.
+  if (value != 5 && value != 6) return std::nullopt;
+  return static_cast<uint8_t>(value);
+}
+
 double projectProgress(const RegionPlan & plan, const Eigen::Vector2d & position,
   double minimum_s, double maximum_s)
 {
@@ -77,17 +101,30 @@ std::optional<RegionPlan> annotateRegions(
   const TerrainGrid::Snapshot & terrain,
   const tf2_ros::Buffer & tf_buffer,
   const std::array<RegionRule, 3> & rules,
-  const std::string & odom_frame)
+  const std::string & odom_frame,
+  const nav_msgs::msg::OccupancyGrid * online_labels)
 {
   if (trajectory.cmds.size() < 2) return std::nullopt;
   const std::string source = trajectory.header.frame_id.empty() ? odom_frame :
     trajectory.header.frame_id;
   Rigid2D to_map, to_odom;
+  std::optional<Rigid2D> to_online;
   try {
     to_map = lookupRigid(tf_buffer, terrain.cost.header.frame_id, source);
     to_odom = lookupRigid(tf_buffer, odom_frame, source);
   } catch (const tf2::TransformException &) {
     return std::nullopt;
+  }
+  if (online_labels && !online_labels->header.frame_id.empty() &&
+      online_labels->info.width > 0 && online_labels->info.height > 0 &&
+      std::isfinite(online_labels->info.resolution) && online_labels->info.resolution > 0.0F &&
+      online_labels->data.size() ==
+        static_cast<size_t>(online_labels->info.width) * online_labels->info.height) {
+    try {
+      to_online = lookupRigid(tf_buffer, online_labels->header.frame_id, source);
+    } catch (const tf2::TransformException &) {
+      // Static annotation remains available while the online frame is unresolved.
+    }
   }
 
   RegionPlan plan;
@@ -105,7 +142,9 @@ std::optional<RegionPlan> annotateRegions(
     plan.arc_lengths.push_back(arc);
   }
 
-  const double spacing = 0.5 * terrain.cost.info.resolution;
+  const double spacing = 0.5 * std::min<double>(terrain.cost.info.resolution,
+    to_online ? online_labels->info.resolution : terrain.cost.info.resolution);
+  if (!std::isfinite(spacing) || spacing <= 0.0) return std::nullopt;
   std::optional<RegionSegment> active;
   const auto finish = [&](double s) {
     if (!active) return;
@@ -124,13 +163,17 @@ std::optional<RegionPlan> annotateRegions(
     for (int j = (i == 1 ? 0 : 1); j <= samples; ++j) {
       const double u = static_cast<double>(j) / samples;
       const double s = plan.arc_lengths[i - 1] + u * length;
-      const auto label = terrain.terrainLabelAt(to_map.apply(a + u * (b - a)));
-      if (!label) return std::nullopt;
-      const RegionRule * rule = findRule(rules, *label);
-      if (active && (!rule || active->label != *label)) finish(s);
+      const Eigen::Vector2d sample = a + u * (b - a);
+      const auto static_label = terrain.terrainLabelAt(to_map.apply(sample));
+      if (!static_label) return std::nullopt;
+      const auto observed_label = to_online ?
+        onlineLabelAt(*online_labels, to_online->apply(sample)) : std::nullopt;
+      const uint8_t label = observed_label.value_or(*static_label);
+      const RegionRule * rule = findRule(rules, label);
+      if (active && (!rule || active->label != label)) finish(s);
       if (rule && !active) {
         if (rule->mode < 0 || rule->mode > 255) return std::nullopt;
-        active = RegionSegment{*label, static_cast<uint8_t>(rule->mode),
+        active = RegionSegment{label, static_cast<uint8_t>(rule->mode),
           rule->max_speed, rule->max_acceleration,
           std::max(0.0, s - rule->prepare_distance),
           std::max(0.0, s - rule->activation_distance),
@@ -169,7 +212,26 @@ RegionController::RegionController(uint8_t normal_mode, double normal_speed,
 
 void RegionController::setPlan(std::shared_ptr<const RegionPlan> plan)
 {
-  if (plan_ && plan && plan_->trajectory_id == plan->trajectory_id) return;
+  if (plan_ == plan) return;
+  if (plan_ && plan && plan_->trajectory_id == plan->trajectory_id) {
+    // The online semantic map can change while the trajectory stays the same.
+    // Preserve path progress but reselect the active segment from the new plan.
+    const uint8_t held_mode = held_segment_ && *held_segment_ < plan_->segments.size() ?
+      plan_->segments[*held_segment_].mode : normal_mode_;
+    plan_ = std::move(plan);
+    held_segment_.reset();
+    if (held_mode != normal_mode_) {
+      for (size_t i = 0; i < plan_->segments.size(); ++i) {
+        const auto & segment = plan_->segments[i];
+        if (segment.mode == held_mode && progress_ >= segment.active_s &&
+            progress_ < segment.release_s) {
+          held_segment_ = i;
+          break;
+        }
+      }
+    }
+    return;
+  }
   plan_ = std::move(plan);
   held_segment_.reset();
   progress_ = 0.0;

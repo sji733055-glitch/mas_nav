@@ -145,4 +145,10 @@ ament_export_dependencies(
         yaml_cpp_vendor
 )
 
+if(BUILD_TESTING)
+        find_package(ament_cmake_gtest REQUIRED)
+        ament_add_gtest(test_projection_terrain test/test_projection_terrain.cpp)
+        target_link_libraries(test_projection_terrain ${library_name})
+endif()
+
 ament_package()

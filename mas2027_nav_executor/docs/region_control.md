@@ -5,9 +5,10 @@
 ## 1. 数据流
 
 ```text
-terrain msgpack
-  → map_server: /cost_map + /terrain_label_map
-  → TerrainGrid 快照
+terrain msgpack → map_server: /cost_map + /terrain_label_map
+实时点云 → ROGMap: /rog_map/terrain_label
+  → 区域标签选择（在线坡道/隧道优先，其他格子回退静态标注）
+  → TerrainGrid 快照与在线语义图
   → 全局搜索 / MINCO 速度规划
   → /opt_path（最终轨迹）
   → annotateRegions()（沿轨迹识别区域）
@@ -31,6 +32,8 @@ terrain msgpack
 | 7 | `UNDULATING` | 起伏路模式与限速；底盘 mode 7 |
 
 有效标签仅有表中五个值；2～4 和 8 不再接受。terrain msgpack 只保存标签通道；`map_server` 从中生成 `mono8` 的 `/terrain_label_map`。静态占据图与在线 ROGMap 仍负责障碍安全判断。
+
+区域控制订阅 ROGMap 的 `/rog_map/terrain_label`。新鲜的在线 `5`（坡道）或 `6`（隧道）优先于地图标注；在线 `0`、`-1`、滑窗以外、坐标变换失败或超过 `node.online_terrain_label_timeout_s`（默认 0.8 秒）时使用静态标签。在线语义图改变执行侧区域 mode 和 MPC 速度约束，不改变静态占据图、MINCO 生成轨迹时依据静态标签的速度规划，或 ROGMap 的碰撞安全门。在线图以 5 Hz 发布，轨迹标注会随新图刷新；同一轨迹刷新时保留已行进的路径进度。若在线标签造成不同 mode 控制窗重叠，本轮改用整条轨迹的静态标注。识别阈值仍需实车点云标定，细节见 ROGMap README。
 
 当前 terrain 地图已将一块平地测试区标为 `SLOPE=5`，供 mode 切换联调；地图里没有对应 label 的其他区域不会产生特殊区域段。
 

@@ -31,11 +31,12 @@ RViz/Foxglove ── /goal_pose ────────────────
 | 输入/组件 | 主要用途 | 注意点 |
 |---|---|---|
 | `/cost_map`、`/terrain_label_map` → `TerrainGrid` | 静态可通行性、特殊区域类别 | 两者组成一致的地形快照；静态语义地图通常在 `map` 系。 |
+| `/rog_map/terrain_label` | 在线坡道/隧道语义 | 有效在线 `5/6` 优先用于区域 mode；未知、普通或过期时采用静态标签。 |
 | `ROGMapROS` | 在线点云障碍、局部距离与梯度，供局部优化和安全检查 | 在 `odom` 系；目标接纳和命令安全门均要求其快照足够新。 |
 | `/Odometry` 与 TF | 机器人位姿、速度，以及地图/规划/执行坐标转换 | `planner.frames.rog_frame`、ROGMap frame、`node.frames.odom` 必须一致。 |
 | `/goal_pose` | 目标位姿 | 入口会检查目标有效性、地图和里程计准备状态，并转换到规划坐标系。 |
 
-`TerrainGrid` 根据静态代价图判断栅格是否可通行；区域 mode 来自最终轨迹的地形标签，详见[区域控制说明](docs/region_control.md)。在线 ROGMap 处理当前局部障碍。
+`TerrainGrid` 根据静态代价图判断栅格是否可通行；区域 mode 沿最终轨迹优先读取在线坡道/隧道识别，其他位置回退静态标签，详见[区域控制说明](docs/region_control.md)。在线 ROGMap 同时处理当前局部障碍。
 
 ## 一个目标的完整生命周期
 
@@ -74,6 +75,7 @@ RViz/Foxglove ── /goal_pose ────────────────
 | `/goal_pose` | 输入 | 新导航目标。 |
 | `/Odometry` | 输入 | 规划和控制使用的里程计。 |
 | `/cost_map`、`/terrain_label_map` | 输入 | 静态占据与区域标签。 |
+| `/rog_map/terrain_label` | 输入 | 在线坡道和隧道标签，优先于静态特殊区域标注。 |
 | `/opt_path` | 内部规划 → 执行 | MPC 使用的最终局部轨迹。 |
 | `/nav_executor/global_plan` | 输出 | 全局搜索折线。 |
 | `/nav_executor/minco_path` | 输出 | MINCO 局部轨迹可视化。 |

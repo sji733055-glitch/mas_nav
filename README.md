@@ -18,17 +18,18 @@ ROS 2 Jazzy，运行链路统一为独立 `nav_executor`：不依赖 Nav2 server
 | `robot_state_publisher` | URDF → 车体 / 雷达外参 |
 
 `ROGMap` 在 `nav_executor` 进程内（`nav_executor_planner`），无独立节点，参数在 `planner.rog_map.*`；
-静态地形代价图是搜索、轨迹验收和 MPC 制动的规划输入；标签图用于区域 mode 和限速。没有 `Global/Local Costmap` 是预期行为。
+静态地形代价图是搜索、轨迹验收和 MPC 制动的规划输入；区域 mode 优先采用 ROGMap 在线坡道/隧道标签，缺失时采用静态标签图。没有 `Global/Local Costmap` 是预期行为。
 
 ## 在线链路
 
 ```text
 MID360 ×2 → mid360_driver → small_point_lio → /Odometry + /cloud_registered
                      ├─→ odom_localizer → map→odom → tf_maintainer → odom→base_link
-                     └─→ ROGMap（进程内：在线占据 / 距离场）
+                     └─→ ROGMap（进程内：在线占据 / 距离场 / 坡道隧道语义）
 
 lab3_terrain.msgpack → terrain_map_server → /cost_map + /terrain_label_map
-                                                    └─→ 全局搜索 → MINCO → MPC + 区域控制 → /nav_executor/chassis_cmd
+                                         → 全局搜索 → MINCO → MPC → 区域控制 → /nav_executor/chassis_cmd
+ROGMap → /rog_map/terrain_label ──────────────────────────↑
 ```
 
 - 全局主搜索是移植的 **SMAC 2D**（`path_planner/search/smac/`）：在静态地形栅格上做
@@ -48,6 +49,7 @@ lab3_terrain.msgpack → terrain_map_server → /cost_map + /terrain_label_map
 |---|---|
 | `/goal_pose`、`/Odometry`、`/cloud_registered` | 目标入口、里程计、配准点云 |
 | `/cost_map`、`/terrain_label_map` | 静态地形代价 / 原始区域标签（当前地图已有平地坡道模式测试区） |
+| `/rog_map/terrain_label` | 在线坡道 `5` / 隧道 `6` 候选标签；有效在线结果优先用于区域 mode |
 | `/opt_path`、`/cmd_vel`、`/nav_executor/chassis_cmd` | MINCO 轨迹、观测用速度、速度与模式的同周期底盘命令 |
 | `/nav_executor/global_plan`、`/nav_executor/debug/global_plan` | 全局折线的 Path / Marker（0.15 m 青粗线） |
 | `/nav_executor/minco_path` | MINCO 局部优化轨迹的 Path 可视化 |

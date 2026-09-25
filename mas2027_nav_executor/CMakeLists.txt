@@ -109,4 +109,17 @@ install(TARGETS ${PROJECT_NAME}_node DESTINATION lib/${PROJECT_NAME})
 # mas2027_nav_bringup/launch/nav_executor_launch.py）。故这里不再安装 launch 目录。
 install(DIRECTORY config DESTINATION share/${PROJECT_NAME})
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_region_online_priority
+    test/test_region_online_priority.cpp
+    src/common/environment/region_control.cpp
+    src/common/environment/terrain_grid.cpp)
+  target_include_directories(test_region_online_priority PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+  ament_target_dependencies(test_region_online_priority
+    geometry_msgs interfaces nav_msgs rclcpp sensor_msgs tf2 tf2_geometry_msgs tf2_ros)
+  target_link_libraries(test_region_online_priority Eigen3::Eigen)
+endif()
+
 ament_package()

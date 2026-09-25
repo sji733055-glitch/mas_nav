@@ -81,6 +81,13 @@ public:
     const auto cost_map_topic = declare_parameter<std::string>("node.topics.terrain_cost_sub", "/cost_map");
     const auto label_map_topic = declare_parameter<std::string>(
       "node.topics.terrain_label_sub", "/terrain_label_map");
+    const auto online_label_topic = declare_parameter<std::string>(
+      "node.topics.online_terrain_label_sub", "/rog_map/terrain_label");
+    online_label_timeout_s_ = declare_parameter<double>(
+      "node.online_terrain_label_timeout_s", 0.8);
+    if (!std::isfinite(online_label_timeout_s_) || online_label_timeout_s_ <= 0.0) {
+      throw std::invalid_argument("node.online_terrain_label_timeout_s must be positive");
+    }
     // ── 区域策略层：把 label 映射到 mode，并读取每类区域的速度、加速度和阶段距离。
     const int normal_mode = declare_parameter<int>("region_control.normal_mode", 4);
     if (normal_mode < 0 || normal_mode > 255) {
@@ -219,27 +226,37 @@ public:
       cost_map_topic, map_qos, [this](nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg) {
         terrain_grid_->updateCost(*msg);
         publish_planning_constraints();
+        refresh_region_plan();
       });
     terrain_label_sub_ = create_subscription<sensor_msgs::msg::Image>(
       label_map_topic, map_qos, [this](sensor_msgs::msg::Image::ConstSharedPtr msg) {
         terrain_grid_->updateLabels(*msg);
+        refresh_region_plan();
+      });
+    online_terrain_label_sub_ = create_subscription<nav_msgs::msg::OccupancyGrid>(
+      online_label_topic, rclcpp::SensorDataQoS(),
+      [this](nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg) {
+        {
+          std::lock_guard<std::mutex> lock(data_mutex_);
+          online_terrain_labels_ = msg;
+          online_terrain_labels_received_s_ = now().seconds();
+        }
+        refresh_region_plan();
       });
 
     // ── 轨迹输入与区域标注层：对 MINCO 最终轨迹采样地图 label，生成与轨迹绑定的 RegionPlan。
     trajectory_sub_ = create_subscription<interfaces::msg::MpcPositionCommand>(
       trajectory_topic_, rclcpp::QoS(1),
       [this](const interfaces::msg::MpcPositionCommand::SharedPtr msg) {
-        std::shared_ptr<const RegionPlan> region_plan;
-        if (const auto terrain = terrain_grid_->snapshot()) {
-          if (auto annotated = annotateRegions(*msg, *terrain, *tf_buffer_, region_rules_, odom_frame_)) {
-            region_plan = std::make_shared<RegionPlan>(std::move(*annotated));
-          }
-        }
-        const bool annotation_valid = static_cast<bool>(region_plan);
         {
           std::lock_guard<std::mutex> lock(data_mutex_);
           trajectory_ = msg;
-          region_plan_ = std::move(region_plan);
+        }
+        refresh_region_plan();
+        bool annotation_valid;
+        {
+          std::lock_guard<std::mutex> lock(data_mutex_);
+          annotation_valid = static_cast<bool>(region_plan_);
         }
         if (!annotation_valid) {
           RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
@@ -471,9 +488,70 @@ private:
     }
   }
 
+  bool online_labels_fresh(
+    const nav_msgs::msg::OccupancyGrid & labels, double received_s, double current_s) const
+  {
+    const double stamp_s = rclcpp::Time(labels.header.stamp).seconds();
+    const double stamp_age = current_s - stamp_s;
+    const double receive_age = current_s - received_s;
+    return !labels.header.frame_id.empty() &&
+      std::isfinite(stamp_age) && stamp_age >= -0.05 &&
+      stamp_age <= online_label_timeout_s_ &&
+      std::isfinite(receive_age) && receive_age >= 0.0 &&
+      receive_age <= online_label_timeout_s_;
+  }
+
+  void refresh_region_plan()
+  {
+    interfaces::msg::MpcPositionCommand::SharedPtr trajectory;
+    nav_msgs::msg::OccupancyGrid::ConstSharedPtr online_labels;
+    double received_s;
+    {
+      std::lock_guard<std::mutex> lock(data_mutex_);
+      trajectory = trajectory_;
+      online_labels = online_terrain_labels_;
+      received_s = online_terrain_labels_received_s_;
+    }
+    if (!trajectory) return;
+    const double current_s = now().seconds();
+    const bool online_current = online_labels &&
+      online_labels_fresh(*online_labels, received_s, current_s);
+    bool online_applied = online_current;
+    std::shared_ptr<const RegionPlan> plan;
+    if (const auto terrain = terrain_grid_->snapshot()) {
+      auto annotated = annotateRegions(*trajectory, *terrain, *tf_buffer_,
+        region_rules_, odom_frame_, online_current ? online_labels.get() : nullptr);
+      if (!annotated && online_current) {
+        // Conflicting online regions can create overlapping mode windows.
+        // Keep the known static annotation for this update.
+        annotated = annotateRegions(*trajectory, *terrain, *tf_buffer_,
+          region_rules_, odom_frame_);
+        online_applied = false;
+      }
+      if (annotated) {
+        plan = std::make_shared<RegionPlan>(std::move(*annotated));
+      }
+    }
+    {
+      std::lock_guard<std::mutex> lock(data_mutex_);
+      if (trajectory_ == trajectory && online_terrain_labels_ == online_labels) {
+        region_plan_ = std::move(plan);
+        online_plan_active_ = online_applied;
+      }
+    }
+  }
+
   // 实时控制层：快照输入 → 判断轨迹许可 → 更新区域进度/限速 → MPC 与安全门 → 发布命令和状态。
   void control_tick()
   {
+    bool online_expired;
+    {
+      std::lock_guard<std::mutex> lock(data_mutex_);
+      online_expired = online_plan_active_ &&
+        (!online_terrain_labels_ || !online_labels_fresh(
+          *online_terrain_labels_, online_terrain_labels_received_s_, now().seconds()));
+    }
+    if (online_expired) refresh_region_plan();
     ExecutorInput input;
     std::shared_ptr<const RegionPlan> region_plan;
     {
@@ -540,9 +618,14 @@ private:
   std::array<RegionRule, 3> region_rules_{};
   std::unique_ptr<RegionController> region_controller_;
   std::shared_ptr<const RegionPlan> region_plan_;
+  double online_label_timeout_s_{0.8};
+  bool online_plan_active_{false};
+  double online_terrain_labels_received_s_{0.0};
+  nav_msgs::msg::OccupancyGrid::ConstSharedPtr online_terrain_labels_;
   // 地图输入接口层：静态代价和 label 地图；动态 ROGMap 由 PathPlanner 内部维护。
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr terrain_cost_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr terrain_label_sub_;
+  rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr online_terrain_label_sub_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
   std::shared_ptr<PathPlanner> path_planner_;

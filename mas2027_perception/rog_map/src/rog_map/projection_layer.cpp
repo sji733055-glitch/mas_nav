@@ -5,6 +5,8 @@
 #include <cmath>
 #include <stdexcept>
 
+#include <Eigen/LU>
+
 namespace rog_map {
 
 namespace {
@@ -47,6 +49,9 @@ CellType classifyCell(
   cell.occupied_z_min_abs = static_cast<float>(stats.occupied_z_min_abs);
   cell.occupied_z_max_abs = static_cast<float>(stats.occupied_z_max_abs);
   cell.height_delta = static_cast<float>(height_delta);
+  const int interior_steps = std::max(0, span_steps - 1);
+  cell.free_gap_ratio = interior_steps > 0 ?
+    static_cast<float>(stats.free_between_occupied_count) / interior_steps : 0.0f;
 
   if (height_delta <= config.surface_height_delta_max) {
     cell.vertical_occupancy_ratio = 1.0F;
@@ -79,6 +84,118 @@ CellType classifyCell(
 }
 
 }  // namespace
+
+std::vector<uint8_t> ProjectionLayer::terrainLabels() const
+{
+  constexpr uint8_t kUnknown = 255U;
+  constexpr uint8_t kFlat = 0U;
+  constexpr uint8_t kSlope = 5U;
+  constexpr uint8_t kTunnel = 6U;
+  constexpr int kRadius = 5;
+  constexpr double kMinSlope = 0.14;  // tan(8 degrees)
+  constexpr double kMaxSlope = 0.70;  // tan(35 degrees)
+  constexpr double kMaxPlaneRms = 0.04;
+  const size_t count = static_cast<size_t>(width_) * static_cast<size_t>(height_);
+  std::vector<uint8_t> labels(count, kUnknown);
+  if (cells_.size() != count || width_ <= 0 || height_ <= 0 || resolution_ <= 0.0) {
+    return labels;
+  }
+
+  const auto thinGround = [](const CellData & cell) {
+    return cell.type == CellType::PASSABLE &&
+      cell.raw_reason == ProjectionClassReason::THIN_SURFACE &&
+      std::isfinite(cell.occupied_z_min_abs);
+  };
+  const auto tunnelCandidate = [](const CellData & cell) {
+    return std::isfinite(cell.occupied_z_min_abs) &&
+      std::isfinite(cell.occupied_z_max_abs) &&
+      cell.height_delta >= 0.6f && cell.height_delta <= 1.8f &&
+      cell.vertical_occupancy_ratio <= 0.45f && cell.free_gap_ratio >= 0.5f;
+  };
+
+  for (int y = 0; y < height_; ++y) {
+    for (int x = 0; x < width_; ++x) {
+      const size_t index = static_cast<size_t>(y) * width_ + x;
+      const auto & center = cells_[index];
+      if (center.type == CellType::UNKNOWN) {
+        continue;
+      }
+      // Empty columns do not prove flat ground; leave them unknown so the
+      // static label can be used as fallback by the executor.
+      if (thinGround(center)) labels[index] = kFlat;
+
+      // A gap between two occupied heights is only a tunnel candidate when
+      // neighboring columns show the same structure. A single sparse wall hit
+      // must not create a semantic region.
+      if (tunnelCandidate(center)) {
+        int support = 0;
+        for (int dy = -1; dy <= 1; ++dy) {
+          for (int dx = -1; dx <= 1; ++dx) {
+            const int nx = x + dx;
+            const int ny = y + dy;
+            if (nx >= 0 && ny >= 0 && nx < width_ && ny < height_ &&
+                tunnelCandidate(cells_[static_cast<size_t>(ny) * width_ + nx])) {
+              ++support;
+            }
+          }
+        }
+        if (support >= 5) {
+          labels[index] = kTunnel;
+          continue;
+        }
+      }
+      if (!thinGround(center)) {
+        continue;
+      }
+
+      // Fit z = ax + by + c to neighboring thin ground observations. The
+      // within-column height span is not a slope measurement.
+      double sum_x = 0.0, sum_y = 0.0, sum_z = 0.0;
+      double sum_xx = 0.0, sum_xy = 0.0, sum_yy = 0.0;
+      double sum_xz = 0.0, sum_yz = 0.0, sum_zz = 0.0;
+      int samples = 0;
+      float lowest = center.occupied_z_min_abs;
+      float highest = lowest;
+      for (int dy = -kRadius; dy <= kRadius; ++dy) {
+        for (int dx = -kRadius; dx <= kRadius; ++dx) {
+          const int nx = x + dx;
+          const int ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= width_ || ny >= height_) continue;
+          const auto & neighbor = cells_[static_cast<size_t>(ny) * width_ + nx];
+          if (!thinGround(neighbor)) continue;
+          const double px = dx * resolution_;
+          const double py = dy * resolution_;
+          const double z = neighbor.occupied_z_min_abs;
+          sum_x += px;
+          sum_y += py;
+          sum_z += z;
+          sum_xx += px * px;
+          sum_xy += px * py;
+          sum_yy += py * py;
+          sum_xz += px * z;
+          sum_yz += py * z;
+          sum_zz += z * z;
+          lowest = std::min(lowest, neighbor.occupied_z_min_abs);
+          highest = std::max(highest, neighbor.occupied_z_min_abs);
+          ++samples;
+        }
+      }
+      if (samples < 30 || highest - lowest < 0.06f) continue;
+      Eigen::Matrix3d normal;
+      normal << sum_xx, sum_xy, sum_x,
+                sum_xy, sum_yy, sum_y,
+                sum_x, sum_y, samples;
+      const Eigen::Vector3d rhs(sum_xz, sum_yz, sum_z);
+      if (std::abs(normal.determinant()) < 1e-9) continue;
+      const Eigen::Vector3d plane = normal.fullPivLu().solve(rhs);
+      const double slope = plane.head<2>().norm();
+      if (!plane.allFinite() || slope < kMinSlope || slope > kMaxSlope) continue;
+      const double squared_error = std::max(0.0, sum_zz - plane.dot(rhs));
+      if (std::sqrt(squared_error / samples) <= kMaxPlaneRms) labels[index] = kSlope;
+    }
+  }
+  return labels;
+}
 
 ProjectionSlideResult ProjectionLayer::syncSlidingWindow(int width,
   int height,

@@ -64,7 +64,8 @@ std::optional<RegionPlan> annotateRegions(
   const TerrainGrid::Snapshot & terrain,
   const tf2_ros::Buffer & tf_buffer,
   const std::array<RegionRule, 3> & rules,
-  const std::string & odom_frame);
+  const std::string & odom_frame,
+  const nav_msgs::msg::OccupancyGrid * online_labels = nullptr);
 
 class RegionController final
 {

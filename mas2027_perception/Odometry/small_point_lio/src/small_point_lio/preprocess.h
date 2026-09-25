@@ -17,6 +17,8 @@ namespace small_point_lio {
         Parameters *parameters = nullptr;
         std::deque<common::Point> point_deque;
         std::deque<common::Point> dense_point_deque;
+        // 与 dense_point_deque 同序，记录每次雷达输入还未去畸变的有效点数。
+        std::deque<size_t> dense_frame_remaining;
         std::deque<common::ImuMsg> imu_deque;
 
     private:
@@ -34,6 +36,8 @@ namespace small_point_lio {
         void reset();
         void on_point_cloud_callback(const std::vector<common::Point> &pointcloud);
         void on_imu_callback(const common::ImuMsg &imu_msg);
+        // 调用方去畸变并取用 front() 后调用；返回该点是否结束一帧雷达输入。
+        bool finish_dense_point();
     };
 
 }// namespace small_point_lio
