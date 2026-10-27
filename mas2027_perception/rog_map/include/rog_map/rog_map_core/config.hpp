@@ -259,6 +259,7 @@ public:
     layer_mask_filter_en = true;
     layer_fill_occ_min = 5;
     layer_denoise_occ_max = 0;
+    body_exclusion_radius = 0.302;
     load("projection.enable", layer_en);
     load("projection.scan_z_min_abs", scan_z_min_abs);
     load("projection.scan_z_max_abs", scan_z_max_abs);
@@ -266,6 +267,9 @@ public:
     load("projection.min_observed_voxels", min_observed_voxels);
     load("projection.unknown_as_occupied", unknown_as_occupied);
     load("projection.surface_height_delta_max", surface_height_delta_max);
+    load("projection.ground_filter.enable", ground_filter_en);
+    load("projection.ground_filter.max_span", ground_filter_max_span);
+    load("projection.ground_filter.plane_tolerance", ground_filter_plane_tolerance);
     load("projection.wall_height_delta_min", wall_height_delta_min);
     load("projection.wall_occupancy_ratio_min", wall_occupancy_ratio_min);
     load("projection.tunnel_height_delta_min", tunnel_height_delta_min);
@@ -280,6 +284,8 @@ public:
     load("projection.mask_filter_en", layer_mask_filter_en);
     load("projection.fill_occ_min", layer_fill_occ_min);
     load("projection.denoise_occ_max", layer_denoise_occ_max);
+    load("projection.body_exclusion_radius", body_exclusion_radius);
+    body_exclusion_radius = std::max(0.0, body_exclusion_radius);
     prior_map_enable = false;
     prior_map_yaml_path.clear();
     prior_map_pgm_path.clear();
@@ -313,6 +319,11 @@ public:
     if (!std::isfinite(surface_height_delta_max) || surface_height_delta_max < 0.0) {
       throw std::invalid_argument(
         "projection.surface_height_delta_max must be a non-negative vertical height difference.");
+    }
+    if (!std::isfinite(ground_filter_max_span) || ground_filter_max_span <= 0.0 ||
+        !std::isfinite(ground_filter_plane_tolerance) || ground_filter_plane_tolerance <= 0.0 ||
+        ground_filter_plane_tolerance > ground_filter_max_span) {
+      throw std::invalid_argument("invalid projection.ground_filter span or plane tolerance");
     }
     if (!std::isfinite(wall_height_delta_min) || wall_height_delta_min <= surface_height_delta_max) {
       throw std::invalid_argument(
@@ -373,11 +384,8 @@ public:
     decay_active_list_en = true;
     dirty_column_en = false;
     dirty_full_ratio = 0.30;
-    // 周期性全量重投影的安全网（秒）。0 = 关闭（沿用上游行为：只在脏列超比例时回退全量）。
-    // 背景：dirty_full_ratio 的定位是"脏列太多时全量反而更快"，但它实际上会让增量路径
-    // 在稠密点云下**永远不生效**——实测 96k 点/帧时 dirty_column_count 稳定在 ~19700/40401
-    // (49%)，恒大于 0.30 阈值，77/77 次更新全部走全量。把阈值调高后必须有一个与"脏列多少"
-    // 无关的兜底，否则一旦某列因为未预期的原因长期没被标脏，二维图会一直保留旧分类。
+    // 周期性全量重投影的安全网（秒）。0 = 关闭，沿用上游"仅脏列超比例才回退全量"的行为。
+    // 兜底须与脏列数量无关：dirty_full_ratio 会让增量长期不生效，否则未标脏的列会一直保留旧分类。
     dirty_full_period_s = 0.0;
     performance_enable = true;
     performance_detailed_csv_enable = false;
@@ -529,6 +537,9 @@ public:
   int min_observed_voxels{2};
   bool unknown_as_occupied{true};
   double surface_height_delta_max{0.10};
+  bool ground_filter_en{false};
+  double ground_filter_max_span{0.15};
+  double ground_filter_plane_tolerance{0.075};
   double wall_height_delta_min{0.20};
   double wall_occupancy_ratio_min{0.80};
   double tunnel_height_delta_min{0.24};
@@ -542,6 +553,9 @@ public:
   int layer_fill_occ_min{5};
   int layer_denoise_occ_max{0};
   bool passable_as_free{true};
+  // Corner radius of the chassis square used to filter own-body returns in
+  // the registered cloud before raycasting; accumulated occupancy is retained.
+  double body_exclusion_radius{0.302};
   bool prior_map_enable{false};
   string prior_map_yaml_path{};
   string prior_map_pgm_path{};

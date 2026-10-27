@@ -17,15 +17,15 @@
       registered_cloud: "/cloud_registered"
       initialpose: "/initialpose"
 
-    # Prior cloud used by GICP. Frame must match /cloud_registered (mapping-session
-    # odom, treated as map). The shipped lab3.pcd is that frame; ground z ~ 0,
-    # XY min matches lab3.yaml origin. Do NOT apply T_base_lidar to it.
+    # Prior cloud used by GICP. The file path is injected by
+    # mas2027_nav_bringup/config/navigation_map.yaml so map selection has one source
+    # of truth. Its frame must match /cloud_registered (mapping-session odom,
+    # treated as map). Do NOT apply T_base_lidar to it.
     #
-    # save_pcd_and_make_map.sh applies T_odom_from_internal so the copied
-    # bringup/pcd/<name>.pcd is already this frame. Raw /map_save scan.pcd is
-    # still LIO-internal world; do not point prior_pcd_file at that file.
+    # mapping_web_ui (/home/mas/mapping_web_ui) accumulates /cloud_registered
+    # directly, so the PCD it exports is already this frame. Raw /map_save
+    # scan.pcd is still LIO-internal world; do not point prior_pcd_file at that file.
     map:
-      prior_pcd_file: "$(find-pkg-share mas2027_nav_bringup)/pcd/lab3.pcd"
       downsample_resolution: 0.05
       covariance_neighbors: 20
       publish_prior_cloud: true

@@ -23,9 +23,15 @@ struct MapSnapshot
   double origin_y{0.0};
   std::vector<uint8_t> values;
   std::vector<uint8_t> types;
+  // Before hysteresis / morphology: persistent maps must distinguish sensor
+  // classifications from safety-only filled/held obstacles.
+  std::vector<uint8_t> raw_types;
   std::vector<double> distances;
   std::vector<float> height_deltas;
   std::vector<float> confidence;
+  std::vector<uint8_t> terrain_labels;
+  std::vector<float> uphill_x;
+  std::vector<float> uphill_y;
   uint64_t field_sequence{0};
   double field_stamp{0.0};
   bool field_stale{true};
@@ -62,6 +68,7 @@ public:
   double resolution() const override;
   double originX() const override;
   double originY() const override;
+  double snapshotStampSeconds() const override;
 
   uint8_t value(unsigned int mx, unsigned int my) const override;
   // Returned pointer is only valid until the next snapshot update. Prefer copyValues() or snapshot().

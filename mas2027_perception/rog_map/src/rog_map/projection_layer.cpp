@@ -5,6 +5,8 @@
 #include <cmath>
 #include <stdexcept>
 
+#include <Eigen/LU>
+
 namespace rog_map {
 
 namespace {
@@ -47,6 +49,9 @@ CellType classifyCell(
   cell.occupied_z_min_abs = static_cast<float>(stats.occupied_z_min_abs);
   cell.occupied_z_max_abs = static_cast<float>(stats.occupied_z_max_abs);
   cell.height_delta = static_cast<float>(height_delta);
+  const int interior_steps = std::max(0, span_steps - 1);
+  cell.free_gap_ratio = interior_steps > 0 ?
+    static_cast<float>(stats.free_between_occupied_count) / interior_steps : 0.0f;
 
   if (height_delta <= config.surface_height_delta_max) {
     cell.vertical_occupancy_ratio = 1.0F;
@@ -79,6 +84,163 @@ CellType classifyCell(
 }
 
 }  // namespace
+
+TerrainGeometry ProjectionLayer::terrainGeometry() const
+{
+  constexpr uint8_t kUnknown = 255U;
+  constexpr uint8_t kFlat = 0U;
+  constexpr uint8_t kSlope = 5U;
+  constexpr uint8_t kTunnel = 6U;
+  constexpr int kRadius = 5;
+  constexpr double kMinSlope = 0.14;  // tan(8 degrees)
+  constexpr double kMaxSlope = 0.70;  // tan(35 degrees)
+  constexpr double kMaxPlaneRms = 0.04;
+  // A single raised thin surface can still leave the plane RMS below 4 cm
+  // because it is one sample among many. Reject it by its residual instead;
+  // otherwise a table/box top tilts a flat-ground plane into a false slope.
+  // The actual field run had 10--16 cm raised samples in an otherwise flat
+  // 0.55 m window, including one confirmed false mode-5 region.
+  constexpr double kMaxPlaneResidual = 0.05;
+  const size_t count = static_cast<size_t>(width_) * static_cast<size_t>(height_);
+  TerrainGeometry geometry;
+  auto & labels = geometry.labels;
+  labels.assign(count, kUnknown);
+  geometry.uphill_x.assign(count, 0.0f);
+  geometry.uphill_y.assign(count, 0.0f);
+  if (cells_.size() != count || width_ <= 0 || height_ <= 0 || resolution_ <= 0.0) {
+    return geometry;
+  }
+
+  const auto thinGround = [](const CellData & cell) {
+    return cell.type == CellType::PASSABLE &&
+      cell.raw_reason == ProjectionClassReason::THIN_SURFACE &&
+      std::isfinite(cell.occupied_z_min_abs);
+  };
+  const auto & tunnel_config = current_config_;
+  const auto tunnelCandidate = [&tunnel_config](const CellData & cell) {
+    // Keep the semantic label tied to the same passability decision as the
+    // projection layer. A tall occupied column is not a tunnel merely because
+    // its sparse returns happen to have a large vertical gap.
+    const double height_delta = static_cast<double>(cell.height_delta);
+    return cell.type == CellType::PASSABLE &&
+      cell.raw_reason == ProjectionClassReason::HOLLOW_TUNNEL &&
+      std::isfinite(cell.occupied_z_min_abs) &&
+      std::isfinite(cell.occupied_z_max_abs) &&
+      height_delta >= tunnel_config.tunnel_height_delta_min &&
+      height_delta <= tunnel_config.tunnel_height_delta_max &&
+      static_cast<double>(cell.vertical_occupancy_ratio) <=
+        tunnel_config.tunnel_occupancy_ratio_max &&
+      cell.free_gap_ratio >= 0.5f;
+  };
+
+  struct PlaneSample
+  {
+    double x;
+    double y;
+    double z;
+  };
+  std::vector<PlaneSample> plane_samples;
+  plane_samples.reserve((2 * kRadius + 1) * (2 * kRadius + 1));
+
+  for (int y = 0; y < height_; ++y) {
+    for (int x = 0; x < width_; ++x) {
+      const size_t index = static_cast<size_t>(y) * width_ + x;
+      const auto & center = cells_[index];
+      if (center.type == CellType::UNKNOWN) {
+        continue;
+      }
+      // Empty columns do not prove flat ground; leave them unknown so the
+      // static label can be used as fallback by the executor.
+      if (thinGround(center)) labels[index] = kFlat;
+
+      // A gap between two occupied heights is only a tunnel candidate when
+      // neighboring columns show the same structure. A single sparse wall hit
+      // must not create a semantic region.
+      if (tunnelCandidate(center)) {
+        int support = 0;
+        for (int dy = -1; dy <= 1; ++dy) {
+          for (int dx = -1; dx <= 1; ++dx) {
+            const int nx = x + dx;
+            const int ny = y + dy;
+            if (nx >= 0 && ny >= 0 && nx < width_ && ny < height_ &&
+                tunnelCandidate(cells_[static_cast<size_t>(ny) * width_ + nx])) {
+              ++support;
+            }
+          }
+        }
+        if (support >= 5) {
+          labels[index] = kTunnel;
+          continue;
+        }
+      }
+      if (!thinGround(center)) {
+        continue;
+      }
+
+      // Fit z = ax + by + c to neighboring thin ground observations. The
+      // within-column height span is not a slope measurement.
+      double sum_x = 0.0, sum_y = 0.0, sum_z = 0.0;
+      double sum_xx = 0.0, sum_xy = 0.0, sum_yy = 0.0;
+      double sum_xz = 0.0, sum_yz = 0.0, sum_zz = 0.0;
+      plane_samples.clear();
+      float lowest = center.occupied_z_min_abs;
+      float highest = lowest;
+      for (int dy = -kRadius; dy <= kRadius; ++dy) {
+        for (int dx = -kRadius; dx <= kRadius; ++dx) {
+          const int nx = x + dx;
+          const int ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= width_ || ny >= height_) continue;
+          const auto & neighbor = cells_[static_cast<size_t>(ny) * width_ + nx];
+          if (!thinGround(neighbor)) continue;
+          const double px = dx * resolution_;
+          const double py = dy * resolution_;
+          const double z = neighbor.occupied_z_min_abs;
+          sum_x += px;
+          sum_y += py;
+          sum_z += z;
+          sum_xx += px * px;
+          sum_xy += px * py;
+          sum_yy += py * py;
+          sum_xz += px * z;
+          sum_yz += py * z;
+          sum_zz += z * z;
+          lowest = std::min(lowest, neighbor.occupied_z_min_abs);
+          highest = std::max(highest, neighbor.occupied_z_min_abs);
+          plane_samples.push_back({px, py, z});
+        }
+      }
+      const int samples = static_cast<int>(plane_samples.size());
+      if (samples < 30 || highest - lowest < 0.06f) continue;
+      Eigen::Matrix3d normal;
+      normal << sum_xx, sum_xy, sum_x,
+                sum_xy, sum_yy, sum_y,
+                sum_x, sum_y, samples;
+      const Eigen::Vector3d rhs(sum_xz, sum_yz, sum_z);
+      if (std::abs(normal.determinant()) < 1e-9) continue;
+      const Eigen::Vector3d plane = normal.fullPivLu().solve(rhs);
+      const double slope = plane.head<2>().norm();
+      if (!plane.allFinite() || slope < kMinSlope || slope > kMaxSlope) continue;
+      const double squared_error = std::max(0.0, sum_zz - plane.dot(rhs));
+      double max_residual = 0.0;
+      for (const auto & sample : plane_samples) {
+        max_residual = std::max(max_residual, std::abs(sample.z -
+          (plane.x() * sample.x + plane.y() * sample.y + plane.z())));
+      }
+      if (std::sqrt(squared_error / samples) <= kMaxPlaneRms &&
+          max_residual <= kMaxPlaneResidual) {
+        labels[index] = kSlope;
+        geometry.uphill_x[index] = static_cast<float>(plane.x() / slope);
+        geometry.uphill_y[index] = static_cast<float>(plane.y() / slope);
+      }
+    }
+  }
+  return geometry;
+}
+
+std::vector<uint8_t> ProjectionLayer::terrainLabels() const
+{
+  return terrainGeometry().labels;
+}
 
 ProjectionSlideResult ProjectionLayer::syncSlidingWindow(int width,
   int height,
@@ -216,6 +378,7 @@ void ProjectionLayer::updateFull(int width,
   }
 
   const auto filter_start = std::chrono::steady_clock::now();
+  filterGround(config);
   double view_time_ms = 0.0;
   filterMask(config, nullptr, &view_time_ms);
   view_rebuild_required_ = false;
@@ -272,6 +435,11 @@ void ProjectionLayer::updateDirty(int width,
   }
 
   const auto filter_start = std::chrono::steady_clock::now();
+  const auto ground_changed = filterGround(config);
+  base_dirty_indices.insert(base_dirty_indices.end(), ground_changed.begin(), ground_changed.end());
+  std::sort(base_dirty_indices.begin(), base_dirty_indices.end());
+  base_dirty_indices.erase(std::unique(base_dirty_indices.begin(), base_dirty_indices.end()),
+    base_dirty_indices.end());
   double view_time_ms = 0.0;
   filterMask(
     config, view_rebuild_required_ ? nullptr : &base_dirty_indices, &view_time_ms);
@@ -282,6 +450,74 @@ void ProjectionLayer::updateDirty(int width,
     stats->update_dirty_time_ms += elapsedMs(dirty_start);
     collectClassificationStats(cells_, stats);
   }
+}
+
+std::vector<int> ProjectionLayer::filterGround(const ProjectionLayerConfig & config)
+{
+  std::vector<int> changed;
+  if (!config.ground_filter_en) return changed;
+  constexpr int radius = 3;
+  constexpr int min_support = 8;
+  constexpr double max_rms = 0.025;
+  constexpr double max_slope = 0.7;
+  // Only original thin observations may support a fit. Corrected thick cells
+  // never become seeds, so correction cannot spread across an obstacle.
+  for (int y = 0; y < height_; ++y) {
+    for (int x = 0; x < width_; ++x) {
+      auto & center = cell_buffer_[static_cast<size_t>(hashIndexFromLocal(x, y))];
+      const bool corrected = center.raw_reason == ProjectionClassReason::THIN_SURFACE &&
+        center.height_delta > config.surface_height_delta_max + 1e-6;
+      if ((!corrected && center.raw_reason != ProjectionClassReason::AMBIGUOUS_OCCUPIED) ||
+        !std::isfinite(center.occupied_z_min_abs) || !std::isfinite(center.occupied_z_max_abs) ||
+        center.height_delta > config.ground_filter_max_span + 1e-6) continue;
+      Eigen::Matrix3d normal = Eigen::Matrix3d::Zero();
+      Eigen::Vector3d rhs = Eigen::Vector3d::Zero();
+      double sum_zz = 0.0;
+      int samples = 0;
+      bool left = false, right = false, below = false, above = false;
+      for (int dy = -radius; dy <= radius; ++dy) {
+        for (int dx = -radius; dx <= radius; ++dx) {
+          if (dx == 0 && dy == 0) continue;
+          const int nx = x + dx, ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= width_ || ny >= height_) continue;
+          const auto & neighbor = cell_buffer_[static_cast<size_t>(hashIndexFromLocal(nx, ny))];
+          if (neighbor.raw_type != CellType::PASSABLE ||
+            neighbor.raw_reason != ProjectionClassReason::THIN_SURFACE ||
+            neighbor.height_delta > config.surface_height_delta_max + 1e-6 ||
+            !std::isfinite(neighbor.occupied_z_min_abs) ||
+            !std::isfinite(neighbor.occupied_z_max_abs)) continue;
+          const Eigen::Vector3d row(dx * resolution_, dy * resolution_, 1.0);
+          const double z = 0.5 * (neighbor.occupied_z_min_abs + neighbor.occupied_z_max_abs);
+          normal.noalias() += row * row.transpose();
+          rhs.noalias() += row * z;
+          sum_zz += z * z;
+          ++samples;
+          left |= dx < 0; right |= dx > 0; below |= dy < 0; above |= dy > 0;
+        }
+      }
+      bool ground = false;
+      if (samples >= min_support && left && right && below && above &&
+          std::abs(normal.determinant()) > 1e-9) {
+        const Eigen::Vector3d plane = normal.fullPivLu().solve(rhs);
+        const double rms = std::sqrt(std::max(0.0, sum_zz - plane.dot(rhs)) / samples);
+        const double tolerance = config.ground_filter_plane_tolerance + 1e-6;
+        ground = plane.allFinite() && plane.head<2>().norm() <= max_slope && rms <= max_rms &&
+          std::abs(center.occupied_z_min_abs - plane.z()) <= tolerance &&
+          std::abs(center.occupied_z_max_abs - plane.z()) <= tolerance;
+      }
+      const auto type = ground ? CellType::PASSABLE : CellType::OCCUPIED;
+      const auto reason = ground ? ProjectionClassReason::THIN_SURFACE :
+        ProjectionClassReason::AMBIGUOUS_OCCUPIED;
+      if (center.raw_type == type && center.base_type == type && center.raw_reason == reason) continue;
+      center.raw_type = center.base_type = center.type = center.pending_type = type;
+      center.raw_reason = reason;
+      center.pending_count = 0U;
+      center.occupied_clear_deadline = 0.0;
+      center.traversable = ground ? 1U : 0U;
+      changed.push_back(y * width_ + x);
+    }
+  }
+  return changed;
 }
 
 bool ProjectionLayer::matchesGeometry(

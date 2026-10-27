@@ -5,12 +5,13 @@
 #include <cmath>
 #include <limits>
 #include <queue>
+#include <cstring>
+
+#include "mas2027_nav_executor/common/environment/terrain_semantics.hpp"
 
 namespace mas2027_nav_executor {
 namespace {
 constexpr int kOccupiedCost = 95;
-constexpr double kMinAlignment = 0.85;
-constexpr double kPi = 3.14159265358979323846;
 }
 
 void TerrainGrid::updateCost(const nav_msgs::msg::OccupancyGrid & grid)
@@ -21,50 +22,20 @@ void TerrainGrid::updateCost(const nav_msgs::msg::OccupancyGrid & grid)
   revision_.fetch_add(1, std::memory_order_release);
 }
 
-void TerrainGrid::updateDirection(const sensor_msgs::msg::Image & image)
+void TerrainGrid::updateLabels(const sensor_msgs::msg::Image & image)
 {
   std::lock_guard<std::mutex> lock(mutex_);
-  direction_ = image;
+  labels_ = image;
   refresh();
   revision_.fetch_add(1, std::memory_order_release);
 }
 
-void TerrainGrid::updateDynamic(const nav_msgs::msg::OccupancyGrid & grid)
+void TerrainGrid::updateDirections(const sensor_msgs::msg::Image & image)
 {
   std::lock_guard<std::mutex> lock(mutex_);
-  const auto previous = dynamic_snapshot_;
-  dynamic_snapshot_.reset();
-  if (!snapshot_ || grid.header.frame_id != snapshot_->cost.header.frame_id ||
-    grid.info.width != snapshot_->cost.info.width || grid.info.height != snapshot_->cost.info.height ||
-    std::abs(grid.info.resolution - snapshot_->cost.info.resolution) > 1e-6 ||
-    std::abs(grid.info.origin.position.x - snapshot_->cost.info.origin.position.x) > 1e-6 ||
-    std::abs(grid.info.origin.position.y - snapshot_->cost.info.origin.position.y) > 1e-6 ||
-    grid.data.size() != snapshot_->cost.data.size()) {
-    if (previous) revision_.fetch_add(1, std::memory_order_release);
-    return;
-  }
-  dynamic_snapshot_ = std::make_shared<DynamicSnapshot>(DynamicSnapshot{grid});
-  if (!previous || previous->grid.data != grid.data) {
-    revision_.fetch_add(1, std::memory_order_release);
-  }
-}
-
-std::shared_ptr<const TerrainGrid::DynamicSnapshot> TerrainGrid::dynamicSnapshot() const
-{
-  std::lock_guard<std::mutex> lock(mutex_);
-  return dynamic_snapshot_;
-}
-
-bool TerrainGrid::DynamicSnapshot::freeAt(const Eigen::Vector2d & point) const
-{
-  if (!point.allFinite()) return false;
-  const double x = (point.x() - grid.info.origin.position.x) / grid.info.resolution;
-  const double y = (point.y() - grid.info.origin.position.y) / grid.info.resolution;
-  if (!std::isfinite(x) || !std::isfinite(y) || x < 0.0 || y < 0.0 ||
-    x >= grid.info.width || y >= grid.info.height) return false;
-  const size_t index = static_cast<size_t>(std::floor(y)) * grid.info.width +
-    static_cast<size_t>(std::floor(x));
-  return grid.data[index] >= 0 && grid.data[index] < kOccupiedCost;
+  directions_ = image;
+  refresh();
+  revision_.fetch_add(1, std::memory_order_release);
 }
 
 void TerrainGrid::refresh()
@@ -75,17 +46,41 @@ void TerrainGrid::refresh()
   if (width == 0 || height == 0 || !std::isfinite(cost_.info.resolution) ||
     cost_.info.resolution <= 0.0F ||
     cost_.data.size() != static_cast<size_t>(width) * height ||
-    direction_.width != width || direction_.height != height ||
-    direction_.encoding != "bgr8" || direction_.step < width * 3U ||
-    direction_.data.size() < static_cast<size_t>(direction_.step) * height ||
-    cost_.header.frame_id.empty() || cost_.header.frame_id != direction_.header.frame_id ||
+    labels_.width != width || labels_.height != height ||
+    labels_.encoding != "mono8" || labels_.step < width ||
+    labels_.data.size() < static_cast<size_t>(labels_.step) * height ||
+    cost_.header.frame_id.empty() || cost_.header.frame_id != labels_.header.frame_id ||
     std::abs(cost_.info.origin.orientation.x) > 1e-6 ||
     std::abs(cost_.info.origin.orientation.y) > 1e-6 ||
     std::abs(cost_.info.origin.orientation.z) > 1e-6 ||
     std::abs(cost_.info.origin.orientation.w - 1.0) > 1e-6) {
     return;
   }
-  snapshot_ = std::make_shared<Snapshot>(Snapshot{cost_, direction_});
+  const bool direction_valid = directions_.width == width && directions_.height == height &&
+    directions_.header.frame_id == cost_.header.frame_id &&
+    directions_.encoding == "32FC2" && !directions_.is_bigendian &&
+    directions_.step >= width * 2U * sizeof(float) &&
+    directions_.data.size() >= static_cast<size_t>(directions_.step) * height;
+  auto next = std::make_shared<Snapshot>(Snapshot{
+    cost_, labels_, direction_valid ? directions_ : sensor_msgs::msg::Image{}});
+  const size_t count = static_cast<size_t>(width) * height;
+  std::vector<uint8_t> labels(count);
+  std::vector<float> uphill_x(count, 0.0F), uphill_y(count, 0.0F);
+  for (unsigned int y = 0; y < height; ++y) {
+    for (unsigned int x = 0; x < width; ++x) {
+      const size_t index = static_cast<size_t>(y) * width + x;
+      labels[index] = labels_.data[static_cast<size_t>(y) * labels_.step + x];
+      if (direction_valid) {
+        const size_t byte = static_cast<size_t>(y) * directions_.step +
+          static_cast<size_t>(x) * 2U * sizeof(float);
+        std::memcpy(&uphill_x[index], directions_.data.data() + byte, sizeof(float));
+        std::memcpy(&uphill_y[index], directions_.data.data() + byte + sizeof(float), sizeof(float));
+      }
+    }
+  }
+  next->slope_side_mask = buildSlopeSideMask(
+    static_cast<int>(width), static_cast<int>(height), labels, uphill_x, uphill_y);
+  snapshot_ = std::move(next);
 }
 
 std::shared_ptr<const TerrainGrid::Snapshot> TerrainGrid::snapshot() const
@@ -100,29 +95,10 @@ std::optional<nav_msgs::msg::OccupancyGrid> TerrainGrid::planningConstraints() c
   if (!snapshot_) return std::nullopt;
 
   nav_msgs::msg::OccupancyGrid result = snapshot_->cost;
-  const auto & direction = snapshot_->direction;
   for (size_t index = 0; index < result.data.size(); ++index) {
     const int8_t cost = snapshot_->cost.data[index];
-    if (cost < 0 || cost >= kOccupiedCost) {
-      result.data[index] = 100;
-      continue;
-    }
-    const size_t pixel = (index / result.info.width) * direction.step +
-      (index % result.info.width) * 3U;
-    const uint8_t magnitude = direction.data[pixel + 1U];
-    const uint8_t label = direction.data[pixel + 2U];
-    result.data[index] = magnitude == 255U && label >= 2U && label <= 6U ? 50 : 0;
-  }
-  if (!dynamic_snapshot_) return result;
-  // Merge the current dynamic layer with static terrain for the shared 2D distance field.
-  const auto & dynamic = dynamic_snapshot_->grid;
-  result.header.stamp = dynamic.header.stamp;
-  if (dynamic.data.size() == result.data.size()) {
-    for (size_t index = 0; index < result.data.size(); ++index) {
-      if (dynamic.data[index] >= kOccupiedCost) {
-        result.data[index] = 100;
-      }
-    }
+    result.data[index] = cost < 0 || cost >= kOccupiedCost ||
+      snapshot_->slope_side_mask[index] ? 100 : 0;
   }
   return result;
 }
@@ -147,19 +123,11 @@ Eigen::Vector2d TerrainGrid::Snapshot::center(int x, int y) const
     cost.info.origin.position.y + (y + 0.5) * res};
 }
 
-bool TerrainGrid::Snapshot::permitted(int x, int y, const Eigen::Vector2d & travel) const
+bool TerrainGrid::Snapshot::freeCell(int x, int y) const
 {
   const size_t index = static_cast<size_t>(y) * cost.info.width + x;
-  if (cost.data[index] < 0 || cost.data[index] >= kOccupiedCost) return false;
-  const size_t pixel = static_cast<size_t>(y) * direction.step + static_cast<size_t>(x) * 3U;
-  const uint8_t angle = direction.data[pixel];
-  const uint8_t magnitude = direction.data[pixel + 1U];
-  const uint8_t label = direction.data[pixel + 2U];
-  if (magnitude != 255U) return true;  // Inflated direction halo is soft, not a terrain body.
-  if (label < 2U || label > 6U || travel.squaredNorm() < 1e-12) return false;
-  const double radians = static_cast<double>(angle) * 2.0 * kPi / 255.0;
-  const double alignment = travel.normalized().dot(Eigen::Vector2d(std::cos(radians), std::sin(radians)));
-  return std::abs(alignment) >= kMinAlignment && (label != 6U || alignment > 0.0);
+  return cost.data[index] >= 0 && cost.data[index] < kOccupiedCost &&
+    (slope_side_mask.empty() || slope_side_mask[index] == 0U);
 }
 
 bool TerrainGrid::Snapshot::contains(const Eigen::Vector2d & point) const
@@ -173,7 +141,14 @@ bool TerrainGrid::Snapshot::traversable(const Eigen::Vector2d & point) const
   int x = 0, y = 0;
   if (!cell(point, x, y)) return false;
   const size_t index = static_cast<size_t>(y) * cost.info.width + x;
-  return cost.data[index] >= 0 && cost.data[index] < kOccupiedCost;
+  return freeCell(x, y);
+}
+
+std::optional<uint8_t> TerrainGrid::Snapshot::terrainLabelAt(const Eigen::Vector2d & point) const
+{
+  int x = 0, y = 0;
+  if (!cell(point, x, y)) return std::nullopt;
+  return labels.data[static_cast<size_t>(y) * labels.step + static_cast<size_t>(x)];
 }
 
 bool TerrainGrid::Snapshot::transition(
@@ -186,20 +161,27 @@ bool TerrainGrid::Snapshot::transition(
   for (int i = 0; i <= steps; ++i) {
     const Eigen::Vector2d point = from + delta * (static_cast<double>(i) / steps);
     int x = 0, y = 0;
-    if (!cell(point, x, y) || !permitted(x, y, delta)) return false;
+    if (!cell(point, x, y) || !freeCell(x, y)) return false;
   }
-  return true;
+  return slopeTransition(from, to);
+}
+
+bool TerrainGrid::Snapshot::slopeTransition(
+  const Eigen::Vector2d & from, const Eigen::Vector2d & to) const
+{
+  return terrainSideTransitionAllowed(static_cast<int>(cost.info.width),
+    static_cast<int>(cost.info.height), cost.info.resolution,
+    cost.info.origin.position.x, cost.info.origin.position.y, slope_side_mask,
+    from.x(), from.y(), to.x(), to.y(), true);
 }
 
 bool TerrainGrid::Snapshot::search(const Eigen::Vector2d & start,
-  const Eigen::Vector2d & goal, std::vector<Eigen::Vector2d> & path,
-  const std::function<bool(const Eigen::Vector2d &)> & dynamic_free) const
+  const Eigen::Vector2d & goal, std::vector<Eigen::Vector2d> & path) const
 {
   path.clear();
   int sx = 0, sy = 0, gx = 0, gy = 0;
   if (!cell(start, sx, sy) || !cell(goal, gx, gy) ||
-    !traversable(start) || !traversable(goal) ||
-    (dynamic_free && (!dynamic_free(start) || !dynamic_free(goal)))) return false;
+    !traversable(start) || !traversable(goal)) return false;
   if (sx == gx && sy == gy) {
     if (!transition(start, goal)) return false;
     path = {start, goal};
@@ -211,14 +193,7 @@ bool TerrainGrid::Snapshot::search(const Eigen::Vector2d & start,
   const auto index = [width](int x, int y) { return y * width + x; };
   const int source = index(sx, sy), target = index(gx, gy);
   const auto edge_free = [&](const Eigen::Vector2d & a, const Eigen::Vector2d & b) {
-    if (!transition(a, b)) return false;
-    if (!dynamic_free) return true;
-    const int steps = std::max(1, static_cast<int>(std::ceil(
-      (b - a).norm() / (0.5 * cost.info.resolution))));
-    for (int i = 0; i <= steps; ++i) {
-      if (!dynamic_free(a + (b - a) * (static_cast<double>(i) / steps))) return false;
-    }
-    return true;
+    return transition(a, b);
   };
   const auto heuristic = [gx, gy](int x, int y) {
     const int dx = std::abs(x - gx), dy = std::abs(y - gy);

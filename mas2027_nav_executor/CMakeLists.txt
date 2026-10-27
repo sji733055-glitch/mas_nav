@@ -61,29 +61,31 @@ add_library(${PROJECT_NAME}_planner STATIC
   src/path_planner/trajectory/minco_optimizer.cpp
   src/path_planner/trajectory/minco_planner.cpp
   src/path_planner/trajectory/trajectory_safety_checker.cpp
+  src/common/environment/online_global_map.cpp
+  src/common/environment/fused_map_query.cpp
+  src/common/environment/terrain_grid.cpp
+  src/common/environment/terrain_map_query.cpp
   "${minco_source_dir}/src/components/planner_mode_context.cpp"
   src/task_manager/recovery/recovery_behaivor.cpp
   "${minco_source_dir}/src/minco_utils.cpp"
   "${minco_source_dir}/src/visualizer.cpp"
   "${minco_source_dir}/src/performance/planner_performance_monitor.cpp")
 target_include_directories(${PROJECT_NAME}_planner PUBLIC
-  "${minco_source_dir}/include" "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  "${minco_source_dir}/include" "${CMAKE_CURRENT_SOURCE_DIR}/include"
+  "${CMAKE_CURRENT_SOURCE_DIR}/vendor")
 target_compile_definitions(${PROJECT_NAME}_planner PUBLIC
   ROOT_DIR="${minco_source_dir}/" ORIGIN_AT_CORNER USE_ROS2)
 ament_target_dependencies(${PROJECT_NAME}_planner
   builtin_interfaces geometry_msgs interfaces nav_msgs rcl_interfaces rclcpp rclcpp_lifecycle
   rog_map sensor_msgs tf2_geometry_msgs tf2_ros visualization_msgs)
-target_link_libraries(${PROJECT_NAME}_planner OpenMP::OpenMP_CXX yaml-cpp::yaml-cpp dw)
+target_link_libraries(${PROJECT_NAME}_planner
+  OpenMP::OpenMP_CXX yaml-cpp::yaml-cpp ${OpenCV_LIBS} dw)
 
 add_executable(${PROJECT_NAME}_node src/nav_executor_node.cpp
   src/path_planner/path_planner.cpp src/path_executor/path_executor.cpp
   src/path_executor/monitoring/command_safety.cpp
   src/task_manager/task_manager.cpp
-  src/common/environment/terrain_grid.cpp
-  # 降级全局搜索改用 TerrainMapQuery（见 global_path_searcher.cpp 的 fallback 分支），
-  # 实现必须编进本目标；此前它只出现在 test_terrain_map_query 里，故不加会报
-  # undefined reference to TerrainMapQuery::TerrainMapQuery / vtable。
-  src/common/environment/terrain_map_query.cpp)
+  src/common/environment/region_control.cpp)
 target_include_directories(${PROJECT_NAME}_node PRIVATE
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   "${minco_source_dir}/include")
@@ -110,50 +112,85 @@ install(TARGETS ${PROJECT_NAME}_node DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY config DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
-  enable_testing()
-  add_executable(test_terrain_grid test/test_terrain_grid.cpp src/common/environment/terrain_grid.cpp)
-  target_include_directories(test_terrain_grid PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
-  target_link_libraries(test_terrain_grid Eigen3::Eigen)
-  ament_target_dependencies(test_terrain_grid nav_msgs sensor_msgs)
-  add_test(NAME terrain_grid COMMAND test_terrain_grid)
-  add_executable(test_terrain_map_query test/test_terrain_map_query.cpp
-    src/common/environment/terrain_grid.cpp src/common/environment/terrain_map_query.cpp)
-  target_include_directories(test_terrain_map_query PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/include" "${minco_source_dir}/include")
-  target_link_libraries(test_terrain_map_query Eigen3::Eigen ${OpenCV_LIBS})
-  ament_target_dependencies(test_terrain_map_query nav_msgs rog_map sensor_msgs)
-  add_test(NAME terrain_map_query COMMAND test_terrain_map_query)
-  add_executable(test_mpc_horizon test/test_mpc_horizon.cpp)
-  target_include_directories(test_mpc_horizon PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
-  target_link_libraries(test_mpc_horizon ${PROJECT_NAME}_mpc)
-  add_test(NAME mpc_horizon COMMAND test_mpc_horizon)
-  add_executable(test_smac_planner_2d_simple test/test_smac_planner_2d_simple.cpp
-    src/path_planner/search/smac/smac_planner_2d_simple.cpp
-    src/common/environment/terrain_grid.cpp src/common/environment/terrain_map_query.cpp)
-  target_include_directories(test_smac_planner_2d_simple PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/include" "${minco_source_dir}/include")
-  target_link_libraries(test_smac_planner_2d_simple Eigen3::Eigen ${OpenCV_LIBS})
-  ament_target_dependencies(test_smac_planner_2d_simple nav_msgs rclcpp rog_map sensor_msgs)
-  add_test(NAME smac_planner_2d_simple COMMAND test_smac_planner_2d_simple)
-  add_executable(test_arc_length_speed_profile test/test_arc_length_speed_profile.cpp
-    src/path_planner/trajectory/arc_length_speed_profile.cpp)
-  target_include_directories(test_arc_length_speed_profile PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
-  add_test(NAME arc_length_speed_profile COMMAND test_arc_length_speed_profile)
-  add_executable(test_rog_map_command_safety test/test_rog_map_command_safety.cpp
-    src/path_executor/monitoring/command_safety.cpp src/common/environment/terrain_grid.cpp)
-  target_include_directories(test_rog_map_command_safety PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
-  ament_target_dependencies(test_rog_map_command_safety
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_online_global_map test/test_online_global_map.cpp)
+  target_include_directories(test_online_global_map PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+  ament_target_dependencies(test_online_global_map rclcpp rog_map nav_msgs)
+  target_link_libraries(test_online_global_map ${PROJECT_NAME}_planner Eigen3::Eigen)
+  ament_add_gtest(test_online_navigation test/test_online_navigation.cpp
+    src/path_executor/monitoring/command_safety.cpp)
+  target_include_directories(test_online_navigation PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+  ament_target_dependencies(test_online_navigation rclcpp rog_map tf2_ros tf2_geometry_msgs)
+  target_link_libraries(test_online_navigation ${PROJECT_NAME}_planner Eigen3::Eigen)
+  ament_add_gtest(test_smac_wall_clearance test/test_smac_wall_clearance.cpp)
+  target_include_directories(test_smac_wall_clearance PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+  ament_target_dependencies(test_smac_wall_clearance rclcpp rog_map)
+  target_link_libraries(test_smac_wall_clearance ${PROJECT_NAME}_planner Eigen3::Eigen)
+  ament_add_gtest(test_fused_map_query test/test_fused_map_query.cpp)
+  target_include_directories(test_fused_map_query PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+  ament_target_dependencies(test_fused_map_query rog_map)
+  target_link_libraries(test_fused_map_query ${PROJECT_NAME}_planner Eigen3::Eigen)
+  ament_add_gtest(test_region_online_priority
+    test/test_region_online_priority.cpp
+    src/common/environment/region_control.cpp
+    src/common/environment/terrain_grid.cpp)
+  target_include_directories(test_region_online_priority PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+  ament_target_dependencies(test_region_online_priority
+    geometry_msgs interfaces nav_msgs rclcpp sensor_msgs tf2 tf2_geometry_msgs tf2_ros)
+  target_link_libraries(test_region_online_priority Eigen3::Eigen)
+  ament_add_gtest(test_replan_continuity test/test_replan_continuity.cpp)
+  target_include_directories(test_replan_continuity PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/vendor/minco/include>)
+  target_link_libraries(test_replan_continuity Eigen3::Eigen)
+  ament_add_gtest(test_mpc_gimbal_follow
+    test/test_mpc_gimbal_follow.cpp
+    src/path_executor/path_executor.cpp
+    src/path_executor/monitoring/command_safety.cpp
+    src/common/environment/terrain_grid.cpp)
+  target_include_directories(test_mpc_gimbal_follow PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+  ament_target_dependencies(test_mpc_gimbal_follow
     geometry_msgs interfaces nav_msgs rclcpp rog_map sensor_msgs tf2 tf2_geometry_msgs tf2_ros)
-  add_test(NAME rog_map_command_safety COMMAND test_rog_map_command_safety)
-  add_executable(test_trajectory_safety_checker test/test_trajectory_safety_checker.cpp)
-  # 复用 planner 静态库：geometry_utils::Trajectory / Piece 都在其中。
-  target_link_libraries(test_trajectory_safety_checker ${PROJECT_NAME}_planner)
-  ament_target_dependencies(test_trajectory_safety_checker rclcpp)
-  add_test(NAME trajectory_safety_checker COMMAND test_trajectory_safety_checker)
-  add_executable(test_local_path_processor test/test_local_path_processor.cpp)
-  target_link_libraries(test_local_path_processor ${PROJECT_NAME}_planner)
-  ament_target_dependencies(test_local_path_processor geometry_msgs rclcpp rog_map)
-  add_test(NAME local_path_processor COMMAND test_local_path_processor)
+  target_link_libraries(test_mpc_gimbal_follow ${PROJECT_NAME}_mpc Eigen3::Eigen)
+  ament_add_gtest(test_region_yaw_ref
+    test/test_region_yaw_ref.cpp
+    src/common/environment/region_control.cpp
+    src/common/environment/terrain_grid.cpp)
+  target_include_directories(test_region_yaw_ref PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+  ament_target_dependencies(test_region_yaw_ref
+    geometry_msgs interfaces nav_msgs rclcpp sensor_msgs tf2 tf2_geometry_msgs tf2_ros)
+  target_link_libraries(test_region_yaw_ref Eigen3::Eigen)
+
+  ament_add_gtest(test_global_goal_cell_clearance
+    test/test_global_goal_cell_clearance.cpp)
+  target_include_directories(test_global_goal_cell_clearance PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/vendor/minco/include>)
+  ament_target_dependencies(test_global_goal_cell_clearance
+    geometry_msgs nav_msgs rclcpp rog_map tf2_ros)
+  target_link_libraries(test_global_goal_cell_clearance ${PROJECT_NAME}_planner Eigen3::Eigen)
+  ament_add_gtest(test_minco_two_stage
+    test/test_minco_two_stage.cpp)
+  target_include_directories(test_minco_two_stage PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/vendor/minco/include>)
+  ament_target_dependencies(test_minco_two_stage
+    nav_msgs rclcpp rog_map)
+  target_link_libraries(test_minco_two_stage ${PROJECT_NAME}_planner Eigen3::Eigen)
+  # 目标接近减速带：共享速度包络 + 弧长速度剖面（加减速能力分离）。
+  ament_add_gtest(test_goal_approach
+    test/test_goal_approach.cpp
+    src/path_planner/trajectory/arc_length_speed_profile.cpp)
+  target_include_directories(test_goal_approach PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+  target_link_libraries(test_goal_approach Eigen3::Eigen)
 endif()
 
 ament_package()

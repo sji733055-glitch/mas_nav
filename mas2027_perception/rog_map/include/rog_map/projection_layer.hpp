@@ -44,6 +44,7 @@ struct CellData
   float occupied_z_max_abs{std::numeric_limits<float>::quiet_NaN()};
   float height_delta{0.0f};
   float vertical_occupancy_ratio{0.0f};
+  float free_gap_ratio{0.0f};
   ProjectionClassReason raw_reason{ProjectionClassReason::INSUFFICIENT_OBSERVATION};
   uint8_t traversable{0};
   bool hole_filled{false};
@@ -57,6 +58,9 @@ struct ProjectionLayerConfig
   bool unknown_as_occupied{false};
   int min_observed_voxels{2};
   double surface_height_delta_max{0.10};
+  bool ground_filter_en{false};
+  double ground_filter_max_span{0.15};
+  double ground_filter_plane_tolerance{0.075};
   double wall_height_delta_min{0.20};
   double wall_occupancy_ratio_min{0.80};
   double tunnel_height_delta_min{0.24};
@@ -76,6 +80,7 @@ struct ColumnStats
 {
   int observed_count{0};
   int occupied_count{0};
+  int free_between_occupied_count{0};
   int occupied_z_index_min{std::numeric_limits<int>::max()};
   int occupied_z_index_max{std::numeric_limits<int>::min()};
   double occupied_z_min_abs{std::numeric_limits<double>::infinity()};
@@ -103,6 +108,14 @@ struct ProjectionSlideResult
   bool window_moved{false};
   bool full_refresh_required{false};
   std::vector<int> dirty_columns;
+};
+
+struct TerrainGeometry
+{
+  std::vector<uint8_t> labels;
+  // Unit vector toward increasing ground height; zero outside a fitted slope.
+  std::vector<float> uphill_x;
+  std::vector<float> uphill_y;
 };
 
 class ProjectionLayer : protected SlidingMap
@@ -158,10 +171,15 @@ public:
   const std::vector<CellData> & cells() const { return cells_; }
   const std::vector<uint8_t> & values() const { return values_; }
   const std::vector<uint8_t> & mask() const { return mask_; }
+  // Diagnostic labels: 0=flat/ordinary, 5=slope, 6=tunnel candidate, 255=unknown.
+  // These labels do not change the collision mask or chassis mode.
+  std::vector<uint8_t> terrainLabels() const;
+  TerrainGeometry terrainGeometry() const;
   bool empty() const { return values_.empty(); }
   size_t storageCapacity() const { return cell_buffer_.size(); }
 
 private:
+  std::vector<int> filterGround(const ProjectionLayerConfig & config);
   static void applyValueAndMask(CellData & cell, const ProjectionLayerConfig & config);
   static void collectClassificationStats(
     const std::vector<CellData> & cells, ProjectionUpdateStats * stats);

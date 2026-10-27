@@ -43,6 +43,8 @@ void ROGMapVisualizer::configure(const rclcpp::node_interfaces::NodeBaseInterfac
     createPublisher<nav_msgs::msg::OccupancyGrid>(parameters, topics, "/rog_map/layer_type", qos);
   pubs_.layer_confidence_pub =
     createPublisher<nav_msgs::msg::OccupancyGrid>(parameters, topics, "/rog_map/layer_confidence", qos);
+  pubs_.terrain_label_pub =
+    createPublisher<nav_msgs::msg::OccupancyGrid>(parameters, topics, "/rog_map/terrain_label", qos);
   pubs_.layer_height_delta_pub =
     createPublisher<sensor_msgs::msg::PointCloud2>(parameters, topics, "/rog_map/layer_height_delta", qos);
   pubs_.field_pub =
@@ -51,6 +53,8 @@ void ROGMapVisualizer::configure(const rclcpp::node_interfaces::NodeBaseInterfac
     createPublisher<sensor_msgs::msg::PointCloud2>(parameters, topics, "/rog_map/decay_cells", qos);
   pubs_.mkr_arr_pub =
     createPublisher<visualization_msgs::msg::MarkerArray>(parameters, topics, "/rog_map/map_bound", qos);
+  pubs_.terrain_markers_pub = createPublisher<visualization_msgs::msg::MarkerArray>(
+    parameters, topics, "/rog_map/terrain_markers", qos);
 
   if (cfg.visualization_rate > 0.0 && callback) {
     callback_group_ = base->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);

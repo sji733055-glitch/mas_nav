@@ -12,16 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License. Reserved.
 //
-// 移植自 mas_nav_2027 的 mas2027_planner/minco_planner/{include,src}/smac_search/
-// smac_planner_2d_simple.{hpp,cpp}。算法本体逐行保留（8 邻域 A*、octile 启发式、
-// tolerance 到点判定、膨胀代价因子、ESDF 势场软代价、SoA 搜索缓冲）。
-// 相对 2027 的改动只有三处，都是为了在没有 Nav2 的本工程里编译与运行：
-//   1. 去掉 nav2_costmap_2d::Costmap2DROS 成员与两个 configure 重载，改为
-//      configure(rclcpp::Logger)：地图几何全部从 MapQueryInterface 取，
-//      createPath() 本来每次都会刷新 origin/resolution/size。
-//   2. 代价常量改从本目录 constants.hpp 取（取值与 Nav2 相同：255/254/253/252）。
-//   3. ESDF 参数由 MincoPlanner 读 ROS 参数后经 setESDFParameters() 传入，
-//      避免本类依赖 rclcpp::Node 的参数接口。
+// 移植自 mas_nav_2027 的 smac_planner_2d_simple（8 邻域 A*、octile 启发式、tolerance 到点判定、
+// 膨胀代价因子、ESDF 势场软代价、SoA 搜索缓冲）；脱离 Nav2 编译运行改三处：
+//   1. configure() 只收 logger，地图几何全取自 MapQueryInterface（createPath() 每次刷新
+//      origin/resolution/size），不再持有 nav2_costmap_2d::Costmap2DROS。
+//   2. 代价常量取自本目录 constants.hpp（与 Nav2 相同：255/254/253/252）。
+//   3. ESDF 参数由 MincoPlanner 读 ROS 参数后经 setESDFParameters() 注入，避免依赖 Node 参数接口。
+// 此处另加斜向角点检查和静态地图最小净空约束，防止横墙端点贴墙穿角。
 
 #ifndef MAS2027_NAV_EXECUTOR__PATH_PLANNER__SEARCH__SMAC__SMAC_PLANNER_2D_SIMPLE_HPP_
 #define MAS2027_NAV_EXECUTOR__PATH_PLANNER__SEARCH__SMAC__SMAC_PLANNER_2D_SIMPLE_HPP_
@@ -84,9 +81,14 @@ public:
    * @param max_cost Upper clamp of the potential, <=0 disables the clamp (smac_2d.esdf_max_cost)
    */
   void setESDFParameters(bool enable, double weight, double decay, double max_cost);
+  // Reject cells whose search-map distance to an obstacle is below this value.
+  void setMinimumClearance(double clearance);
+  double minimumClearance() const { return minimum_clearance_; }
 
   void setMap(const std::shared_ptr<rog_map::MapQueryInterface> & map);
   void setESDFQuery(const std::shared_ptr<rog_map::MapQueryInterface> & query);
+  using EdgeFilter = std::function<bool(unsigned int, unsigned int, unsigned int, unsigned int)>;
+  void setEdgeFilter(EdgeFilter filter) { edge_filter_ = std::move(filter); }
 
   /**
    * @brief Create a path from start to goal
@@ -127,6 +129,7 @@ private:
    * @brief Compute ESDF-based potential cost for a grid cell index
    */
   float getESDFPotentialCost(unsigned int mx, unsigned int my);
+  float getESDFDistance(unsigned int mx, unsigned int my);
 
   /**
    * @brief Evaluate inflation traversal factor from costmap cell cost
@@ -141,6 +144,7 @@ private:
   // Costmap
   std::shared_ptr<rog_map::MapQueryInterface> map_;
   std::shared_ptr<rog_map::MapQueryInterface> esdf_query_;
+  EdgeFilter edge_filter_;
   unsigned int size_x_;
   unsigned int size_y_;
 
@@ -162,9 +166,11 @@ private:
   float esdf_weight_{1.0f};
   float esdf_decay_{0.5f};
   float esdf_max_cost_{5.0f};
+  float minimum_clearance_{0.0f};
 
   // Per-planning-iteration cache to avoid allocations in the search loop.
   std::vector<float> esdf_cost_cache_;
+  std::vector<float> esdf_distance_cache_;
   std::vector<uint32_t> esdf_cost_cache_id_;
 
   // Search info

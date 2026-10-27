@@ -30,6 +30,7 @@
 #include <thread>
 
 #include <rog_map/map_registry.hpp>
+#include <rog_map/body_return_filter.hpp>
 
 using namespace rog_map;
 using namespace super_utils;
@@ -329,7 +330,19 @@ void ROGMap::updateMapInternal(const PointCloud & cloud, const Pose & pose)
   const double update_robot_state_ms = elapsedMs(total_start);
   const double now = getSystemWalltimeNow();
   setUpdateTime(now);
-  updateProbMap(cloud, sensor_pose, map_center_pos);
+  if (cfg_.body_exclusion_radius > 0.0) {
+    const BodyReturnFilter body_filter(sensor_pose, cfg_.body_exclusion_radius);
+    PointCloud environment_cloud;
+    environment_cloud.reserve(cloud.size());
+    for (const auto & point : cloud) {
+      if (!body_filter.contains(point.x, point.y)) {
+        environment_cloud.push_back(point);
+      }
+    }
+    updateProbMap(environment_cloud, sensor_pose, map_center_pos);
+  } else {
+    updateProbMap(cloud, sensor_pose, map_center_pos);
+  }
   runtime_stats_.stamp = update_stamp;
   runtime_stats_.update_seq = static_cast<double>(this_update_sequence);
   runtime_stats_.update_robot_state_time = update_robot_state_ms;
@@ -388,6 +401,9 @@ void ROGMap::refreshLayers()
   layer_cfg.unknown_as_occupied = cfg_.unknown_as_occupied;
   layer_cfg.min_observed_voxels = cfg_.min_observed_voxels;
   layer_cfg.surface_height_delta_max = cfg_.surface_height_delta_max;
+  layer_cfg.ground_filter_en = cfg_.ground_filter_en;
+  layer_cfg.ground_filter_max_span = cfg_.ground_filter_max_span;
+  layer_cfg.ground_filter_plane_tolerance = cfg_.ground_filter_plane_tolerance;
   layer_cfg.wall_height_delta_min = cfg_.wall_height_delta_min;
   layer_cfg.wall_occupancy_ratio_min = cfg_.wall_occupancy_ratio_min;
   layer_cfg.tunnel_height_delta_min = cfg_.tunnel_height_delta_min;
@@ -420,19 +436,14 @@ void ROGMap::refreshLayers()
   if (z_min > z_max) {
     std::swap(z_min, z_max);
   }
-  // 只扫局部地图真正拥有的 z 层。配置的窗口（scan_z_relative_to_robot + -1.2/+2.75）是相对
-  // 雷达的 3.95 m，而 map_size.z 只有 2.5 m（±1.25），因此窗口里约一半的层恒在局部地图之外，
-  // 每个柱子都要为这些层跑一遍 rawGridType（内含 insideLocalMap + 哈希），结果必然是
-  // OUT_OF_MAP 被丢掉——纯浪费。按局部边界裁剪后逐格统计结果完全不变（越界格子本来就不计数），
-  // 而每列的工作量按实际层数下降。投影是当前单次更新里最大的固定开销，这一刀对所有分支
-  // （全量/脏列）都生效。
+  // 只扫局部地图真正拥有的 z 层：配置窗口（相对雷达 -1.2/+2.75）比 map_size.z（±1.25）宽，
+  // 越界层恒为 OUT_OF_MAP，按局部边界裁剪不改变逐格统计，只省下每列的空转开销。
   const int local_z_min = localMapMinIndex().z();
   const int local_z_max = localMapMaxIndex().z();
   z_min = std::max(z_min, local_z_min);
   z_max = std::min(z_max, local_z_max);
-  // 裁剪后可能整段落在局部地图外（例如雷达 z 远离地图中心）。此时没有任何可观测的体素，
-  // 所有柱子都只会得到 INSUFFICIENT_OBSERVATION，直接不去扫这些层（由 updateOneCell 用
-  // 空的 ColumnStats 正常分类），省掉每帧 200×200 次空转。
+  // 裁剪后 z 段可能整个落在局部地图外（雷达 z 远离地图中心）：无体素可观测，
+  // 所有柱子只会判为 INSUFFICIENT_OBSERVATION，直接跳过扫描。
   const bool z_range_valid = z_min <= z_max;
 
   const std::vector<uint8_t> old_fused_mask = fused_projection_mask_;
@@ -457,9 +468,7 @@ void ROGMap::refreshLayers()
   const bool dirty_over_ratio =
     cell_count > 0 &&
     projection_dirty_columns.size() > static_cast<size_t>(dirty_ratio * static_cast<double>(cell_count));
-  // 周期性全量安全网：与"脏列有多少"无关，每 dirty_full_period_s 强制走一次全量。
-  // 有了它，dirty_full_ratio 才能被放到"只在极端情况才回退"的位置——否则在稠密点云下
-  // 脏列恒超阈值（实测 19700/40401），增量路径永远不生效，投影每帧都要重算整张 200×200。
+  // 周期性全量安全网：每 dirty_full_period_s 强制一次全量，使 dirty_full_ratio 只在极端情况才回退。
   const bool periodic_full_due =
     cfg_.dirty_full_period_s > 0.0 &&
     (!std::isfinite(last_full_refresh_time_) ||
@@ -472,8 +481,7 @@ void ROGMap::refreshLayers()
   if (force_full_refresh) {
     last_full_refresh_time_ = current_update_time_;
   }
-  // 全量回退的归因：这五个互斥标记让 CSV 能区分「滑窗自己要求全量」「上一帧遗留的标记」
-  // 「脏列关闭」「脏列超比例」「周期性兜底」，不必再去猜 last_projection_time_ms 为什么忽然变高。
+  // 五个互斥标记用于给 CSV 归因全量回退来源（滑窗/遗留标记/脏列关闭/超比例/周期兜底）。
   runtime_stats_.full_reason_geometry = geometry_changed ? 1.0 : 0.0;
   runtime_stats_.full_reason_explicit = (!geometry_changed && explicit_full_refresh) ? 1.0 : 0.0;
   runtime_stats_.full_reason_dirty_disabled = cfg_.dirty_column_en ? 0.0 : 1.0;
@@ -493,47 +501,69 @@ void ROGMap::refreshLayers()
   runtime_stats_.projection_dirty_over_ratio = dirty_over_ratio ? 1.0 : 0.0;
 
   const auto projection_start = std::chrono::steady_clock::now();
-  auto rawGridType = [this](const Vec3i & id_g) -> GridType {
-    if (!insideLocalMap(id_g)) {
-      return GridType::OUT_OF_MAP;
+  std::vector<double> z_positions;
+  std::vector<int> z_hash_deltas;
+  if (z_range_valid) {
+    // The sliding-map hash is the sum of independent x, y and z terms.
+    // Cache the z term once; each column then needs only one bounds check and hash.
+    z_positions.reserve(z_max - z_min + 1);
+    z_hash_deltas.reserve(z_max - z_min + 1);
+    const int base_z_hash = getHashIndexFromGlobalIndex(Vec3i(0, 0, z_min));
+    for (int gz = z_min; gz <= z_max; ++gz) {
+      Vec3f pos;
+      globalIndexToPos(Vec3i(0, 0, gz), pos);
+      z_positions.push_back(pos.z());
+      z_hash_deltas.push_back(
+        getHashIndexFromGlobalIndex(Vec3i(0, 0, gz)) - base_z_hash);
     }
-    const int hash_id = getHashIndexFromGlobalIndex(id_g);
-    if (hash_id < 0 || hash_id >= static_cast<int>(occupancy_buffer_.size())) {
-      return GridType::OUT_OF_MAP;
-    }
-    const double ret = occupancy_buffer_[hash_id];
-    if (isKnownFree(ret)) {
-      return GridType::KNOWN_FREE;
-    }
-    if (isOccupied(ret)) {
-      return GridType::OCCUPIED;
-    }
-    return GridType::UNKNOWN;
-  };
+  }
 
-  auto scanner = [this, min_id, z_min, z_max, z_range_valid, rawGridType](int mx, int my) {
+  auto scanner = [this, min_id, z_min, z_max, z_range_valid, &z_positions, &z_hash_deltas](
+    int mx, int my) {
     ColumnStats stats;
     if (!z_range_valid) {
       return stats;
     }
     const int gx = min_id.x() + mx;
     const int gy = min_id.y() + my;
+    const Vec3i column_start(gx, gy, z_min);
+    if (!insideLocalMap(column_start)) {
+      return stats;
+    }
+    const int column_hash = getHashIndexFromGlobalIndex(column_start);
+    int free_since_occupied = 0;
+    bool seen_occupied = false;
     for (int gz = z_min; gz <= z_max; ++gz) {
-      Vec3i id_g(gx, gy, gz);
-      GridType gt = rawGridType(id_g);
+      const int z_offset = gz - z_min;
+      const int hash_id = column_hash + z_hash_deltas[z_offset];
+      GridType gt = GridType::OUT_OF_MAP;
+      if (hash_id >= 0 && hash_id < static_cast<int>(occupancy_buffer_.size())) {
+        const double occupancy = occupancy_buffer_[hash_id];
+        if (isKnownFree(occupancy)) {
+          gt = GridType::KNOWN_FREE;
+        } else if (isOccupied(occupancy)) {
+          gt = GridType::OCCUPIED;
+        } else {
+          gt = GridType::UNKNOWN;
+        }
+      }
       if (gt == GridType::OCCUPIED || gt == GridType::KNOWN_FREE) {
         ++stats.observed_count;
-        stats.last_update_time = std::max(stats.last_update_time, cellLastUpdateTime(id_g));
+        stats.last_update_time = std::max(stats.last_update_time, last_update_time_[hash_id]);
       }
       if (gt == GridType::OCCUPIED) {
+        if (seen_occupied) stats.free_between_occupied_count += free_since_occupied;
+        seen_occupied = true;
+        free_since_occupied = 0;
         ++stats.occupied_count;
         stats.occupied_z_index_min = std::min(stats.occupied_z_index_min, gz);
         stats.occupied_z_index_max = std::max(stats.occupied_z_index_max, gz);
-        Vec3f pos;
-        globalIndexToPos(id_g, pos);
-        stats.occupied_z_min_abs = std::min(stats.occupied_z_min_abs, static_cast<double>(pos.z()));
-        stats.occupied_z_max_abs = std::max(stats.occupied_z_max_abs, static_cast<double>(pos.z()));
-        stats.last_hit_time = std::max(stats.last_hit_time, cellLastHitTime(id_g));
+        const double z_position = z_positions[z_offset];
+        stats.occupied_z_min_abs = std::min(stats.occupied_z_min_abs, z_position);
+        stats.occupied_z_max_abs = std::max(stats.occupied_z_max_abs, z_position);
+        stats.last_hit_time = std::max(stats.last_hit_time, last_hit_time_[hash_id]);
+      } else if (seen_occupied && gt == GridType::KNOWN_FREE) {
+        ++free_since_occupied;
       }
     }
     return stats;
@@ -742,9 +772,8 @@ void ROGMap::refreshLayers()
   const bool field_geometry_changed =
     !field_ ||
     !field_->matchesGeometry(layer_->width(), layer_->height(), layer_->resolution(), layer_->origin());
-  // field.update_rate 以前只被 Config 读进来，没有任何地方使用，改 YAML 不会有效果。
-  // 这里按周期限流，但几何变化（地图滑动）和 field 失效必须立刻重建，否则
-  // getQueryInterface() 里的 matchesGeometry 会判定 field 无效，规划器直接拿不到 ESDF。
+  // 按 field.update_rate 周期限流；但几何变化（地图滑动）和 field 失效必须立刻重建，
+  // 否则 getQueryInterface() 的 matchesGeometry 会判定 field 无效，规划器拿不到 ESDF。
   const double field_period = cfg_.field_update_rate > 0.0 ? 1.0 / cfg_.field_update_rate : 0.0;
   const bool field_period_ready =
     field_period <= 0.0 || !std::isfinite(last_field_update_time_) ||
@@ -868,13 +897,31 @@ void ROGMap::refreshQuery()
   runtime_stats_.query_copy_values_time = elapsedMs(values_start);
   const auto meta_start = std::chrono::steady_clock::now();
   snapshot->types.resize(layer_->cells().size(), 0U);
+  snapshot->raw_types.resize(layer_->cells().size(), 0U);
   snapshot->height_deltas.resize(layer_->cells().size(), 0.0f);
   snapshot->confidence.resize(layer_->cells().size(), 0.0f);
   for (size_t i = 0; i < layer_->cells().size(); ++i) {
     snapshot->types[i] = static_cast<uint8_t>(layer_->cells()[i].type);
+    snapshot->raw_types[i] = static_cast<uint8_t>(layer_->cells()[i].raw_type);
     snapshot->height_deltas[i] = layer_->cells()[i].height_delta;
     snapshot->confidence[i] = layer_->cells()[i].confidence;
   }
+  auto terrain = layer_->terrainGeometry();
+  runtime_stats_.terrain_label_flat_count = 0.0;
+  runtime_stats_.terrain_label_slope_count = 0.0;
+  runtime_stats_.terrain_label_tunnel_count = 0.0;
+  for (const uint8_t label : terrain.labels) {
+    if (label == 0U) {
+      runtime_stats_.terrain_label_flat_count += 1.0;
+    } else if (label == 5U) {
+      runtime_stats_.terrain_label_slope_count += 1.0;
+    } else if (label == 6U) {
+      runtime_stats_.terrain_label_tunnel_count += 1.0;
+    }
+  }
+  snapshot->terrain_labels = std::move(terrain.labels);
+  snapshot->uphill_x = std::move(terrain.uphill_x);
+  snapshot->uphill_y = std::move(terrain.uphill_y);
   runtime_stats_.query_copy_types_height_delta_confidence_time = elapsedMs(meta_start);
   const bool field_valid =
     field_ && field_->isValid() &&

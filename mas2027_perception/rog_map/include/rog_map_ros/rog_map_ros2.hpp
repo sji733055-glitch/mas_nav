@@ -223,6 +223,11 @@ class ROGMapROS : public ROGMap
     int unfinished_frame_cnt{0};
     /// 与 pc 配对的位姿，取的是「点云回调时刻」的最近 odom，而非点云自带时间戳。
     Pose pc_pose;
+    /// Only the ROS callbacks access this input pose, under updete_lock.
+    /// The base class robot_state_ belongs to the map update worker.
+    Pose latest_odom_pose;
+    double latest_odom_received_s{0.0};
+    bool has_latest_odom{false};
     PointCloud pc;
     /// 点云回调时刻的 odom 年龄（毫秒），用于性能统计判断里程计是否滞后。
     double pc_odom_age_ms{0.0};
@@ -246,8 +251,9 @@ class ROGMapROS : public ROGMap
     sensor_msgs::msg::PointCloud2 occ, raw_occ, unknown, occ_inf, unknown_inf, frontier, esdf,
       height_delta, field, decay;
     /// 栅格类输出：融合 value、动态 value、静态先验、四分类类型图、分类置信度。
-    nav_msgs::msg::OccupancyGrid layer_value, layer_dynamic, layer_static, layer_type, layer_confidence;
-    visualization_msgs::msg::MarkerArray markers;
+    nav_msgs::msg::OccupancyGrid layer_value, layer_dynamic, layer_static, layer_type,
+      layer_confidence, terrain_label;
+    visualization_msgs::msg::MarkerArray markers, terrain_markers;
     // 以下 has_* 表示「本帧确实填充了对应字段」。发布端据此跳过未填充的字段，
     // 而填充本身只在对应话题有订阅者时才做（见 captureVizFrame），以此省掉无谓的拷贝。
     bool has_occ{false};
@@ -265,7 +271,9 @@ class ROGMapROS : public ROGMap
     bool has_layer_static{false};
     bool has_layer_type{false};
     bool has_layer_confidence{false};
+    bool has_terrain_label{false};
     bool has_markers{false};
+    bool has_terrain_markers{false};
   };
   /// 双缓冲：更新线程写、vizCallback 读，读写都持 viz_frame_mutex_。
   /// viz_heavy_ 只承载高成本项（未知/前沿/膨胀/ESDF），限频 2 Hz；为 null 表示本轮跳过重活。
@@ -282,20 +290,21 @@ class ROGMapROS : public ROGMap
   /// update_unaccounted_ms（真实周期 − 自报耗时）的主要来源之一。
   double last_viz_time_ms_{0.0};
 
-  /// 里程计回调：只更新机器人状态（位置/姿态/接收时刻），不做任何地图计算。
-  /// 持 rc_.updete_lock 是因为 cloudCallback 会同时读 robot_state_ 来配对位姿。
+  /// 里程计回调只更新供点云配对的输入位姿；地图状态由更新线程独占。
   void odomCallback(const nav_msgs::msg::Odometry::SharedPtr odom_msg)
   {
     if (performance_monitor_) {
       performance_monitor_->recordOdom(now().seconds());
     }
     std::lock_guard<std::mutex> lk(rc_.updete_lock);
-    updateRobotState(std::make_pair(
+    rc_.latest_odom_pose = std::make_pair(
       Vec3f(odom_msg->pose.pose.position.x, odom_msg->pose.pose.position.y, odom_msg->pose.pose.position.z),
       Quatf(odom_msg->pose.pose.orientation.w,
         odom_msg->pose.pose.orientation.x,
         odom_msg->pose.pose.orientation.y,
-        odom_msg->pose.pose.orientation.z)));
+        odom_msg->pose.pose.orientation.z));
+    rc_.latest_odom_received_s = now().seconds();
+    rc_.has_latest_odom = true;
   }
 
   /// 点云回调：只做四件事——校验、转换、入槽、唤醒工作线程。
@@ -319,8 +328,20 @@ class ROGMapROS : public ROGMap
       }
       return;
     }
+    // Copy one consistent odom sample before the potentially slow conversion.
+    Pose paired_pose;
+    double paired_odom_received_s = 0.0;
+    bool has_paired_odom = false;
+    {
+      std::lock_guard<std::mutex> lk(rc_.updete_lock);
+      has_paired_odom = rc_.has_latest_odom;
+      if (has_paired_odom) {
+        paired_pose = rc_.latest_odom_pose;
+        paired_odom_received_s = rc_.latest_odom_received_s;
+      }
+    }
     // 没有里程计就无法把点云插入地图（ROGMap 需要位姿做 raycast 起点）。
-    if (!robot_state_.rcv) {
+    if (!has_paired_odom) {
       if (performance_monitor_) {
         performance_monitor_->recordCloudDropNoOdom();
       }
@@ -328,7 +349,7 @@ class ROGMapROS : public ROGMap
       return;
     }
     // odom 超时同样跳过：宁可丢帧，也不要用过期位姿把点云写到错误位置。
-    if (cbk_t - robot_state_.rcv_time > cfg_.odom_timeout) {
+    if (cbk_t - paired_odom_received_s > cfg_.odom_timeout) {
       if (performance_monitor_) {
         performance_monitor_->recordCloudDropOdomTimeout();
       }
@@ -351,13 +372,14 @@ class ROGMapROS : public ROGMap
       return;
     }
     // 入槽：整体替换上一帧未处理的数据，并记录与点云配对的那一帧 odom 的时间新鲜度。
-    rc_.updete_lock.lock();
-    rc_.pc = temp_pc;
-    rc_.pc_pose = std::make_pair(robot_state_.p, robot_state_.q);
-    rc_.pc_odom_age_ms = std::max(0.0, cbk_t - robot_state_.rcv_time) * 1000.0;
-    rc_.unfinished_frame_cnt++;
-    map_empty_ = false;
-    rc_.updete_lock.unlock();
+    {
+      std::lock_guard<std::mutex> lk(rc_.updete_lock);
+      rc_.pc = std::move(temp_pc);
+      rc_.pc_pose = paired_pose;
+      rc_.pc_odom_age_ms = std::max(0.0, cbk_t - paired_odom_received_s) * 1000.0;
+      rc_.unfinished_frame_cnt++;
+      map_empty_ = false;
+    }
     rc_.cv.notify_one();
   }
 
@@ -557,6 +579,24 @@ class ROGMapROS : public ROGMap
         }
         fillLayerGrid(types, frame->layer_type);
         frame->has_layer_type = true;
+      }
+      const bool want_terrain_grid = vm_.terrain_label_pub &&
+        vm_.terrain_label_pub->get_subscription_count() >= 1;
+      const bool want_terrain_markers = vm_.terrain_markers_pub &&
+        vm_.terrain_markers_pub->get_subscription_count() >= 1;
+      if (want_terrain_grid || want_terrain_markers) {
+        const auto snapshot = query_ ? query_->snapshot() : nullptr;
+        const auto labels = snapshot && snapshot->terrain_labels.size() ==
+          static_cast<size_t>(layer_->width()) * layer_->height() ?
+          snapshot->terrain_labels : layer_->terrainLabels();
+        if (want_terrain_grid) {
+          fillLayerGrid(labels, frame->terrain_label);
+          frame->has_terrain_label = true;
+        }
+        if (want_terrain_markers) {
+          fillTerrainMarkers(labels, frame->terrain_markers);
+          frame->has_terrain_markers = true;
+        }
       }
       // 分类置信度按 0~100 百分数发布（CellData::confidence 本身是 0~1 的 float）。
       if (vm_.layer_confidence_pub && vm_.layer_confidence_pub->get_subscription_count() >= 1) {
@@ -784,6 +824,9 @@ class ROGMapROS : public ROGMap
     if (frame->has_layer_confidence && vm_.layer_confidence_pub) {
       vm_.layer_confidence_pub->publish(frame->layer_confidence);
     }
+    if (frame->has_terrain_label && vm_.terrain_label_pub) {
+      vm_.terrain_label_pub->publish(frame->terrain_label);
+    }
     if (frame->has_height_delta && vm_.layer_height_delta_pub) {
       vm_.layer_height_delta_pub->publish(frame->height_delta);
     }
@@ -802,6 +845,9 @@ class ROGMapROS : public ROGMap
     if (frame->has_markers && vm_.mkr_arr_pub) {
       vm_.mkr_arr_pub->publish(frame->markers);
     }
+    if (frame->has_terrain_markers && vm_.terrain_markers_pub) {
+      vm_.terrain_markers_pub->publish(frame->terrain_markers);
+    }
   }
 
   /// 任一可视化话题有订阅者即返回 true。更新线程用它决定是否值得构建快照，
@@ -816,6 +862,8 @@ class ROGMapROS : public ROGMap
            (vm_.layer_value_static_pub &&
             vm_.layer_value_static_pub->get_subscription_count() >= 1) ||
            (vm_.layer_type_pub && vm_.layer_type_pub->get_subscription_count() >= 1) ||
+           (vm_.terrain_label_pub && vm_.terrain_label_pub->get_subscription_count() >= 1) ||
+           (vm_.terrain_markers_pub && vm_.terrain_markers_pub->get_subscription_count() >= 1) ||
            (vm_.layer_confidence_pub && vm_.layer_confidence_pub->get_subscription_count() >= 1) ||
            (vm_.layer_height_delta_pub && vm_.layer_height_delta_pub->get_subscription_count() >= 1) ||
            (vm_.field_pub && vm_.field_pub->get_subscription_count() >= 1) ||
@@ -865,6 +913,47 @@ class ROGMapROS : public ROGMap
     for (size_t i = 0; i < data.size(); ++i) {
       grid.data[i] = data[i] == kUnknownTypeValue ?
         static_cast<int8_t>(-1) : static_cast<int8_t>(std::min<int>(100, data[i]));
+    }
+  }
+
+  /// 在线特殊地形以两组彩色方块显示；每帧覆盖上一帧，空组显式删除旧标记。
+  void fillTerrainMarkers(const std::vector<uint8_t> & labels,
+    visualization_msgs::msg::MarkerArray & markers)
+  {
+    markers.markers.resize(2);
+    const auto stamp = now();
+    const double resolution = layer_->resolution();
+    for (size_t i = 0; i < markers.markers.size(); ++i) {
+      auto & marker = markers.markers[i];
+      marker.header.stamp = stamp;
+      marker.header.frame_id = cfg_.visualization_frame_id;
+      marker.ns = "online_terrain";
+      marker.id = static_cast<int32_t>(i);
+      marker.type = visualization_msgs::msg::Marker::CUBE_LIST;
+      marker.action = visualization_msgs::msg::Marker::ADD;
+      marker.pose.orientation.w = 1.0;
+      marker.scale.x = resolution;
+      marker.scale.y = resolution;
+      marker.scale.z = 0.03;
+      marker.color.r = i == 0 ? 1.0F : 0.0F;
+      marker.color.g = i == 0 ? 0.55F : 0.85F;
+      marker.color.b = i == 0 ? 0.0F : 1.0F;
+      marker.color.a = 0.8F;
+      marker.lifetime = rclcpp::Duration::from_seconds(
+        std::max(0.5, 2.5 / std::max(1.0, cfg_.visualization_rate)));
+    }
+    const int width = layer_->width();
+    for (size_t index = 0; index < labels.size(); ++index) {
+      const size_t marker_index = labels[index] == 5U ? 0U : labels[index] == 6U ? 1U : 2U;
+      if (marker_index >= markers.markers.size()) continue;
+      geometry_msgs::msg::Point point;
+      point.x = layer_->origin().x() + (static_cast<int>(index % width) + 0.5) * resolution;
+      point.y = layer_->origin().y() + (static_cast<int>(index / width) + 0.5) * resolution;
+      point.z = 0.06;
+      markers.markers[marker_index].points.push_back(point);
+    }
+    for (auto & marker : markers.markers) {
+      if (marker.points.empty()) marker.action = visualization_msgs::msg::Marker::DELETE;
     }
   }
 
@@ -1025,8 +1114,10 @@ class ROGMapROS : public ROGMap
       vm_.layer_value_dynamic_pub = pubs.layer_value_dynamic_pub;
       vm_.layer_value_static_pub = pubs.layer_value_static_pub;
       vm_.layer_type_pub = pubs.layer_type_pub;
+      vm_.terrain_label_pub = pubs.terrain_label_pub;
       vm_.layer_confidence_pub = pubs.layer_confidence_pub;
       vm_.mkr_arr_pub = pubs.mkr_arr_pub;
+      vm_.terrain_markers_pub = pubs.terrain_markers_pub;
     }
 
     if (cfg_.ros_callback_en) {

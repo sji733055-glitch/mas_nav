@@ -70,8 +70,7 @@ namespace mid360_driver {
         std::function<void(const asio::ip::address &lidar_ip, const ImuMsg &imu_msg)> on_receive_imu;
 
         // 解析一个包的时间戳：NO_SYNC 时把雷达内部时钟换算到主机墙钟，再做跳变校验。
-        // 该雷达静默超过 packet_resync_silence 后允许重新锚定，否则水位线只在接受时前进，
-        // 一次超过 max_packet_time_jump 的断线会让这台雷达被永久判为 "implausible"。
+        // 静默超过 packet_resync_silence 才允许重锚定，否则一次超过 max_packet_time_jump 的断线会让水位线永久卡死。
         bool resolve_packet_timestamp(const asio::ip::address &address,
                                       bool no_sync_timestamp,
                                       double raw_timestamp,

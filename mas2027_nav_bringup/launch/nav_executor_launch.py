@@ -3,18 +3,66 @@
 import glob
 import os
 
+import yaml
+
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
 from launch.conditions import IfCondition
-from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.launch_description_sources import (
+    FrontendLaunchDescriptionSource,
+    PythonLaunchDescriptionSource,
+)
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
-def generate_launch_description():
+def _load_navigation_map_files(bringup_dir):
+    """Load and validate the single map-selection manifest."""
+    config_path = os.path.join(bringup_dir, "config", "navigation_map.yaml")
+    with open(config_path, encoding="utf-8") as stream:
+        document = yaml.safe_load(stream)
+
+    if not isinstance(document, dict) or not isinstance(document.get("map_files"), dict):
+        raise RuntimeError(f"{config_path}: missing map_files mapping")
+
+    def resolve(key):
+        value = document["map_files"].get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise RuntimeError(f"{config_path}: map_files.{key} must be a non-empty path")
+        path = value if os.path.isabs(value) else os.path.join(bringup_dir, value)
+        path = os.path.realpath(path)
+        if not os.path.isfile(path):
+            raise RuntimeError(f"{config_path}: map_files.{key} does not exist: {path}")
+        return path
+
+    return {
+        "localization_pcd": resolve("localization_pcd"),
+        "occupancy_yaml": resolve("occupancy_yaml"),
+        "terrain_msgpack": resolve("terrain_msgpack"),
+    }
+
+
+def _load_map_source(executor_dir):
+    """Use the executor YAML as the single startup mode selector."""
+    config_path = os.path.join(executor_dir, "config", "node_params.yaml")
+    with open(config_path, encoding="utf-8") as stream:
+        document = yaml.safe_load(stream)
+    try:
+        map_source = document["/**"]["ros__parameters"]["node"]["map_source"]
+    except (KeyError, TypeError) as exc:
+        raise RuntimeError(f"{config_path}: missing node.map_source") from exc
+    if map_source not in ("prior", "online"):
+        raise RuntimeError(f"{config_path}: node.map_source must be prior or online")
+    return map_source
+
+
+def _launch_setup(context):
     bringup_dir = get_package_share_directory("mas2027_nav_bringup")
     executor_dir = get_package_share_directory("mas2027_nav_executor")
+    map_source = _load_map_source(executor_dir)
+    online = map_source == "online"
     launch_dir = os.path.join(bringup_dir, "launch")
     system_first_library_path = os.pathsep.join(
         ["/lib/x86_64-linux-gnu", os.environ.get("LD_LIBRARY_PATH", "")]
@@ -22,12 +70,18 @@ def generate_launch_description():
 
     use_sim_time = LaunchConfiguration("use_sim_time")
     use_rviz = LaunchConfiguration("use_rviz")
-    use_ros2_comm = LaunchConfiguration("use_ros2_comm")
+    use_nav_serial = LaunchConfiguration("use_nav_serial")
+    nav_serial_device = LaunchConfiguration("nav_serial_device")
     use_odom_localizer = LaunchConfiguration("use_odom_localizer")
+    use_foxglove = LaunchConfiguration("use_foxglove")
+    foxglove_address = LaunchConfiguration("foxglove_address")
+    foxglove_port = LaunchConfiguration("foxglove_port")
     output_topic = LaunchConfiguration("output_topic")
-    map_pcd = LaunchConfiguration("map_pcd")
+    normal_mode = LaunchConfiguration("normal_mode")
+    normal_mode_parameter = ParameterValue(normal_mode, value_type=int)
 
     lio_params = os.path.join(bringup_dir, "config", "small_point_lio_params.yaml")
+    map_files = {} if online else _load_navigation_map_files(bringup_dir)
     executor_params = sorted(glob.glob(os.path.join(executor_dir, "config", "*.yaml")))
     localizer_params = os.path.join(
         get_package_share_directory("odom_localizer"), "config", "params.yaml"
@@ -64,7 +118,7 @@ def generate_launch_description():
         parameters=[
             localizer_params,
             {
-                "map.prior_pcd_file": map_pcd,
+                "map.prior_pcd_file": map_files.get("localization_pcd", ""),
                 "use_sim_time": use_sim_time,
                 "tf.publish_direct": False,
             },
@@ -79,10 +133,17 @@ def generate_launch_description():
             {
                 "use_sim_time": use_sim_time,
                 "publish_odom_to_base": True,
-                "publish_map_to_odom": True,
+                "publish_map_to_odom": not online,
             }
         ],
     )
+    online_params = {
+        "planner.exploration.unknown_as_occupied": True,
+        "planner.rog_map.projection.unknown_as_occupied": True,
+        "planner.rog_map.projection.prior_map.enable": False,
+        "planner.allow_unknown": False,
+    } if online else {}
+    # Speed and acceleration limits come from the same YAML files in both modes.
     nav_executor = Node(
         package="mas2027_nav_executor",
         executable="mas2027_nav_executor_node",
@@ -94,7 +155,9 @@ def generate_launch_description():
             "OMP_WAIT_POLICY": "PASSIVE",
         },
         parameters=executor_params
-        + [{"use_sim_time": use_sim_time, "node.topics.cmd_vel_pub": output_topic}],
+        + [{"use_sim_time": use_sim_time, "node.topics.cmd_vel_pub": output_topic,
+            "region_control.normal_mode": normal_mode_parameter,
+            "node.map_source": map_source}, online_params],
     )
     terrain_map_server = Node(
         package="map_server",
@@ -104,33 +167,25 @@ def generate_launch_description():
         additional_env={"LD_LIBRARY_PATH": system_first_library_path},
         parameters=[{
             "use_sim_time": use_sim_time,
-            "terrain_map_path": os.path.join(bringup_dir, "map", "lab3_terrain.msgpack"),
-            "global_cloud_path": map_pcd,
+            "terrain_map_path": map_files.get("terrain_msgpack", ""),
+            "map_yaml_path": map_files.get("occupancy_yaml", ""),
             "frame_id": "map",
-            "origin_x": -4.6,
-            "origin_y": -7.94,
-            # True = 不做动态障碍检测（map_server_node.cpp:67 起连点云都不订阅），
-            # /dynamic_cost_map 保持全空，/cost_map 与 /direction_map 照常发布。
-            # 理由：旧工程 /home/mas/mas_nav_2027 的 mas2027_perception 下根本没有 map_server，
-            # 动态物体靠 ROGMap 的时间衰减（keep_time 0.8 s / clear_time 1.2 s）处理；本工程多出的
-            # 这一层会按 full_cost 0.2 m / cutoff 0.4 m 膨胀，RViz 里明显比实物厚，并触发
-            # 「Braking: current dynamic obstacle intersects the MPC reference horizon」，
-            # 是实车「不丝滑」的一大来源。需要动态避障时改回 False。
-            "bypass_dynamic_obstacle": True,
         }],
         remappings=[
             ("cost_map", "/cost_map"),
-            ("direction_map", "/direction_map"),
-            ("dynamic_cost_map", "/dynamic_cost_map"),
+            ("terrain_label_map", "/terrain_label_map"),
         ],
     )
-    ros2_comm = Node(
-        package="ros2_comm",
-        executable="ros2_comm_node",
-        name="ros2_comm_node",
+    nav_serial_bridge = Node(
+        package="nav_serial_bridge",
+        executable="nav_serial_bridge_node",
+        name="nav_serial_bridge",
         output="screen",
         emulate_tty=True,
-        condition=IfCondition(use_ros2_comm),
+        condition=IfCondition(use_nav_serial),
+        parameters=[{
+            "device": nav_serial_device,
+        }],
     )
     rviz = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(launch_dir, "rviz_launch.py")),
@@ -138,29 +193,52 @@ def generate_launch_description():
         launch_arguments={
             "use_sim_time": use_sim_time,
             "rviz_config": os.path.join(bringup_dir, "rviz", "nav_executor_view.rviz"),
+            "fixed_frame": "odom" if online else "map",
+        }.items(),
+    )
+    # 默认随 nav 栈起 bridge：8766 避开 mapping Web UI 占用的 8765。
+    # SSH 隧道场景绑 127.0.0.1；直连改 foxglove_address:=0.0.0.0。
+    # 不需要可视化时用 use_foxglove:=False；已有独立 bridge 时也关掉，避免端口冲突。
+    foxglove_bridge = IncludeLaunchDescription(
+        FrontendLaunchDescriptionSource(
+            os.path.join(
+                get_package_share_directory("foxglove_bridge"),
+                "launch",
+                "foxglove_bridge_launch.xml",
+            )
+        ),
+        condition=IfCondition(use_foxglove),
+        launch_arguments={
+            "address": foxglove_address,
+            "port": foxglove_port,
+            "use_sim_time": use_sim_time,
         }.items(),
     )
 
+    actions = [robot_state_publisher, mid360_driver, small_point_lio, tf_maintainer,
+        nav_executor, nav_serial_bridge, rviz, foxglove_bridge]
+    if not online:
+        actions[3:3] = [odom_localizer, terrain_map_server]
+    return actions
+
+
+def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="False"),
-        DeclareLaunchArgument("use_rviz", default_value="True"),
-        # 底盘转发桥默认开启：ros2_comm 是 /cmd_vel 的唯一消费者，不启动它就会出现
-        # 「cmd_vel 一直有值但车不动」。协议只发 vx/vy/nav_state，不含角速度。
-        # 上机前确认底盘上电与急停状态；只想看导航不发车时用 use_ros2_comm:=False 关掉。
-        DeclareLaunchArgument("use_ros2_comm", default_value="True"),
-        DeclareLaunchArgument("use_odom_localizer", default_value="True"),
-        DeclareLaunchArgument("output_topic", default_value="/cmd_vel"),
+        # RViz 默认关闭，需要图形窗口时显式传 use_rviz:=True。
+        DeclareLaunchArgument("use_rviz", default_value="false"),
+        # CDC1 发送 vx/vy、小 yaw ref 和 follow_gimbal 跟随模式请求；底盘角速度由下位机生成。
+        # 只观察导航时用 use_nav_serial:=False 关掉硬件输出。
+        DeclareLaunchArgument("use_nav_serial", default_value="True"),
         DeclareLaunchArgument(
-            "map_pcd",
-            default_value=os.path.join(bringup_dir, "pcd", "lab3.pcd"),
+            "nav_serial_device",
+            default_value="",
         ),
-        robot_state_publisher,
-        mid360_driver,
-        small_point_lio,
-        odom_localizer,
-        tf_maintainer,
-        terrain_map_server,
-        nav_executor,
-        ros2_comm,
-        rviz,
+        DeclareLaunchArgument("use_odom_localizer", default_value="True"),
+        DeclareLaunchArgument("use_foxglove", default_value="True"),
+        DeclareLaunchArgument("foxglove_address", default_value="127.0.0.1"),
+        DeclareLaunchArgument("foxglove_port", default_value="8766"),
+        DeclareLaunchArgument("output_topic", default_value="/cmd_vel"),
+        DeclareLaunchArgument("normal_mode", default_value="4"),
+        OpaqueFunction(function=_launch_setup),
     ])

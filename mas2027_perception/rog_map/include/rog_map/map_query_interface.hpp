@@ -49,6 +49,13 @@ public:
   virtual double originX() const = 0;
   virtual double originY() const = 0;
 
+  // ROS-clock timestamp of the latest completed online-map snapshot. Static or synthetic
+  // adapters may leave this as NaN; navigation uses it only for the ROGMap safety gate.
+  virtual double snapshotStampSeconds() const
+  {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+
   virtual uint8_t value(unsigned int mx, unsigned int my) const = 0;
   virtual const unsigned char * values() const = 0;
   virtual bool copyValues(std::vector<unsigned char> & out) const

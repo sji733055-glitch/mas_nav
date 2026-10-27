@@ -29,6 +29,8 @@ namespace small_point_lio {
     void SmallPointLio::reset() {
         preprocess.reset();
         estimator.reset();
+        pointcloud_odom_frame.clear();
+        last_odom_publish_time = -std::numeric_limits<double>::infinity();
         is_init = false;
     }
 
@@ -74,6 +76,7 @@ namespace small_point_lio {
                 // clear data
                 preprocess.point_deque.clear();
                 preprocess.dense_point_deque.clear();
+                preprocess.dense_frame_remaining.clear();
                 preprocess.imu_deque.clear();
                 is_init = true;
             }
@@ -83,6 +86,49 @@ namespace small_point_lio {
         // judge we should do point update or imu update
         bool is_publish_odometry = !preprocess.imu_deque.empty() && !preprocess.dense_point_deque.empty() && !preprocess.point_deque.empty() &&
                                    preprocess.imu_deque.front().timestamp < preprocess.point_deque.back().timestamp;
+        std::vector<std::pair<double, std::vector<Eigen::Vector3f>>> completed_clouds;
+        std::vector<common::Point> point_batch;
+        point_batch.reserve(parameters.point_update_batch_max_points);
+        const auto flush_point_batch = [this, &point_batch]() {
+            if (point_batch.empty()) {
+                return;
+            }
+            // Move every observation to the batch end using the predicted state.
+            // The EKF then linearizes the entire short window at one state.
+            const auto &s = estimator.kf.x;
+            const auto rotation_lidar_imu = parameters.extrinsic_est_en ? s.offset_R_L_I : estimator.Lidar_R_wrt_IMU;
+            const auto translation_lidar_imu = parameters.extrinsic_est_en ? s.offset_T_L_I : estimator.Lidar_T_wrt_IMU;
+            const Eigen::Vector3d world_acceleration = s.rotation * s.acceleration + s.gravity;
+            std::vector<Eigen::Vector3f> compensated;
+            compensated.reserve(point_batch.size());
+            for (const auto &point : point_batch) {
+                const double dt = point.timestamp - estimator.kf.time_state();
+                const Eigen::Vector3d point_imu = rotation_lidar_imu * point.position.cast<double>() + translation_lidar_imu;
+                const Eigen::Vector3d displacement = s.velocity * dt + 0.5 * world_acceleration * dt * dt;
+                const Eigen::Vector3d point_imu_at_end =
+                    exp<double>(s.omg * dt) * point_imu + s.rotation.transpose() * displacement;
+                compensated.push_back((rotation_lidar_imu.transpose() *
+                    (point_imu_at_end - translation_lidar_imu)).cast<float>());
+            }
+            estimator.kf.update_point_batch(compensated.size(), [this, &compensated](std::size_t i) {
+                estimator.point_lidar_frame = compensated[i];
+            });
+            const auto &updated = estimator.kf.x;
+            const Eigen::Matrix3d updated_rotation_lidar_imu = parameters.extrinsic_est_en ?
+                updated.offset_R_L_I : estimator.Lidar_R_wrt_IMU;
+            const Eigen::Vector3d updated_translation_lidar_imu = parameters.extrinsic_est_en ?
+                updated.offset_T_L_I : estimator.Lidar_T_wrt_IMU;
+            for (const auto &point : compensated) {
+                const Eigen::Vector3d point_imu = updated_rotation_lidar_imu * point.cast<double>() + updated_translation_lidar_imu;
+                estimator.ivox->add_point((updated.rotation * point_imu + updated.position).cast<float>());
+            }
+            if (parameters.publish_odometry_without_downsample &&
+                time_current - last_odom_publish_time >= parameters.odom_publish_interval_s - 1e-9) {
+                publish_odometry(time_current);
+                last_odom_publish_time = time_current;
+            }
+            point_batch.clear();
+        };
         while (!preprocess.imu_deque.empty() && !preprocess.dense_point_deque.empty() && !preprocess.point_deque.empty()) {
             const common::Point &point_lidar_frame = preprocess.point_deque.front();
             const common::Point &dense_point_lidar_frame = preprocess.dense_point_deque.front();
@@ -95,11 +141,8 @@ namespace small_point_lio {
                 } else {
                     dense_point_imu_frame = estimator.Lidar_R_wrt_IMU * dense_point_lidar_frame.position.cast<state::value_type>() + estimator.Lidar_T_wrt_IMU;
                 }
-                // 去畸变：滤波状态只在 kf.time_state() 这一时刻有效，而稠密点是在这个时刻之后
-                // 才被采样的（本分支的进入条件就是它比下一个 point/imu 更早，但它仍晚于上一次状态更新）。
-                // 直接套用当前状态会把两次状态更新之间的整段运动烙进点云，高速平移/自旋时表现为拖影。
-                // 这里用状态快照做分段前向运动补偿，把点推到它自己的采样时刻对应的位姿上。
-                // 只读快照、不调用 predict_state：避免给 eskf 插入额外积分步而扰动 LIO 估计。
+                // 去畸变：状态仅在 kf.time_state() 有效，稠密点直接套用会把运动烙进点云（拖影）。
+                // 故只读快照前推到点采样时刻，不调 predict_state，避免多插积分步扰动 eskf 估计。
                 const auto dt_deskew = static_cast<state::value_type>(dense_point_lidar_frame.timestamp - estimator.kf.time_state());
                 if (dt_deskew > 0) {
                     const Eigen::Matrix<state::value_type, 3, 3> rotation_deskew =
@@ -112,7 +155,11 @@ namespace small_point_lio {
                     pointcloud_odom_frame.emplace_back((estimator.kf.x.rotation * dense_point_imu_frame + estimator.kf.x.position).cast<float>());
                 }
 
-                preprocess.dense_point_deque.pop_front();
+                const double point_stamp = dense_point_lidar_frame.timestamp;
+                if (preprocess.finish_dense_point()) {
+                    completed_clouds.emplace_back(point_stamp, std::vector<Eigen::Vector3f>{});
+                    completed_clouds.back().second.swap(pointcloud_odom_frame);
+                }
             } else if (point_lidar_frame.timestamp < imu_msg.timestamp) {
                 // point update
                 if (point_lidar_frame.timestamp < time_current) {
@@ -124,21 +171,15 @@ namespace small_point_lio {
                 // predict
                 estimator.kf.predict_state(time_current);
 
-                // update
-                estimator.point_lidar_frame = point_lidar_frame.position;
-                estimator.kf.update_point();
-
-                // publish odometry
-                if (parameters.publish_odometry_without_downsample) {
-                    publish_odometry(time_current);
+                point_batch.push_back(point_lidar_frame);
+                if (point_batch.size() >= parameters.point_update_batch_max_points ||
+                    time_current - point_batch.front().timestamp >= parameters.point_update_batch_interval_s) {
+                    flush_point_batch();
                 }
-
-                // map incremental
-                estimator.ivox->add_point(estimator.point_odom_frame);
-
                 preprocess.point_deque.pop_front();
             } else {
                 // imu update
+                flush_point_batch();
                 if (imu_msg.timestamp < time_current) {
                     preprocess.imu_deque.pop_front();
                     continue;
@@ -158,20 +199,21 @@ namespace small_point_lio {
             }
         }
 
-        if (is_publish_odometry) {
+        flush_point_batch();
+
+        if (is_publish_odometry || !completed_clouds.empty()) {
             if (!parameters.publish_odometry_without_downsample) {
                 publish_odometry(time_current);
             }
-            if (!pointcloud_odom_frame.empty()) {
-                if (pointcloud_callback) {
-                    pointcloud_callback(pointcloud_odom_frame);
+            if (pointcloud_callback) {
+                for (const auto &[stamp, cloud] : completed_clouds) {
+                    pointcloud_callback(cloud, stamp);
                 }
-                pointcloud_odom_frame.clear();
             }
         }
     }
 
-    void SmallPointLio::set_pointcloud_callback(const std::function<void(const std::vector<Eigen::Vector3f> &pointcloud)> &pointcloud_callback) {
+    void SmallPointLio::set_pointcloud_callback(const std::function<void(const std::vector<Eigen::Vector3f> &pointcloud, double stamp)> &pointcloud_callback) {
         this->pointcloud_callback = pointcloud_callback;
     }
 

@@ -1,13 +1,22 @@
 #ifndef MINCO_PLANNER__MINCO_PLANNER_HPP_
 #define MINCO_PLANNER__MINCO_PLANNER_HPP_
 
+#include "mas2027_nav_executor/common/control/goal_approach.hpp"
 #include "minco_core/header.hpp"
 #include "minco_core/performance/planner_performance_monitor.hpp"
 #include "visualization_msgs/msg/marker_array.hpp"
 
 #include <limits>
+#include <array>
 #include <map>
 #include <string>
+#include <vector>
+
+namespace mas2027_nav_executor {
+class FusedMapQuery;
+class TerrainMapQuery;
+class OnlineGlobalMap;
+}  // namespace mas2027_nav_executor
 
 namespace minco_planner {
 
@@ -33,6 +42,7 @@ public:
 
   void setMap(const std::shared_ptr<rog_map::MapQueryInterface> & map);
   void setTerrainGrid(std::shared_ptr<mas2027_nav_executor::TerrainGrid> terrain);
+  void setOnlineTerrainMap(std::shared_ptr<mas2027_nav_executor::OnlineGlobalMap> terrain);
 
   bool ReplanLocal(const geometry_msgs::msg::PoseStamped & current_pose);
   bool makePlan(const geometry_msgs::msg::Pose & start,
@@ -41,23 +51,21 @@ public:
     std::function<bool()> cancel_checker,
     nav_msgs::msg::Path & plan);
 
-  // === Callbacks ===
-  void safetyTimerCallback();
-
   // === Utility & Helper Functions ===
-  bool checkCollision();
-  bool checkCollision(const geometry_utils::Trajectory & traj);
-
-  /// 净空要求（发布前校验与运行时监视共用同一个公式）。
-  /// 只要两处用不同阈值，就会出现「发布前 0.30 通过、监视器 0.50 立刻否决」的死循环：
-  /// cmd_vel 只在发布的瞬间有值，RViz 轨迹在规划轨迹与急停轨迹之间来回闪。
-  /// required = collision_dist + max(v * replan_react_time, monitor_margin)
-  double requiredClearance(double speed) const;
+  bool checkCollision(
+    const geometry_utils::Trajectory & traj,
+    const std::vector<Eigen::Vector3d> & reference_path);
 
   // Accessors for FSM
-  bool isTrajSafe() const { return is_traj_safe_.load(); }
   RecoverServer::Ptr recoveryServer() const { return recovery_server_; }
   double getForceReplanPeriod() const { return force_replan_period_sec_; }
+  bool lastGoalInvalid() const { return last_goal_invalid_; }
+  bool lastGoalBlockedRetryable() const { return last_goal_blocked_retryable_; }
+  bool goalKnownInvalid(
+    const geometry_msgs::msg::PoseStamped & start,
+    const geometry_msgs::msg::PoseStamped & goal) const;
+  bool lastGoalShifted() const { return last_goal_shifted_; }
+  bool copyLatestGlobalGoal(geometry_msgs::msg::PoseStamped & goal) const;
   double nowSeconds() const;
   bool isTrajectoryTimeExpired(double now_s) const;
   double getLookaheadDist() const { return lookahead_dist_; }
@@ -67,10 +75,9 @@ public:
     const geometry_msgs::msg::PoseStamped & current_pose,
     const geometry_msgs::msg::PoseStamped & goal) const;
   bool hasGlobalPath() const;
+  bool usesOnlineMapOnly() const { return !terrain_; }
   void invalidateGlobalPath();
-  // 拷贝一份当前全局搜索（SMAC 2D / Astar）输出的折线，供 RViz 显示。
-  // 返回 false 表示目前没有可用的全局路径（尚未搜索或已被 invalidateGlobalPath 清掉）。
-  // 与 hasGlobalPath() 的区别：这里连数据一起取出，避免调用方分两次加锁看到不同的快照。
+  // 全局搜索折线快照供 RViz 显示：一次取出，避免调用方两次加锁看到不同快照；无路径返回 false。
   bool copyLatestGlobalPath(std::vector<geometry_msgs::msg::PoseStamped> & out) const;
   Eigen::Vector3d getCurrentSpeed() const;
   double getCurrentYawFromOdom() const;
@@ -119,10 +126,12 @@ private:
     VecDf & init_ts,
     VecDf & local_vmaxs) const;
 
-  bool validateTrajectory(const traj_opt::Trajectory & traj, const Eigen::Vector3d & expected_end_pos);
+  bool validateTrajectory(
+    const traj_opt::Trajectory & traj,
+    const Eigen::Vector3d & expected_end_pos,
+    const std::vector<Eigen::Vector3d> & reference_path);
 
-  /// 把备份（急停）优化器实际使用的安全盒（SFC）发布成 RViz 调试 marker。
-  /// 纯可视化，不参与任何约束构造或规划决策。
+  /// 备份（急停）优化器安全盒（SFC）的 RViz 调试 marker；纯可视化，不参与约束构造与规划决策。
   void publishSafeCorridorBox(const PolyhedronH & poly);
 
   bool optimizeYaw(const Eigen::Matrix3d & start_state,
@@ -137,6 +146,8 @@ private:
 
   bool ensureMapAvailable();
   void rebuildModeDependentQueries();
+  void rebuildFusedQuery();
+  bool refreshFusedTransform();
   void configureMincoPerfLogging(const rclcpp_lifecycle::LifecycleNode::SharedPtr & node, const std::string & prefix);
 
   void initPlannerMode(
@@ -146,7 +157,6 @@ private:
   /// 备份安全盒调试可视化，由 generateBackupTraj() 在每次重规划时刷新。
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr safe_corridor_pub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
-  rclcpp::TimerBase::SharedPtr safety_timer_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr on_set_parameters_callback_handle_;
 
   // === TF & Costmap & Frames ===
@@ -160,13 +170,14 @@ private:
   // === Configurations & Parameters ===
   double tolerance_;
   bool allow_unknown_;
-  // 全局主搜索：true 走 SMAC 2D（对齐 mas_nav_2027），false 退回 Astar。
+  // 主搜索：true 走 SMAC 2D、false 退回 Astar；SMAC 的 ESDF 代价参数对齐 mas_nav_2027 smac_2d 段。
   bool use_smac_{true};
-  // SMAC 的 ESDF 势场软代价，默认值对齐 mas_nav_2027 的 smac_2d 段。
   bool smac_use_esdf_cost_{true};
   double smac_esdf_weight_{1.0};
   double smac_esdf_decay_{0.8};
   double smac_esdf_max_cost_{0.5};
+  double smac_minimum_clearance_{0.0};
+  double smac_relaxed_minimum_clearance_{0.0};
   bool use_yaw_opt_{true};
   bool exploration_unknown_as_occupied_{true};
   bool exploration_prefer_goal_direction_{true};
@@ -177,23 +188,25 @@ private:
   double lookahead_dist_;
   double traj_goal_tolerance_{0.15};
   double collision_dist_{0.30};
+  bool narrow_passage_enable_{true};
+  double narrow_passage_clearance_{0.24};
+  /// 目标接近减速带：用实测刹车能力给"剩余弧长 → 允许速度"封顶，种子与
+  /// 局部速度上限共用；`minco_optimizer.goal_approach.*` 配置。
+  mas2027_nav_executor::GoalApproachParams goal_approach_{};
   double force_replan_period_sec_{0.2};
-  double replan_react_time_{0.35};
-  /// 速度感知净空开关：开启后优化器的位置罚项改用 required(v) 口径（见 MincoOptimizer::Config）。
-  bool speed_aware_clearance_{false};
-  /// 优化器软目标相对硬判据的余量（优化器只能渐近逼近，避免毫米级擦边被否）。
-  double clearance_optimizer_margin_{0.05};
-  double safety_lookahead_time_{1.2};
-  double monitor_margin_{0.20};
+  /// 热启动时只把旧轨迹的一小段作为初值前缀，避免整条旧轨迹拖住新规划。
+  double replan_continuity_time_s_{0.3};
   double last_estop_s_{-1.0};
+  bool last_goal_invalid_{false};
+  bool last_goal_blocked_retryable_{false};
+  bool last_goal_shifted_{false};
   MincoOptimizer::Config minco_config;
   RecoverServer::Config recovery_server_config_{};
   PlannerPerformanceMonitor planner_perf_monitor_;
 
   // === Core Modules (Pointers to FSM, Optimizers, etc.) ===
   std::unique_ptr<Astar> astar_planner_;
-  // SMAC 2D 主搜索（对齐 mas_nav_2027 的 PRIORMAP）。use_smac 为真时 GlobalPathSearcher
-  // 走它，astar_planner_ 退为 use_smac:=false 时的备用分支。
+  // SMAC 2D 主搜索（对齐 mas_nav_2027）；use_smac 为真走它，否则 astar_planner_ 兜底。
   std::unique_ptr<mas2027_nav_executor::smac::SmacPlanner2DSimple> smac_planner_;
   std::unique_ptr<MincoOptimizer> minco_optimizer_;
   std::unique_ptr<traj_opt::BackupTrajOpt> backup_opt_;
@@ -201,6 +214,13 @@ private:
   std::unique_ptr<PlannerModeContext> mode_context_;
   std::unique_ptr<GlobalPathSearcher> global_path_searcher_;
   std::shared_ptr<mas2027_nav_executor::TerrainGrid> terrain_;
+  std::shared_ptr<mas2027_nav_executor::OnlineGlobalMap> online_terrain_;
+  std::shared_ptr<mas2027_nav_executor::TerrainMapQuery> terrain_query_;
+  std::shared_ptr<mas2027_nav_executor::FusedMapQuery> fused_query_;
+  double normal_speed_cap_{3.0};
+  std::array<double, 9> region_speed_caps_{};
+  std::array<double, 9> region_prepare_distances_{};
+  std::array<double, 9> region_release_distances_{};
   std::unique_ptr<LocalPathProcessor> local_path_processor_;
   std::unique_ptr<TrajectorySafetyChecker> safety_checker_;
   SimpleCorridorGenerator::Ptr corridor_gen_;
@@ -217,28 +237,17 @@ private:
   bool has_last_traj_ = false;
   bool has_last_yaw_traj_ = false;
   bool has_latest_odom_{false};
-  std::atomic_bool is_traj_safe_{true};
 
-  // === 失败原因统计（排障用） ===
-  // 失败原因日志原来整条 2 s 节流：实车一次 10 分钟运行 350 次失败只留下 139 条原因，
-  // 其中"修复后 0.3 ms 立即失败"的 76 次现场里有 60 次连原因都没打出来，"死在哪一步"
-  // 无法从日志判断。现在按原因计数：每种原因前 failure_log_first_n_ 次逐条打出（带累计计数），
-  // 之后每 failure_log_every_n_ 次采样一条；每 failure_summary_every_ 次失败再打一条汇总。
+  // === 失败原因统计（排障用）：按计数采样，**不要退回按时间节流**，密集失败会丢现场 ===
+  // 前 failure_log_first_n_ 次逐条打印，之后每 failure_log_every_n_ 次采样一条。
   uint64_t replan_failure_total_{0};
   std::map<std::string, uint64_t> replan_failure_counts_;
   int64_t failure_log_first_n_{10};
-  // 第 failure_log_first_n_ 次之后的采样间隔。**不要退回按时间节流**：2 s 节流在
-  // "失败比节流窗口更密"时会丢现场——2026-09-16 14:55 那次运行 158 次失败只留下 54 条原因，
-  // COLLISION 109 次被压成 31 条，正是这个原因。按计数采样则无论失败多密都保证留下样本。
   int64_t failure_log_every_n_{25};
   int64_t failure_summary_every_{50};
 
-  // === 地形门否决点插桩（只加日志，不改任何判据/阈值） ===
-  // 起因：2026-09-16 20:13 那次运行 50 次失败里 TERRAIN_COLLISION_OR_DIRECTION 占 26 次
-  // （最长一次连续卡顿 21 s），但这条原因**从不打印否决位置**，因此无法判断它是在真实的
-  // 先验图墙体上否决（说明现场挤压是真的）还是在别处（说明判据或坐标系有问题）。
-  // 净空门早就有 "Trajectory clearance ... at (x,y)"，地形门缺同等待遇。
-  // 前 kTerrainRejectLogFirstN 次逐条打印，之后每 kTerrainRejectLogEveryN 次采样一条。
+  // 地形门否决点插桩（只加日志，不改任何判据/阈值）：原先不打印否决位置，分不清真墙与
+  // 判据/坐标问题；前 kTerrainRejectLogFirstN 次逐条，之后每 kTerrainRejectLogEveryN 次采样一条。
   uint64_t terrain_reject_log_count_{0};
 
   // 第四层兜底（短距离脱困前缀）参数，见 minco_planner.cpp 的 configure 段。

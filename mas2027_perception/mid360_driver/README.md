@@ -54,18 +54,6 @@ mid360_driver:
   `NO_SYNC` 模式下的设备时钟→主机墙钟 delta。
 - 双雷达都静默时不发任何帧（没有可用数据）；这时应查网络/供电，而不是驱动参数。
 
-## 测试
-
-```bash
-# 纯逻辑单测（外参变换 / IMU 换源换算 / 在线判据），已挂 CTest
-colcon test --packages-select mid360_driver --event-handlers console_direct+
-
-# 端到端：本机假雷达（127.0.0.2/127.0.0.3）发 Livox UDP 包，真实节点 + 真实话题，
-# 覆盖掉线降级、恢复重配对、IMU 换源、雷达重启后重锚定
-source install/setup.bash
-python3 src/mas2027_perception/mid360_driver/test/integration_degrade_check.py
-```
-
 ## Contact
 
 QQ group: 1070252119

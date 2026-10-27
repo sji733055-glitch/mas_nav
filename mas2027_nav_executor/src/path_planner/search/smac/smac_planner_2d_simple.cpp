@@ -56,6 +56,12 @@ void SmacPlanner2DSimple::setESDFParameters(
   invalidateESDFCache();
 }
 
+void SmacPlanner2DSimple::setMinimumClearance(double clearance)
+{
+  minimum_clearance_ = static_cast<float>(std::max(0.0, clearance));
+  invalidateESDFCache();
+}
+
 void SmacPlanner2DSimple::setMap(const std::shared_ptr<rog_map::MapQueryInterface> & map)
 {
   map_ = map;
@@ -68,15 +74,8 @@ void SmacPlanner2DSimple::setMap(const std::shared_ptr<rog_map::MapQueryInterfac
   size_x_ = map_->sizeX();
   size_y_ = map_->sizeY();
   ensureSearchBuffers();
-  // 注意：这里**不能**把 planning_id_ 归零。visited_/closed_/parent_ 里存的是上一次搜索留下的
-  // 标记与父指针；归零后下一次 createPath 的 ++ 又重新得到 1，与更早一次搜索的 1 撞号。
-  // 后果不是「搜索变慢」而是**静默返回陈旧路径**：createPath 末尾的失败判定是
-  //   if (!goal_reached && closed_[goal_index] != planning_id_) { 失败 }
-  // goal 格此刻已带着上一轮的 id，判定被跳过，于是直接顺着上一轮留下的 parent_ 回退出
-  // 上一条路径（实测 iterations=1、路径与上一轮逐点相同），即使地图已经变了。
-  // mas_nav_2027 只在 configure 时 setMap 一次，所以那里没有暴露这个问题；本工程每次
-  // 全局搜索前都会 setMap（沿用它「搜索前把地图交给 SMAC」的接线方式），必须按此处理。
-  // 地图内容变化不需要清空 closed_：createPath() 每次都会 ++planning_id_，旧标记自然失效。
+  // 注意：这里**不能**把 planning_id_ 归零：visited_/closed_/parent_ 复用上次搜索的标记与父指针，
+  // 归零后 ++ 又得到 1、与更早搜索撞号，失败判定失效、静默回退陈旧路径；地图变化无需清空 closed_。
 }
 
 void SmacPlanner2DSimple::setESDFQuery(
@@ -116,6 +115,7 @@ void SmacPlanner2DSimple::ensureSearchBuffers()
     closed_.assign(size, 0u);
 
     esdf_cost_cache_.assign(size, 0.0f);
+    esdf_distance_cache_.assign(size, -std::numeric_limits<float>::infinity());
     esdf_cost_cache_id_.assign(size, 0u);
   }
 }
@@ -129,7 +129,7 @@ void SmacPlanner2DSimple::logFailure(const std::string & reason,
 {
   RCLCPP_WARN(logger_,
     "[SMAC 2D] %s | start=(%u,%u) goal=(%u,%u) size=%ux%u origin=(%.3f,%.3f) res=%.3f "
-    "allow_unknown=%s tolerance=%.3f max_iterations=%d iterations=%d",
+    "allow_unknown=%s tolerance=%.3f minimum_clearance=%.3f max_iterations=%d iterations=%d",
     reason.c_str(),
     start_x,
     start_y,
@@ -142,6 +142,7 @@ void SmacPlanner2DSimple::logFailure(const std::string & reason,
     costmap_resolution_,
     allow_unknown_ ? "true" : "false",
     tolerance_,
+    minimum_clearance_,
     max_iterations_,
     iterations);
 }
@@ -152,8 +153,22 @@ float SmacPlanner2DSimple::getESDFPotentialCost(unsigned int mx, unsigned int my
     return 0.0f;
   }
 
-  if (mx >= size_x_ || my >= size_y_) {
+  const float distance = getESDFDistance(mx, my);
+  if (!std::isfinite(distance)) {
     return 0.0f;
+  }
+  const size_t idx = static_cast<size_t>(my) * size_x_ + mx;
+  return esdf_cost_cache_[idx];
+}
+
+float SmacPlanner2DSimple::getESDFDistance(unsigned int mx, unsigned int my)
+{
+  if (!map_ || !esdf_query_) {
+    return -std::numeric_limits<float>::infinity();
+  }
+
+  if (mx >= size_x_ || my >= size_y_) {
+    return -std::numeric_limits<float>::infinity();
   }
 
   const uint64_t index =
@@ -161,7 +176,7 @@ float SmacPlanner2DSimple::getESDFPotentialCost(unsigned int mx, unsigned int my
 
   const size_t idx = static_cast<size_t>(index);
   if (esdf_cost_cache_id_[idx] == planning_id_) {
-    return esdf_cost_cache_[idx];
+    return esdf_distance_cache_[idx];
   }
 
   // Convert through the prior search map; the ESDF query handles any further frame conversion.
@@ -172,22 +187,17 @@ float SmacPlanner2DSimple::getESDFPotentialCost(unsigned int mx, unsigned int my
   const auto result = esdf_query_->query(Eigen::Vector3d(wx, wy, 0.0));
   if (!result.ok || !std::isfinite(result.distance)) {
     esdf_cost_cache_[idx] = 0.0f;
+    esdf_distance_cache_[idx] = -std::numeric_limits<float>::infinity();
     esdf_cost_cache_id_[idx] = planning_id_;
-    return 0.0f;
+    return esdf_distance_cache_[idx];
   }
-
+  esdf_distance_cache_[idx] = static_cast<float>(result.distance);
   const double dist = std::max(0.0, result.distance);
-
-  const float normalized_potential =
+  const float potential = esdf_weight_ *
     static_cast<float>(std::exp(-dist / static_cast<double>(esdf_decay_)));
-  float weighted_potential = esdf_weight_ * normalized_potential;
-  if (esdf_max_cost_ > 0.0f) {
-    weighted_potential = std::min(weighted_potential, esdf_max_cost_);
-  }
-
-  esdf_cost_cache_[idx] = weighted_potential;
+  esdf_cost_cache_[idx] = esdf_max_cost_ > 0.0f ? std::min(potential, esdf_max_cost_) : potential;
   esdf_cost_cache_id_[idx] = planning_id_;
-  return esdf_cost_cache_[idx];
+  return esdf_distance_cache_[idx];
 }
 
 float SmacPlanner2DSimple::evaluateInflationCost(unsigned char cell_cost)
@@ -273,15 +283,29 @@ bool SmacPlanner2DSimple::createPath(const unsigned int & start_x,
 
   const auto is_traversable = [this, charmap](const uint64_t index) -> bool {
     const unsigned char cost = charmap[static_cast<size_t>(index)];
-    if (cost == UNKNOWN_COST) {
-      return allow_unknown_;
+    if ((cost == UNKNOWN_COST && !allow_unknown_) ||
+        (cost != UNKNOWN_COST && cost >= INSCRIBED_COST)) {
+      return false;
     }
-    return cost < INSCRIBED_COST;
+    if (minimum_clearance_ <= 0.0f) {
+      return true;
+    }
+    const auto x = static_cast<unsigned int>(index % size_x_);
+    const auto y = static_cast<unsigned int>(index / size_x_);
+    return getESDFDistance(x, y) >= minimum_clearance_;
   };
 
   if (!is_traversable(goal_index)) {
     const unsigned char goal_cost = charmap[static_cast<size_t>(goal_index)];
-    logFailure("goal cell is not traversable, cost=" + std::to_string(static_cast<unsigned int>(goal_cost)),
+    const bool cost_rejected = (goal_cost == UNKNOWN_COST && !allow_unknown_) ||
+      (goal_cost != UNKNOWN_COST && goal_cost >= INSCRIBED_COST);
+    const float distance = cost_rejected ? -std::numeric_limits<float>::infinity() :
+      getESDFDistance(goal_x, goal_y);
+    const std::string reason = cost_rejected ? "goal rejected by grid cost" :
+      (std::isfinite(distance) ? "goal rejected by ESDF clearance" :
+      "goal rejected: ESDF query unavailable or nonfinite");
+    logFailure(reason + ", cost=" + std::to_string(static_cast<unsigned int>(goal_cost)) +
+      ", clearance=" + (cost_rejected ? std::string("not_checked") : std::to_string(distance)),
       start_x,
       start_y,
       goal_x,
@@ -376,8 +400,18 @@ bool SmacPlanner2DSimple::createPath(const unsigned int & start_x,
       if (!is_traversable(neighbor_index)) {
         continue;
       }
+      if (edge_filter_ && !edge_filter_(cx_u, cy_u, nx, ny)) {
+        continue;
+      }
 
       const bool diagonal = (k >= 4);
+      if (diagonal) {
+        const uint64_t side_x = cy * static_cast<uint64_t>(size_x_) + nx;
+        const uint64_t side_y = static_cast<uint64_t>(ny) * size_x_ + cx;
+        if (!is_traversable(side_x) || !is_traversable(side_y)) {
+          continue;
+        }
+      }
       const float step_cost = diagonal ? step_diagonal : step_cardinal;
 
       const unsigned char cell_cost = charmap[neighbor_i];

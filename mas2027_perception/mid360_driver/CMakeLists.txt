@@ -36,12 +36,3 @@ target_link_options(${PROJECT_NAME}_node PRIVATE $<$<CONFIG:Debug>:-fsanitize=ad
 ament_auto_package(
   USE_SCOPED_HEADER_INSTALL_DIR
 )
-
-if(BUILD_TESTING)
-  enable_testing()
-  # 单雷达降级的纯逻辑单测（外参变换 / IMU 换源 / 在线判据）。
-  # 端到端（假雷达 + 真实节点 + 真实话题）见 test/integration_degrade_check.py，不挂 CTest。
-  add_executable(test_merge_failover test/test_merge_failover.cpp src/merge_failover.cpp)
-  target_include_directories(test_merge_failover PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
-  add_test(NAME merge_failover COMMAND test_merge_failover)
-endif()

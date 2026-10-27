@@ -40,6 +40,15 @@ std::string num(double value)
   return ss.str();
 }
 
+std::string runCsvPath(const std::string & path, long long run_stamp_us)
+{
+  const size_t slash = path.find_last_of('/');
+  const size_t dot = path.find_last_of('.');
+  const size_t split = dot != std::string::npos &&
+    (slash == std::string::npos || dot > slash) ? dot : path.size();
+  return path.substr(0, split) + "-" + std::to_string(run_stamp_us) + path.substr(split);
+}
+
 void writeCsvLine(std::ofstream & stream, const std::vector<std::string> & fields)
 {
   for (size_t i = 0; i < fields.size(); ++i) {
@@ -88,21 +97,27 @@ void PerformanceMonitor::configure(const PerformanceConfig & config)
   if (!config_.enable) {
     return;
   }
+  const auto run_stamp_us = std::chrono::duration_cast<std::chrono::microseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count();
   if (detailedCsvEnabled()) {
-    detailed_csv_.open(config_.detailed_csv_path, std::ios::out | std::ios::trunc);
+    config_.detailed_csv_path = runCsvPath(config_.detailed_csv_path, run_stamp_us);
+    detailed_csv_.open(config_.detailed_csv_path, std::ios::out | std::ios::app);
     if (!detailed_csv_.is_open()) {
       std::cerr << "[ROGMapPerf] failed to open detailed_csv_path: " << config_.detailed_csv_path
                 << std::endl;
     } else {
+      std::cout << "[ROGMapPerf] detailed CSV: " << config_.detailed_csv_path << std::endl;
       writeDetailedHeader();
     }
   }
   if (summaryCsvEnabled()) {
-    summary_csv_.open(config_.summary_csv_path, std::ios::out | std::ios::trunc);
+    config_.summary_csv_path = runCsvPath(config_.summary_csv_path, run_stamp_us);
+    summary_csv_.open(config_.summary_csv_path, std::ios::out | std::ios::app);
     if (!summary_csv_.is_open()) {
       std::cerr << "[ROGMapPerf] failed to open summary_csv_path: " << config_.summary_csv_path
                 << std::endl;
     } else {
+      std::cout << "[ROGMapPerf] summary CSV: " << config_.summary_csv_path << std::endl;
       writeSummaryHeader();
     }
   }
@@ -255,8 +270,7 @@ void PerformanceMonitor::observeUpdate(const RuntimeStats & raw_stats)
   std::lock_guard<std::mutex> lock(mutex_);
   RuntimeStats stats = raw_stats;
   // 真实更新周期：从上次更新结束到这次更新结束的墙钟差。total_update_time 只覆盖
-  // updateMapInternal 内部，更新之后的可视化快照构建（captureVizFrame）不在其中，
-  // 因此这一列才是「地图实际多久刷新一次」；两者之差即那段不可见开销。
+  // updateMapInternal，不含其后的可视化快照构建（captureVizFrame），两者之差即那段不可见开销。
   const long long now_ns = steadyNowNs();
   if (last_observe_ns_ > 0) {
     const double period_ms = static_cast<double>(now_ns - last_observe_ns_) / 1.0e6;
@@ -365,7 +379,10 @@ void PerformanceMonitor::writeDetailedHeader()
       "update_unaccounted_ms",
       "last_viz_time_ms",
       "viz_built_count",
-      "viz_skipped_count"});
+      "viz_skipped_count",
+      "terrain_label_flat",
+      "terrain_label_slope",
+      "terrain_label_tunnel"});
 }
 
 void PerformanceMonitor::writeSummaryHeader()
@@ -400,7 +417,10 @@ void PerformanceMonitor::writeSummaryHeader()
       "last_free_count",
       "last_passable_count",
       "last_occupied_count",
-      "last_unknown_count"});
+      "last_unknown_count",
+      "last_terrain_label_flat",
+      "last_terrain_label_slope",
+      "last_terrain_label_tunnel"});
 }
 
 void PerformanceMonitor::writeDetailedRow(const RuntimeStats & s)
@@ -465,7 +485,10 @@ void PerformanceMonitor::writeDetailedRow(const RuntimeStats & s)
       num(s.update_unaccounted_ms),
       num(s.last_viz_time_ms),
       num(s.viz_built_count),
-      num(s.viz_skipped_count)});
+      num(s.viz_skipped_count),
+      num(s.terrain_label_flat_count),
+      num(s.terrain_label_slope_count),
+      num(s.terrain_label_tunnel_count)});
   flushIfNeeded(detailed_csv_, detailed_csv_rows_);
 }
 
@@ -498,9 +521,8 @@ void PerformanceMonitor::maybeWriteSummary(double stamp)
         num(stats_.raycast_time),
         num(stats_.projection_total_time),
         num(stats_.field_time),
-        // 此前 summary 只报了三段耗时，剩下的 prob_update/decay/query 与「周期 − 自报」
-        // 都看不到，排障时必须靠 detailed CSV。这里补上，让每次实车运行（哪怕没开 detailed）
-        // 都留下可判读的分阶段数据。
+        // summary 补齐 prob_update/decay/query 与「周期 − 自报」两段：原先只报三段
+        // 耗时，这几项排障时不可见；补上后未开 detailed CSV 的运行也能留下可判读数据。
         num(stats_.prob_update_time),
         num(stats_.decay_time),
         num(stats_.query_refresh_time),
@@ -518,7 +540,10 @@ void PerformanceMonitor::maybeWriteSummary(double stamp)
         num(stats_.free_count),
         num(stats_.passable_count),
         num(stats_.occupied_count),
-        num(stats_.unknown_count)});
+        num(stats_.unknown_count),
+        num(stats_.terrain_label_flat_count),
+        num(stats_.terrain_label_slope_count),
+        num(stats_.terrain_label_tunnel_count)});
     flushIfNeeded(summary_csv_, summary_csv_rows_);
   }
 
