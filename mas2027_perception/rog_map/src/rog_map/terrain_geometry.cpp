@@ -1,5 +1,6 @@
 #include <rog_map/projection_layer.hpp>
 #include <rog_map/undulating_profile.hpp>
+#include <rog_map/slope_profile.hpp>
 
 #include <Eigen/LU>
 #include <algorithm>
@@ -221,6 +222,18 @@ TerrainGeometry ProjectionLayer::terrainGeometry() const {
         const auto &axis = axes[axis_id];
         if (!wave_config.enable || !(evidence[index] & kWaveGround))
           break;
+        const double spacing = resolution_ * std::hypot(axis[0], axis[1]);
+        std::array<double, 9> entry_profile;
+        entry_profile.fill(std::numeric_limits<double>::quiet_NaN());
+        if (wave_config.entry_window_enable) {
+          for (int i = -4; i <= 4; ++i) {
+            const int nx = x + i * axis[0], ny = y + i * axis[1];
+            if (nx < 0 || ny < 0 || nx >= width_ || ny >= height_) continue;
+            const auto id = static_cast<size_t>(ny) * width_ + nx;
+            if (evidence[id] & kWaveGround) entry_profile[i + 4] = wave_heights[id];
+          }
+        }
+        const bool short_entry = isShortSlopeEntry(entry_profile, 4, spacing, wave_config);
         // Cheap local reversal gate keeps flat ground and monotonic ramps out
         // of the longer three-profile check.
         double low = wave_heights[index], high = low, previous = low;
@@ -255,8 +268,8 @@ TerrainGeometry ProjectionLayer::terrainGeometry() const {
           previous = z;
           ++measured;
         }
-        if (!valid || measured < 3 || !reversal ||
-            high - low < wave_config.min_peak_to_trough_m)
+        if (!short_entry && (!valid || measured < 3 || !reversal ||
+            high - low < wave_config.min_peak_to_trough_m))
           continue;
         ++geometry.wave_candidate_count;
         bool supported = true;
@@ -282,8 +295,7 @@ TerrainGeometry ProjectionLayer::terrainGeometry() const {
             const int nx = x + i * axis[0] - strip * axis[1];
             const int ny = y + i * axis[1] + strip * axis[0];
             if (nx < 0 || ny < 0 || nx >= width_ || ny >= height_) {
-              supported = false;
-              break;
+              continue;
             }
             const size_t sample_id = static_cast<size_t>(ny) * width_ + nx;
             if (evidence[sample_id] & kBarrier) {
@@ -300,7 +312,8 @@ TerrainGeometry ProjectionLayer::terrainGeometry() const {
             } else {
               ++geometry.wave_profile_check_count;
               const double spacing = resolution_ * std::hypot(axis[0], axis[1]);
-              wave = isUndulatingProfile(profile, spacing, wave_config);
+              wave = isShortSlopeEntry(profile, 8, spacing, wave_config) ||
+                     isUndulatingProfile(profile, spacing, wave_config);
               for (int offset : {0, 4}) {
                 if (!wave_config.entry_window_enable || wave)
                   break;
@@ -310,9 +323,11 @@ TerrainGeometry ProjectionLayer::terrainGeometry() const {
               }
               cached = wave ? 1 : 0;
             }
+            auto correlation_config = wave_config;
+            if (short_entry) correlation_config.min_common_samples = 3;
             supported = wave && (strip == -1 ||
                                  coherentWaveProfiles(previous_profile, profile,
-                                                      wave_config));
+                                                      correlation_config));
             previous_profile = profile;
           } else {
             cached = 0;
@@ -397,6 +412,50 @@ TerrainGeometry ProjectionLayer::terrainGeometry() const {
       }
       if (std::sqrt(squared_error / samples) <= slope_config.max_plane_rms_m &&
           max_residual <= slope_config.max_plane_residual_m) {
+        // Measure along the fitted uphill direction, averaging across the
+        // surface width to suppress individual noisy returns. Do not use the
+        // fit-window size as evidence that the slope itself is long enough.
+        const double ux = plane.x() / slope, uy = plane.y() / slope;
+        const double dominant = std::max(std::abs(ux), std::abs(uy));
+        const double sx = ux / dominant, sy = uy / dominant;
+        const int extent = static_cast<int>(std::ceil(slope_config.min_length_m * dominant / resolution_)) + 2;
+        std::vector<double> profile(2 * extent + 1, std::numeric_limits<double>::quiet_NaN());
+        for (int i = -extent; i <= extent; ++i) {
+          const int cx = x + std::lround(i * sx), cy = y + std::lround(i * sy);
+          if (cx < 0 || cy < 0 || cx >= width_ || cy >= height_) continue;
+          const auto center_id = static_cast<size_t>(cy) * width_ + cx;
+          if (!(evidence[center_id] & kGround) || (evidence[center_id] & kBarrier)) continue;
+          double height = 0.;
+          int support = 0;
+          for (int strip = -2; strip <= 2; ++strip) {
+            const int nx = x + std::lround(i * sx - strip * uy);
+            const int ny = y + std::lround(i * sy + strip * ux);
+            if (nx < 0 || ny < 0 || nx >= width_ || ny >= height_) continue;
+            const auto id = static_cast<size_t>(ny) * width_ + nx;
+            if (!(evidence[id] & kGround) || (evidence[id] & kBarrier)) continue;
+            height += ground_heights[id];
+            ++support;
+          }
+          if (support >= 3) profile[i + extent] = height / support;
+        }
+        // Use actual projected cell coordinates so diagonal sampling cannot
+        // overstate length by counting repeated cells.
+        int first = extent, last = extent;
+        const auto rising = [&](int edge) {
+          if (!std::isfinite(profile[edge]) || !std::isfinite(profile[edge + 1])) return false;
+          const double distance = resolution_ *
+              ((std::lround((edge + 1 - extent) * sx) - std::lround((edge - extent) * sx)) * ux +
+               (std::lround((edge + 1 - extent) * sy) - std::lround((edge - extent) * sy)) * uy);
+          const double dz = profile[edge + 1] - profile[edge];
+          return distance > 0. && dz >= slope_config.min_gradient * distance * .5 &&
+                 dz <= slope_config.max_gradient * distance;
+        };
+        while (first > 0 && rising(first - 1)) --first;
+        while (last < 2 * extent && rising(last)) ++last;
+        const double length = resolution_ *
+            ((std::lround((last - extent) * sx) - std::lround((first - extent) * sx)) * ux +
+             (std::lround((last - extent) * sy) - std::lround((first - extent) * sy)) * uy);
+        if (length <= slope_config.min_length_m + 1e-9) continue;
         labels[index] = kSlope;
         geometry.uphill_x[index] = static_cast<float>(plane.x() / slope);
         geometry.uphill_y[index] = static_cast<float>(plane.y() / slope);

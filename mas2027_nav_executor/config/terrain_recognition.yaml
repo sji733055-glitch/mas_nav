@@ -21,6 +21,8 @@
               # 增大更平滑、计算更多，可能把邻近几何混入；范围 2..20。
               fit_radius_cells: 5
               min_samples: 30
+              # 沿坡向实测的连续水平长度必须严格大于此值。
+              min_length_m: 0.30
               # 坡度=高差/水平距离，约对应 8°..35°，不是角度值。
               min_gradient: 0.14
               max_gradient: 0.70
@@ -32,6 +34,11 @@
               enable: true
               # 短入口窗口可提前识别；关闭时只使用完整 17 点窗口。
               entry_window_enable: true
+              # 无需等到反向坡面；已观测到两端的短坡面即可作为起伏路入口。
+              # 至少两个连续采样间隔，三条相邻精细地面条带必须一致。
+              entry_max_slope_length_m: 0.15
+              entry_min_gradient: 0.14
+              entry_max_gradient: 0.70
               # 峰谷差，不是单边振幅。抬高下限可抑制较小地面扰动。
               min_peak_to_trough_m: 0.035
               max_peak_to_trough_m: 0.12

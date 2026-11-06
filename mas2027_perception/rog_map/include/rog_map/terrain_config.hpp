@@ -11,6 +11,7 @@ struct SlopeRecognitionConfig {
   bool enable{true};
   int fit_radius_cells{5};
   int min_samples{30};
+  double min_length_m{0.30};
   double min_gradient{0.14};
   double max_gradient{0.70};
   double min_height_change_m{0.06};
@@ -21,6 +22,9 @@ struct SlopeRecognitionConfig {
 struct UndulatingRecognitionConfig {
   bool enable{true};
   bool entry_window_enable{true};
+  double entry_max_slope_length_m{0.15};
+  double entry_min_gradient{0.14};
+  double entry_max_gradient{0.70};
   double min_peak_to_trough_m{0.035};
   double max_peak_to_trough_m{0.12};
   double min_wavelength_m{0.18};
@@ -57,14 +61,18 @@ struct TerrainRecognitionConfig {
         s.min_samples < 3 ||
         s.min_samples >
             (2 * s.fit_radius_cells + 1) * (2 * s.fit_radius_cells + 1) ||
-        !positive(s.min_gradient) || !positive(s.max_gradient) ||
+        !positive(s.min_length_m) || !positive(s.min_gradient) || !positive(s.max_gradient) ||
         s.min_gradient > s.max_gradient || !positive(s.min_height_change_m) ||
         !positive(s.max_plane_rms_m) || !positive(s.max_plane_residual_m)) {
       throw std::invalid_argument("projection.terrain.slope: invalid radius, "
                                   "sample count or metric thresholds");
     }
     const auto &u = undulating;
-    if (!positive(u.min_peak_to_trough_m) ||
+    if (!positive(u.entry_max_slope_length_m) ||
+        u.entry_max_slope_length_m >= s.min_length_m ||
+        !positive(u.entry_min_gradient) || !positive(u.entry_max_gradient) ||
+        u.entry_min_gradient > u.entry_max_gradient ||
+        !positive(u.min_peak_to_trough_m) ||
         !positive(u.max_peak_to_trough_m) ||
         u.min_peak_to_trough_m > u.max_peak_to_trough_m ||
         !positive(u.min_wavelength_m) || !positive(u.max_wavelength_m) ||

@@ -70,6 +70,10 @@ TEST(TerrainConfigLoading, RealYamlAndOverridesReachSharedConfiguration) {
   EXPECT_NO_THROW(config.loadFromRosNode(node, "planner.rog_map"));
   EXPECT_DOUBLE_EQ(config.terrain.undulating.min_peak_to_trough_m, .035);
   EXPECT_DOUBLE_EQ(config.tunnel_height_delta_max, .75);
+  EXPECT_DOUBLE_EQ(config.terrain.slope.min_length_m, .30);
+  EXPECT_DOUBLE_EQ(config.terrain.undulating.entry_max_slope_length_m, .15);
+  node->values["planner.rog_map.projection.terrain.slope.min_length_m"] = rclcpp::ParameterValue(.4);
+  node->values["planner.rog_map.projection.terrain.undulating.entry_max_slope_length_m"] = rclcpp::ParameterValue(.12);
   node->values
       ["planner.rog_map.projection.terrain.undulating.min_peak_to_trough_m"] =
       rclcpp::ParameterValue(.055);
@@ -81,6 +85,8 @@ TEST(TerrainConfigLoading, RealYamlAndOverridesReachSharedConfiguration) {
   config.loadFromRosNode(node, "planner.rog_map");
   EXPECT_DOUBLE_EQ(config.terrain.undulating.min_peak_to_trough_m, .055);
   EXPECT_EQ(config.terrain.slope.fit_radius_cells, 7);
+  EXPECT_DOUBLE_EQ(config.terrain.slope.min_length_m, .4);
+  EXPECT_DOUBLE_EQ(config.terrain.undulating.entry_max_slope_length_m, .12);
   EXPECT_EQ(config.terrain.tunnel.min_neighbor_support, 8);
   node->values["planner.rog_map.projection.terrain.undulating.min_neighbor_"
                "correlation"] = rclcpp::ParameterValue(1.2);

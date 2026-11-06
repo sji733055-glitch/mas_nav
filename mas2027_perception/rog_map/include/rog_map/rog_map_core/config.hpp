@@ -274,6 +274,7 @@ public:
     load("projection.terrain.slope.enable", terrain.slope.enable);
     load("projection.terrain.slope.fit_radius_cells", terrain.slope.fit_radius_cells);
     load("projection.terrain.slope.min_samples", terrain.slope.min_samples);
+    load("projection.terrain.slope.min_length_m", terrain.slope.min_length_m);
     load("projection.terrain.slope.min_gradient", terrain.slope.min_gradient);
     load("projection.terrain.slope.max_gradient", terrain.slope.max_gradient);
     load("projection.terrain.slope.min_height_change_m", terrain.slope.min_height_change_m);
@@ -281,6 +282,9 @@ public:
     load("projection.terrain.slope.max_plane_residual_m", terrain.slope.max_plane_residual_m);
     load("projection.terrain.undulating.enable", terrain.undulating.enable);
     load("projection.terrain.undulating.entry_window_enable", terrain.undulating.entry_window_enable);
+    load("projection.terrain.undulating.entry_max_slope_length_m", terrain.undulating.entry_max_slope_length_m);
+    load("projection.terrain.undulating.entry_min_gradient", terrain.undulating.entry_min_gradient);
+    load("projection.terrain.undulating.entry_max_gradient", terrain.undulating.entry_max_gradient);
     load("projection.terrain.undulating.min_peak_to_trough_m", terrain.undulating.min_peak_to_trough_m);
     load("projection.terrain.undulating.max_peak_to_trough_m", terrain.undulating.max_peak_to_trough_m);
     load("projection.terrain.undulating.min_wavelength_m", terrain.undulating.min_wavelength_m);

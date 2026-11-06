@@ -1,11 +1,13 @@
 #include <rog_map/projection_layer.hpp>
 #include <rog_map/body_return_filter.hpp>
 #include <rog_map/undulating_profile.hpp>
+#include <rog_map/slope_profile.hpp>
 #include <rog_map/local_surface_grid.hpp>
 
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <algorithm>
 
 namespace {
 
@@ -135,6 +137,12 @@ TEST(TerrainConfig, RejectsInvalidParameterCombinations)
   config={};config.undulating.min_wavelength_m=.5;
   EXPECT_THROW(config.validate(),std::invalid_argument);
   config={};config.undulating.min_neighbor_correlation=1.1;
+  EXPECT_THROW(config.validate(),std::invalid_argument);
+  config={};config.slope.min_length_m=0.;
+  EXPECT_THROW(config.validate(),std::invalid_argument);
+  config={};config.undulating.entry_max_slope_length_m=.30;
+  EXPECT_THROW(config.validate(),std::invalid_argument);
+  config={};config.undulating.entry_min_gradient=.8;
   EXPECT_THROW(config.validate(),std::invalid_argument);
   config={};config.tunnel.min_neighbor_support=10;
   EXPECT_THROW(config.validate(),std::invalid_argument);
@@ -847,4 +855,72 @@ TEST(UndulatingProfile, EntryWindowRecognizesARealCycleButNotOneBumpOrGrade)
   EXPECT_TRUE(rog_map::isUndulatingProfile(wave,.05));
   EXPECT_FALSE(rog_map::isUndulatingProfile(bump,.05));
   EXPECT_FALSE(rog_map::isUndulatingProfile(ramp,.05));
+}
+
+TEST(ProjectionTerrain, ShortSlopeEntryNeedsNoReverseSlopeAndHasSeparateLengthLimit)
+{
+  for (int intervals : {2, 3, 4, 6, 7}) {
+    const auto labels = labelsFor([=](int x, int) {
+      return measuredGround(.4 * kResolution * std::clamp(x - 9, 0, intervals));
+    });
+    const auto label = labels[10 * kSize + 10];
+    if (intervals <= 3) EXPECT_EQ(label, 7U) << intervals;
+    else EXPECT_NE(label, 7U) << intervals;
+    if (intervals <= 6) EXPECT_NE(label, 5U) << intervals;
+    else EXPECT_EQ(label, 5U) << intervals;
+  }
+}
+
+TEST(ProjectionTerrain, ShortEntryRequiresPreciseCoherentSupportAndCanBeDisabled)
+{
+  for (int kind = 0; kind < 5; ++kind) {
+    rog_map::TerrainRecognitionConfig config;
+    if (kind == 4) config.undulating.entry_window_enable = false;
+    const auto labels = labelsFor([=](int x, int y) {
+      const double z = .4 * kResolution * std::clamp(x - 9, 0, 3);
+      if (kind == 0) return ground(z);
+      if (kind == 1 && y == 9) return rog_map::ColumnStats{};
+      if (kind == 2 && x > 11) return rog_map::ColumnStats{};
+      return measuredGround(kind == 3 && y % 2 ? -z : z);
+    }, config);
+    EXPECT_NE(labels[10 * kSize + 10], 7U) << kind;
+    EXPECT_NE(labels[10 * kSize + 10], 5U) << kind;
+  }
+}
+
+TEST(ProjectionTerrain, FirstWaveApproachNeverBecomesOrdinarySlope)
+{
+  for (double phase : {0., .5, 1.}) {
+    const auto labels = labelsFor([=](int x, int) {
+      const double distance = std::max(0., (x - 8) * kResolution);
+      return measuredGround(.035 * (1 - std::cos(2 * M_PI * distance / .24 + phase)));
+    });
+    for (int x = 8; x <= 11; ++x)
+      EXPECT_NE(labels[10 * kSize + x], 5U) << phase << ":" << x;
+  }
+}
+
+TEST(ShortSlopeProfile, LengthIsBoundedByObservedEndsAndMetricThresholds)
+{
+  rog_map::UndulatingRecognitionConfig config;
+  for (double spacing : {.025, .05}) {
+    for (double length : {.10, .15, .20}) {
+      std::array<double, 17> z;
+      for (int i = 0; i < 17; ++i)
+        z[i] = .4 * std::clamp((i - 5) * spacing, 0., length);
+      EXPECT_EQ(rog_map::isShortSlopeEntry(z, 6, spacing, config), length <= .15);
+      z[4] = std::numeric_limits<double>::quiet_NaN();
+      EXPECT_FALSE(rog_map::isShortSlopeEntry(z, 6, spacing, config));
+    }
+  }
+}
+
+TEST(ProjectionTerrain, LongInclinesRemainSlopesAtAllSampledOrientations)
+{
+  for (double angle : {0., M_PI/6, M_PI/4, M_PI/2, 3*M_PI/4}) {
+    const auto labels = labelsFor([=](int x, int y) {
+      return measuredGround(.3 * kResolution * (x * std::cos(angle) + y * std::sin(angle)));
+    });
+    EXPECT_EQ(labels[10*kSize+10], 5U) << angle;
+  }
 }

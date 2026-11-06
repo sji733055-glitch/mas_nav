@@ -4,6 +4,20 @@
 
 ## 编译与启动
 
+在仓库根目录一键增量编译并启动（默认打开 RViz、启用底盘串口）：
+
+```bash
+./build_and_run.sh
+# 仅观察，不输出到底盘
+./build_and_run.sh use_nav_serial:=False
+# 仅编译；默认每包 2 线程，可按内存情况调整
+./build_and_run.sh --build-only --jobs 4
+```
+
+脚本自动加载 ROS Jazzy 和本次构建环境，编译失败即停止，不启动导航。默认使用源码中的地图清单和执行器配置，确保包含最新地形阈值；可追加任意 `参数:=值`，如 `map_source:=prior`、`use_rviz:=False`。脚本可从任意目录调用；其他 ROS 环境可用 `ROS_SETUP=/opt/ros/<版本>/setup.bash` 指定。
+
+手动执行等效步骤（使用安装目录配置）：
+
 ```bash
 source /opt/ros/jazzy/setup.bash
 colcon build --packages-up-to mas2027_nav_bringup --cmake-args -DBUILD_TESTING=ON
@@ -87,6 +101,7 @@ map_files:
 
 | 地形 | 优先调整 | 作用 |
 | --- | --- | --- |
+| 坡面 | `terrain.slope.min_length_m` | 沿坡向连续实测的水平长度必须严格大于 0.30；拟合窗口宽度不能代替坡面长度 |
 | 坡面 | `terrain.slope.min_gradient/max_gradient` | 默认 0.14～0.70，约 8°～35° |
 | 坡面 | `fit_radius_cells`、`min_samples` | 默认 11×11 窗口、30 个有效地面格；窗口变大计算更多，也可能混入邻近物体 |
 | 坡面 | `min_height_change_m`、`max_plane_rms_m`、`max_plane_residual_m` | 高差下限和拟合误差上限；后两项减小更严格 |
@@ -95,9 +110,10 @@ map_files:
 | 起伏路 | `terrain.undulating.min_peak_to_trough_m/max_peak_to_trough_m` | 默认峰谷差 0.035～0.12；提高下限可抑制小扰动 |
 | 起伏路 | `min_wavelength_m/max_wavelength_m` | 默认同类极值间距 0.18～0.34 |
 | 起伏路 | `min_delta_m`、`min_neighbor_correlation`、`min_common_samples` | 反转噪声门、邻条带一致性和共同实测覆盖；提高更严格 |
-| 起伏路 | `entry_window_enable` | 关闭后仅使用完整窗口，识别更晚；默认保留入口短窗口 |
+| 起伏路 | `entry_max_slope_length_m`、`entry_min_gradient/entry_max_gradient` | 默认不超过 0.15 的短坡面可直接识别入口，坡度 0.14～0.70，无需等待反向坡面；仍需满足峰谷高差范围和三邻条带一致性 |
+| 起伏路 | `entry_window_enable` | 同时控制短坡面提前识别和 13 点入口窗口；关闭后仅使用完整周期窗口 |
 
-`terrain.*.enable` 仅关闭对应在线语义识别，不会关闭障碍分类，也不会关闭静态地图里已有的标签。起伏路必须有精细地面高度，粗体素高度不能单独生成标签。四方向、三邻条带、17 点完整窗口/13 点入口窗口是算法结构；覆盖不足时拒识。
+`terrain.*.enable` 仅关闭对应在线语义识别，不会关闭障碍分类，也不会关闭静态地图里已有的标签。起伏路必须有精细地面高度，粗体素高度不能单独生成标签。完整起伏路保留四方向、三邻条带、17 点完整窗口/13 点入口窗口。短坡面需至少两个连续采样间隔，且两端之外都有实测高度来确认长度；只有一段尚未看见终点的上坡不能证明长度不超过 15 cm。短坡面不要求后续下坡，也可接平地；按此规则，独立短斜面也可能被识别为起伏路入口。15～30 cm 的坡段不会仅凭长度归入任一类。覆盖不足时拒识，原有碰撞判定不变。
 
 平地误报起伏路时，先检查精细高度、峰谷差和邻条带一致性，再逐项调整阈值。已经记忆的标签受 `planner.online_global_map.terrain_clear_confirmations` 影响；起伏对齐保持距离在 `region_control.undulating.alignment_latch_distance`，调识别阈值不会立即解除已有锁存。需要重新评估一次识别时重启进程清空本次累计状态。
 
