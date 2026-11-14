@@ -39,5 +39,5 @@ TEST(DenseFrameBoundary, CombinesCallbackFragmentsIntoCompleteInputFrames) {
     EXPECT_TRUE(preprocess.dense_frame_remaining.empty());
 }
 
-}  // namespace
-}  // namespace small_point_lio
+} // namespace
+} // namespace small_point_lio

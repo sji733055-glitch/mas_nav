@@ -109,7 +109,7 @@ typedef Eigen::Quaternion<decimal_t> Quatf;
 #ifndef EIGEN_EPSILON
 #define EIGEN_EPSILON
 /// Compensate for numerical error
-constexpr decimal_t epsilon_ = 1e-10;  // numerical calculation error
+constexpr decimal_t epsilon_ = 1e-10; // numerical calculation error
 #endif
 // Eigen::Map<const Eigen::Matrix<double, 3, -1, Eigen::ColMajor>> way_pts_E(way_pts[0].data(), 3,
 // way_pts.size());
@@ -122,6 +122,6 @@ typedef std::pair<double, Vec3f> TimePosPair;
 typedef std::pair<Vec3f, Vec3f> Line;
 typedef std::pair<Vec3f, Quatf> Pose;
 
-}  // namespace super_utils
+} // namespace super_utils
 
-#endif  // SUPER_EIGEN_ALIAS_HPP
+#endif // SUPER_EIGEN_ALIAS_HPP

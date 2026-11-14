@@ -14,10 +14,12 @@ TEST(AdaptiveSampling, FeedbackDirectionBoundsAndReset) {
     std::vector<double> dense(5000, 5.0);
     sampler.observe(dense, 0.05, config);
     EXPECT_GT(sampler.leaf(0.5, config), 0.5);
-    for (int i = 0; i < 100; ++i) sampler.observe(dense, 0.05, config);
+    for (int i = 0; i < 100; ++i)
+        sampler.observe(dense, 0.05, config);
     EXPECT_DOUBLE_EQ(sampler.leaf(0.5, config), config.max_leaf);
     std::vector<double> sparse(10, 5.0);
-    for (int i = 0; i < 100; ++i) sampler.observe(sparse, 0.05, config);
+    for (int i = 0; i < 100; ++i)
+        sampler.observe(sparse, 0.05, config);
     EXPECT_DOUBLE_EQ(sampler.leaf(0.5, config), config.min_leaf);
     sampler.reset();
     EXPECT_DOUBLE_EQ(sampler.target(), 0);
@@ -27,7 +29,9 @@ TEST(AdaptiveSampling, FeedbackDirectionBoundsAndReset) {
 TEST(AdaptiveSampling, TargetTracksSceneAndAcquisitionDuration) {
     AdaptiveSamplingConfig config;
     AdaptiveSampling near, far, short_input;
-    near.leaf(0.5, config); far.leaf(0.5, config); short_input.leaf(0.5, config);
+    near.leaf(0.5, config);
+    far.leaf(0.5, config);
+    short_input.leaf(0.5, config);
     std::vector<double> near_ranges(800, 1.0), far_ranges(2000, 30.0), half_ranges(1000, 30.0);
     near.observe(near_ranges, 0.05, config);
     far.observe(far_ranges, 0.05, config);
@@ -104,7 +108,7 @@ TEST(AdaptiveSampling, ReducesLocalizationPointsPreservesDenseCloudAndResets) {
         ASSERT_EQ(preprocess.dense_frame_remaining.size(), 1U);
         EXPECT_EQ(preprocess.dense_frame_remaining.front(), input.size());
         double previous = -1;
-        for (const auto &point : preprocess.point_deque) {
+        for (const auto& point : preprocess.point_deque) {
             EXPECT_GE(point.timestamp, previous);
             previous = point.timestamp;
         }
@@ -112,7 +116,8 @@ TEST(AdaptiveSampling, ReducesLocalizationPointsPreservesDenseCloudAndResets) {
             EXPECT_LT(preprocess.point_deque.size(), first_count);
         }
         preprocess.point_deque.clear();
-        while (!preprocess.dense_point_deque.empty()) preprocess.finish_dense_point();
+        while (!preprocess.dense_point_deque.empty())
+            preprocess.finish_dense_point();
     }
     EXPECT_GT(preprocess.sampling_leaf_size(), 0.5);
     preprocess.reset();
@@ -139,9 +144,8 @@ TEST(AdaptiveSampling, FirstInputUsesConfiguredInitialResolution) {
     util::VoxelgridSampling fixed;
     std::vector<common::Point> expected;
     fixed.voxelgrid_sampling(input, expected, 0.5);
-    std::sort(expected.begin(), expected.end(), [](const auto &a, const auto &b) {
-        return a.timestamp < b.timestamp;
-    });
+    std::sort(expected.begin(), expected.end(),
+        [](const auto& a, const auto& b) { return a.timestamp < b.timestamp; });
     preprocess.on_point_cloud_callback(input);
     ASSERT_EQ(preprocess.point_deque.size(), expected.size());
     for (std::size_t i = 0; i < expected.size(); ++i) {
@@ -151,5 +155,5 @@ TEST(AdaptiveSampling, FirstInputUsesConfiguredInitialResolution) {
     EXPECT_GT(preprocess.sampling_leaf_size(), 0.5);
 }
 
-}  // namespace
-}  // namespace small_point_lio
+} // namespace
+} // namespace small_point_lio

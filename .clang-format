@@ -1,0 +1,31 @@
+# 项目统一 C/C++ 风格：4 空格、100 列、大括号同行。
+BasedOnStyle: LLVM
+Language: Cpp
+Standard: c++17
+
+IndentWidth: 4
+ContinuationIndentWidth: 4
+TabWidth: 4
+UseTab: Never
+AccessModifierOffset: -4
+NamespaceIndentation: None
+ColumnLimit: 100
+
+BreakBeforeBraces: Attach
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+AlignAfterOpenBracket: DontAlign
+PointerAlignment: Left
+ReferenceAlignment: Left
+DerivePointerAlignment: false
+MaxEmptyLinesToKeep: 1
+KeepEmptyLinesAtTheStartOfBlocks: false
+
+# 只调整排版，保留头文件/using 顺序、注释内容和字符串。
+SortIncludes: Never
+SortUsingDeclarations: Never
+ReflowComments: false
+FixNamespaceComments: false
+BreakStringLiterals: false

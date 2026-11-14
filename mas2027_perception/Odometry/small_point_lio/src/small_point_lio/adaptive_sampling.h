@@ -20,7 +20,8 @@ struct AdaptiveSamplingConfig {
             !std::isfinite(reference_range) || min_leaf <= 0 || max_leaf < min_leaf ||
             min_points_per_second <= 0 || max_points_per_second < min_points_per_second ||
             reference_range <= 0) {
-            throw std::invalid_argument("invalid adaptive sampling bounds, point rates or reference range");
+            throw std::invalid_argument(
+                "invalid adaptive sampling bounds, point rates or reference range");
         }
     }
 };
@@ -28,20 +29,26 @@ struct AdaptiveSamplingConfig {
 // One sampling pass per input. Feedback changes the NEXT input's leaf size.
 class AdaptiveSampling {
 public:
-    void reset() { leaf_ = 0; scene_range_ = 0; target_ = 0; }
+    void reset() {
+        leaf_ = 0;
+        scene_range_ = 0;
+        target_ = 0;
+    }
 
-    double leaf(double initial, const AdaptiveSamplingConfig &config) {
+    double leaf(double initial, const AdaptiveSamplingConfig& config) {
         if (leaf_ == 0) {
             leaf_ = std::clamp(initial, config.min_leaf, config.max_leaf);
         }
         return leaf_;
     }
 
-    double target() const { return target_; }
+    double target() const {
+        return target_;
+    }
 
     // Ranges come from voxel representatives, avoiding raw-return density bias.
-    void observe(std::vector<double> &ranges, double duration,
-                 const AdaptiveSamplingConfig &config) {
+    void observe(
+        std::vector<double>& ranges, double duration, const AdaptiveSamplingConfig& config) {
         // Empty, degenerate or interrupted inputs must not train the controller.
         if (ranges.empty() || !std::isfinite(duration) || duration < 0.001 || duration > 0.2) {
             return;
@@ -56,7 +63,8 @@ public:
         scene_range_ = scene_range_ == 0 ? median : scene_range_ + alpha * (median - scene_range_);
         const double scale = std::clamp(scene_range_ / config.reference_range, 0.0, 1.0);
         target_ = duration * (config.min_points_per_second +
-            (config.max_points_per_second - config.min_points_per_second) * scale * scale);
+                                 (config.max_points_per_second - config.min_points_per_second) *
+                                     scale * scale);
         const double ratio = static_cast<double>(ranges.size()) / target_;
         if (ratio >= 0.9 && ratio <= 1.1) {
             return;
@@ -72,4 +80,4 @@ private:
     double target_ = 0;
 };
 
-}  // namespace small_point_lio
+} // namespace small_point_lio

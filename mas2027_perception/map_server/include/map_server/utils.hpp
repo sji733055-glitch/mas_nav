@@ -9,13 +9,7 @@
 
 namespace map_server::map_utils {
 
-enum class TerrainType : uint8_t {
-    FLAT = 0,
-    OBSTACLE = 1,
-    SLOPE = 5,
-    TUNNEL = 6,
-    UNDULATING = 7
-};
+enum class TerrainType : uint8_t { FLAT = 0, OBSTACLE = 1, SLOPE = 5, TUNNEL = 6, UNDULATING = 7 };
 
 struct TerrainMapData {
     int width;
@@ -30,7 +24,8 @@ struct MapInflationParams {
     double full_cost_radius_m; // 满代价半径内障碍代价保持255
     double cutoff_radius_m;
     double decay_rate_per_m;
-    double resolution = 0.0; // map resolution (m/px), must be set before calling inflation functions
+    double resolution =
+        0.0; // map resolution (m/px), must be set before calling inflation functions
 };
 
 int containing_cell(double coordinate_m, double resolution);
@@ -55,21 +50,13 @@ struct NavigationMapData {
 TerrainMapData load_terrain_msgpack(const std::string& path);
 
 NavigationMapData load_navigation_maps(
-    const std::string& path,
-    MapInflationParams inflation_params
-);
+    const std::string& path, MapInflationParams inflation_params);
 
-cv::Mat inflate_cost_map(
-    const cv::Mat& source,
-    const MapInflationParams& params
-);
+cv::Mat inflate_cost_map(const cv::Mat& source, const MapInflationParams& params);
 
 /// Inflate only connected-component neighborhoods whose support can reach a
 /// non-zero output. Falls back to the full-map transform when the aggregate
 /// neighborhood area is not smaller than the source map.
-cv::Mat inflate_cost_map_bounded(
-    const cv::Mat& source,
-    const MapInflationParams& params
-);
+cv::Mat inflate_cost_map_bounded(const cv::Mat& source, const MapInflationParams& params);
 
 } // namespace map_server::map_utils

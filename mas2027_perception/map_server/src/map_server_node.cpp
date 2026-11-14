@@ -40,13 +40,14 @@ OccupancyMapMetadata load_occupancy_map_metadata(const std::string& yaml_path) {
     if (!std::isfinite(metadata.resolution) || metadata.resolution <= 0.0) {
         throw std::runtime_error(yaml_path + ": resolution must be finite and positive");
     }
-    if (!std::isfinite(metadata.origin_x) || !std::isfinite(metadata.origin_y)
-        || !std::isfinite(origin_yaw)) {
+    if (!std::isfinite(metadata.origin_x) || !std::isfinite(metadata.origin_y) ||
+        !std::isfinite(origin_yaw)) {
         throw std::runtime_error(yaml_path + ": origin values must be finite");
     }
     if (std::abs(origin_yaw) > 1e-9) {
         throw std::runtime_error(
-            yaml_path + ": non-zero origin yaw is unsupported; rotate all exported map products first");
+            yaml_path +
+            ": non-zero origin yaw is unsupported; rotate all exported map products first");
     }
 
     const YAML::Node image_node = document["image"];
@@ -66,29 +67,26 @@ OccupancyMapMetadata load_occupancy_map_metadata(const std::string& yaml_path) {
     return metadata;
 }
 
-void validate_matching_maps(
-    const OccupancyMapMetadata& metadata,
-    const map_utils::NavigationMapData& terrain,
-    const std::string& yaml_path,
+void validate_matching_maps(const OccupancyMapMetadata& metadata,
+    const map_utils::NavigationMapData& terrain, const std::string& yaml_path,
     const std::string& terrain_path) {
     constexpr double resolution_tolerance = 1e-9;
     if (metadata.width != terrain.width || metadata.height != terrain.height) {
         std::ostringstream message;
-        message << "map size mismatch: " << yaml_path << " references "
-                << metadata.width << 'x' << metadata.height << ", but " << terrain_path
-                << " is " << terrain.width << 'x' << terrain.height;
+        message << "map size mismatch: " << yaml_path << " references " << metadata.width << 'x'
+                << metadata.height << ", but " << terrain_path << " is " << terrain.width << 'x'
+                << terrain.height;
         throw std::runtime_error(message.str());
     }
     if (std::abs(metadata.resolution - terrain.resolution) > resolution_tolerance) {
         std::ostringstream message;
-        message << "map resolution mismatch: " << yaml_path << " uses "
-                << metadata.resolution << " m/px, but " << terrain_path << " uses "
-                << terrain.resolution << " m/px";
+        message << "map resolution mismatch: " << yaml_path << " uses " << metadata.resolution
+                << " m/px, but " << terrain_path << " uses " << terrain.resolution << " m/px";
         throw std::runtime_error(message.str());
     }
 }
 
-}  // namespace
+} // namespace
 
 MapServerNode::MapServerNode(const rclcpp::NodeOptions& options) : Node("map_server", options) {
     const auto terrain_path = declare_parameter<std::string>("terrain_map_path", "");
@@ -106,8 +104,8 @@ MapServerNode::MapServerNode(const rclcpp::NodeOptions& options) : Node("map_ser
     const auto metadata = load_occupancy_map_metadata(yaml_path);
     validate_matching_maps(metadata, maps_, yaml_path, terrain_path);
 
-    cost_grid_ = to_occupancy_grid(maps_.cost_map, maps_.width, maps_.height,
-        maps_.resolution, metadata.origin_x, metadata.origin_y, frame_id_);
+    cost_grid_ = to_occupancy_grid(maps_.cost_map, maps_.width, maps_.height, maps_.resolution,
+        metadata.origin_x, metadata.origin_y, frame_id_);
     terrain_label_image_ = to_image(maps_.terrain_label_map, "mono8", frame_id_, now());
     uphill_image_ = to_image(maps_.uphill_map, "32FC2", frame_id_, now());
     const auto map_qos = rclcpp::QoS(1).reliable().transient_local();
@@ -118,9 +116,8 @@ MapServerNode::MapServerNode(const rclcpp::NodeOptions& options) : Node("map_ser
     // Their content changes only when a new map is loaded at startup.
     publish_maps();
     RCLCPP_INFO(get_logger(),
-        "loaded %dx%d static terrain map at %.3f m/px, origin=(%.6f, %.6f) from %s",
-        maps_.width, maps_.height, maps_.resolution,
-        metadata.origin_x, metadata.origin_y, yaml_path.c_str());
+        "loaded %dx%d static terrain map at %.3f m/px, origin=(%.6f, %.6f) from %s", maps_.width,
+        maps_.height, maps_.resolution, metadata.origin_x, metadata.origin_y, yaml_path.c_str());
 }
 
 void MapServerNode::publish_maps() {
@@ -133,9 +130,9 @@ void MapServerNode::publish_maps() {
     uphill_pub_->publish(uphill_image_);
 }
 
-nav_msgs::msg::OccupancyGrid MapServerNode::to_occupancy_grid(
-    const cv::Mat& map, const int width, const int height, const double resolution,
-    const double origin_x, const double origin_y, const std::string& frame_id) {
+nav_msgs::msg::OccupancyGrid MapServerNode::to_occupancy_grid(const cv::Mat& map, const int width,
+    const int height, const double resolution, const double origin_x, const double origin_y,
+    const std::string& frame_id) {
     nav_msgs::msg::OccupancyGrid result;
     result.header.frame_id = frame_id;
     result.info.width = static_cast<uint32_t>(width);
@@ -146,14 +143,13 @@ nav_msgs::msg::OccupancyGrid MapServerNode::to_occupancy_grid(
     result.info.origin.orientation.w = 1.0;
     result.data.resize(static_cast<size_t>(width) * static_cast<size_t>(height));
     for (size_t i = 0; i < result.data.size(); ++i) {
-        result.data[i] = static_cast<int8_t>(
-            std::min(100, (static_cast<int>(map.data[i]) * 100) / 255));
+        result.data[i] =
+            static_cast<int8_t>(std::min(100, (static_cast<int>(map.data[i]) * 100) / 255));
     }
     return result;
 }
 
-sensor_msgs::msg::Image MapServerNode::to_image(
-    const cv::Mat& map, const std::string& encoding,
+sensor_msgs::msg::Image MapServerNode::to_image(const cv::Mat& map, const std::string& encoding,
     const std::string& frame_id, const rclcpp::Time& stamp) {
     sensor_msgs::msg::Image result;
     result.header.stamp = stamp;
@@ -167,7 +163,7 @@ sensor_msgs::msg::Image MapServerNode::to_image(
     return result;
 }
 
-}  // namespace map_server
+} // namespace map_server
 
 #include <rclcpp_components/register_node_macro.hpp>
 RCLCPP_COMPONENTS_REGISTER_NODE(map_server::MapServerNode)

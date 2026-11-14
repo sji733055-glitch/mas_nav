@@ -30,87 +30,91 @@
 #include <iostream>
 
 namespace super_utils {
-class TimeConsuming
-{
+class TimeConsuming {
 public:
-  TimeConsuming();
+    TimeConsuming();
 
-  TimeConsuming(std::string msg, int repeat_time)
-  {
-    repeat_time_ = repeat_time;
-    msg_ = msg;
-    tc_start = std::chrono::high_resolution_clock::now();
-    has_shown = false;
-    print_ = true;
-  }
-
-  TimeConsuming(std::string msg, bool print_log)
-  {
-    msg_ = msg;
-    repeat_time_ = 1;
-    print_ = print_log;
-    tc_start = std::chrono::high_resolution_clock::now();
-    has_shown = false;
-  }
-
-  ~TimeConsuming()
-  {
-    if (!has_shown && enable_ && print_) {
-      tc_end = std::chrono::high_resolution_clock::now();
-      double dt = std::chrono::duration_cast<std::chrono::duration<double>>(tc_end - tc_start).count();
-      double t_us = (double)dt * 1e6 / repeat_time_;
-      if (t_us < 1) {
-        t_us *= 1000;
-        printf(" -- [TIMER] %s time consuming \033[32m %lf ns\033[0m\n", msg_.c_str(), t_us);
-      } else if (t_us > 1e6) {
-        t_us /= 1e6;
-        printf(" -- [TIMER] %s time consuming \033[32m %lf s\033[0m\n", msg_.c_str(), t_us);
-      } else if (t_us > 1e3) {
-        t_us /= 1e3;
-        printf(" -- [TIMER] %s time consuming \033[32m %lf ms\033[0m\n", msg_.c_str(), t_us);
-      } else
-        printf(" -- [TIMER] %s time consuming \033[32m %lf us\033[0m\n", msg_.c_str(), t_us);
+    TimeConsuming(std::string msg, int repeat_time) {
+        repeat_time_ = repeat_time;
+        msg_ = msg;
+        tc_start = std::chrono::high_resolution_clock::now();
+        has_shown = false;
+        print_ = true;
     }
-  }
 
-  void set_enbale(bool enable) { enable_ = enable; }
-
-  void start() { tc_start = std::chrono::high_resolution_clock::now(); }
-
-  double stop()
-  {
-    if (!enable_) {
-      return 0;
+    TimeConsuming(std::string msg, bool print_log) {
+        msg_ = msg;
+        repeat_time_ = 1;
+        print_ = print_log;
+        tc_start = std::chrono::high_resolution_clock::now();
+        has_shown = false;
     }
-    has_shown = true;
-    tc_end = std::chrono::high_resolution_clock::now();
-    double dt = std::chrono::duration_cast<std::chrono::duration<double>>(tc_end - tc_start).count();
-    if (!print_) {
-      return dt;
+
+    ~TimeConsuming() {
+        if (!has_shown && enable_ && print_) {
+            tc_end = std::chrono::high_resolution_clock::now();
+            double dt = std::chrono::duration_cast<std::chrono::duration<double>>(tc_end - tc_start)
+                            .count();
+            double t_us = (double)dt * 1e6 / repeat_time_;
+            if (t_us < 1) {
+                t_us *= 1000;
+                printf(
+                    " -- [TIMER] %s time consuming \033[32m %lf ns\033[0m\n", msg_.c_str(), t_us);
+            } else if (t_us > 1e6) {
+                t_us /= 1e6;
+                printf(" -- [TIMER] %s time consuming \033[32m %lf s\033[0m\n", msg_.c_str(), t_us);
+            } else if (t_us > 1e3) {
+                t_us /= 1e3;
+                printf(
+                    " -- [TIMER] %s time consuming \033[32m %lf ms\033[0m\n", msg_.c_str(), t_us);
+            } else
+                printf(
+                    " -- [TIMER] %s time consuming \033[32m %lf us\033[0m\n", msg_.c_str(), t_us);
+        }
     }
-    double t_us = (double)dt * 1e6 / repeat_time_;
-    if (t_us < 1) {
-      t_us *= 1000;
-      printf(" -- [TIMER] %s time consuming \033[32m %lf ns\033[0m\n", msg_.c_str(), t_us);
-    } else if (t_us > 1e6) {
-      t_us /= 1e6;
-      printf(" -- [TIMER] %s time consuming \033[32m %lf s\033[0m\n", msg_.c_str(), t_us);
-    } else if (t_us > 1e3) {
-      t_us /= 1e3;
-      printf(" -- [TIMER] %s time consuming \033[32m %lf ms\033[0m\n", msg_.c_str(), t_us);
-    } else
-      printf(" -- [TIMER] %s time consuming \033[32m %lf us\033[0m\n", msg_.c_str(), t_us);
-    return dt;
-  }
+
+    void set_enbale(bool enable) {
+        enable_ = enable;
+    }
+
+    void start() {
+        tc_start = std::chrono::high_resolution_clock::now();
+    }
+
+    double stop() {
+        if (!enable_) {
+            return 0;
+        }
+        has_shown = true;
+        tc_end = std::chrono::high_resolution_clock::now();
+        double dt =
+            std::chrono::duration_cast<std::chrono::duration<double>>(tc_end - tc_start).count();
+        if (!print_) {
+            return dt;
+        }
+        double t_us = (double)dt * 1e6 / repeat_time_;
+        if (t_us < 1) {
+            t_us *= 1000;
+            printf(" -- [TIMER] %s time consuming \033[32m %lf ns\033[0m\n", msg_.c_str(), t_us);
+        } else if (t_us > 1e6) {
+            t_us /= 1e6;
+            printf(" -- [TIMER] %s time consuming \033[32m %lf s\033[0m\n", msg_.c_str(), t_us);
+        } else if (t_us > 1e3) {
+            t_us /= 1e3;
+            printf(" -- [TIMER] %s time consuming \033[32m %lf ms\033[0m\n", msg_.c_str(), t_us);
+        } else
+            printf(" -- [TIMER] %s time consuming \033[32m %lf us\033[0m\n", msg_.c_str(), t_us);
+        return dt;
+    }
 
 private:
-  std::chrono::high_resolution_clock::time_point tc_start, tc_end;
-  std::string msg_;
-  int repeat_time_{1};
-  bool has_shown = false;
-  bool enable_{true};
-  bool print_{true};
+    std::chrono::high_resolution_clock::time_point tc_start, tc_end;
+    std::string msg_;
+    int repeat_time_{1};
+    bool has_shown = false;
+    bool enable_{true};
+    bool print_{true};
 };
-}  // namespace super_utils
+} // namespace super_utils
 
 #endif

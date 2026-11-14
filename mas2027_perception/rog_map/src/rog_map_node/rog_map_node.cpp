@@ -24,23 +24,22 @@
 #include <rog_map/rog_map_core/config.hpp>
 #include <rog_map_ros/rog_map_ros2.hpp>
 
-int main(int argc, char ** argv)
-{
-  rclcpp::init(argc, argv);
+int main(int argc, char** argv) {
+    rclcpp::init(argc, argv);
 
-  auto node = std::make_shared<rclcpp::Node>("rog_map");
+    auto node = std::make_shared<rclcpp::Node>("rog_map");
 
-  rog_map::Config cfg;
-  cfg.loadFromRosNode(node, "rog_map");
+    rog_map::Config cfg;
+    cfg.loadFromRosNode(node, "rog_map");
 
-  auto rog_map_ros = std::make_shared<rog_map::ROGMapROS>(node, cfg);
+    auto rog_map_ros = std::make_shared<rog_map::ROGMapROS>(node, cfg);
 
-  // ROGMapROS 为 odom、cloud、update 分别建了回调组，必须用多线程执行器，
-  // 否则 update timer 会被点云回调阻塞。
-  rclcpp::executors::MultiThreadedExecutor executor;
-  executor.add_node(node);
-  executor.spin();
+    // ROGMapROS 为 odom、cloud、update 分别建了回调组，必须用多线程执行器，
+    // 否则 update timer 会被点云回调阻塞。
+    rclcpp::executors::MultiThreadedExecutor executor;
+    executor.add_node(node);
+    executor.spin();
 
-  rclcpp::shutdown();
-  return 0;
+    rclcpp::shutdown();
+    return 0;
 }

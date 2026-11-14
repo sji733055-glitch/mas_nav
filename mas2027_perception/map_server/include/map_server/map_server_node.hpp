@@ -16,11 +16,9 @@ public:
 
 private:
     void publish_maps();
-    static nav_msgs::msg::OccupancyGrid to_occupancy_grid(
-        const cv::Mat& map, int width, int height, double resolution,
-        double origin_x, double origin_y, const std::string& frame_id);
-    static sensor_msgs::msg::Image to_image(
-        const cv::Mat& map, const std::string& encoding,
+    static nav_msgs::msg::OccupancyGrid to_occupancy_grid(const cv::Mat& map, int width, int height,
+        double resolution, double origin_x, double origin_y, const std::string& frame_id);
+    static sensor_msgs::msg::Image to_image(const cv::Mat& map, const std::string& encoding,
         const std::string& frame_id, const rclcpp::Time& stamp);
 
     map_utils::NavigationMapData maps_;
@@ -33,4 +31,4 @@ private:
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr uphill_pub_;
 };
 
-}  // namespace map_server
+} // namespace map_server

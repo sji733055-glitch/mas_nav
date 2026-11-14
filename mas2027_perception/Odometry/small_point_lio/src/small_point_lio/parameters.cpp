@@ -8,94 +8,105 @@
 
 namespace small_point_lio {
 
-    void Parameters::read_parameters(rclcpp::Node &node) {
-        // 点云过滤
-        point_filter_num = static_cast<int>(node.declare_parameter<long>("point_filter_num"));
-        auto min_distance = node.declare_parameter<float>("min_distance");
-        auto max_distance = node.declare_parameter<float>("max_distance");
-        min_distance_squared = min_distance * min_distance;
-        max_distance_squared = max_distance * max_distance;
-        // 默认 (0,0,0)：球心留在雷达原点，与加这个参数之前的行为完全一致。
-        std::vector<double> blind_center_temp =
-                node.declare_parameter<std::vector<double>>("blind_center", std::vector<double>{0.0, 0.0, 0.0});
-        if (blind_center_temp.size() != 3) {
-            RCLCPP_ERROR(
-                    node.get_logger(),
-                    "blind_center must have 3 elements, got %zu; falling back to lidar origin",
-                    blind_center_temp.size());
-            blind_center_temp = {0.0, 0.0, 0.0};
-        }
-        blind_center << static_cast<float>(blind_center_temp[0]),
-                static_cast<float>(blind_center_temp[1]),
-                static_cast<float>(blind_center_temp[2]);
-        space_downsample = node.declare_parameter<bool>("space_downsample");
-        space_downsample_leaf_size = node.declare_parameter<float>("space_downsample_leaf_size");
+void Parameters::read_parameters(rclcpp::Node& node) {
+    // 点云过滤
+    point_filter_num = static_cast<int>(node.declare_parameter<long>("point_filter_num"));
+    auto min_distance = node.declare_parameter<float>("min_distance");
+    auto max_distance = node.declare_parameter<float>("max_distance");
+    min_distance_squared = min_distance * min_distance;
+    max_distance_squared = max_distance * max_distance;
+    // 默认 (0,0,0)：球心留在雷达原点，与加这个参数之前的行为完全一致。
+    std::vector<double> blind_center_temp = node.declare_parameter<std::vector<double>>(
+        "blind_center", std::vector<double>{0.0, 0.0, 0.0});
+    if (blind_center_temp.size() != 3) {
+        RCLCPP_ERROR(node.get_logger(),
+            "blind_center must have 3 elements, got %zu; falling back to lidar origin",
+            blind_center_temp.size());
+        blind_center_temp = {0.0, 0.0, 0.0};
+    }
+    blind_center << static_cast<float>(blind_center_temp[0]),
+        static_cast<float>(blind_center_temp[1]), static_cast<float>(blind_center_temp[2]);
+    space_downsample = node.declare_parameter<bool>("space_downsample");
+    space_downsample_leaf_size = node.declare_parameter<float>("space_downsample_leaf_size");
 
-        adaptive_sampling.min_leaf = node.declare_parameter<double>("adaptive_sampling.min_leaf_size", 0.25);
-        adaptive_sampling.max_leaf = node.declare_parameter<double>("adaptive_sampling.max_leaf_size", 1.0);
-        adaptive_sampling.min_points_per_second = node.declare_parameter<double>("adaptive_sampling.min_points_per_second", 16000.0);
-        adaptive_sampling.max_points_per_second = node.declare_parameter<double>("adaptive_sampling.max_points_per_second", 40000.0);
-        adaptive_sampling.reference_range = node.declare_parameter<double>("adaptive_sampling.reference_range", 15.0);
-        adaptive_sampling.validate();
-        if (point_filter_num < 1 || (space_downsample &&
-            (!std::isfinite(space_downsample_leaf_size) || space_downsample_leaf_size <= 0))) {
-            throw std::invalid_argument("point_filter_num and sampling leaf size must be positive");
-        }
-
-        // IMU处理
-        std::vector<double> gravity_temp = node.declare_parameter<std::vector<double>>("gravity");
-        gravity << gravity_temp[0], gravity_temp[1], gravity_temp[2];
-        check_satu = node.declare_parameter<bool>("check_satu");
-        fix_gravity_direction = node.declare_parameter<bool>("fix_gravity_direction");
-        satu_acc = node.declare_parameter<double>("satu_acc") * 0.99;
-        satu_gyro = node.declare_parameter<double>("satu_gyro") * 0.99;
-        acc_norm = node.declare_parameter<double>("acc_norm");
-
-        // 地图
-        map_resolution = node.declare_parameter<float>("map_resolution");
-        init_map_size = static_cast<size_t>(node.declare_parameter<long>("init_map_size"));
-        const auto configured_capacity = node.declare_parameter<long>("ivox_capacity", 1000000);
-        const auto configured_batch_points = node.declare_parameter<long>("point_update_batch_max_points", 128);
-        point_update_batch_interval_s = node.declare_parameter<double>("point_update_batch_interval_s", 0.005);
-        if (configured_capacity < 5 || configured_batch_points < 1 || configured_batch_points > 4096 ||
-            !std::isfinite(point_update_batch_interval_s) || point_update_batch_interval_s <= 0.0 ||
-            point_update_batch_interval_s > 0.1) {
-            throw std::invalid_argument("invalid iVox capacity or point update batch parameters");
-        }
-        adaptive_timing.min_interval = node.declare_parameter<double>("adaptive_timing.min_interval_s", 0.001);
-        adaptive_timing.max_interval = node.declare_parameter<double>("adaptive_timing.max_interval_s", 0.005);
-        adaptive_timing.normalized_error = node.declare_parameter<double>("adaptive_timing.normalized_error", 0.05);
-        adaptive_timing.validate();
-        ivox_capacity = static_cast<size_t>(configured_capacity);
-        point_update_batch_max_points = static_cast<size_t>(configured_batch_points);
-
-        // 雷达与IMU相对位姿
-        extrinsic_est_en = node.declare_parameter<bool>("extrinsic_est_en");
-        std::vector<double> extrinsic_T_temp = node.declare_parameter<std::vector<double>>("extrinsic_T");
-        extrinsic_T << extrinsic_T_temp[0], extrinsic_T_temp[1], extrinsic_T_temp[2];
-        std::vector<double> extrinsic_R_temp = node.declare_parameter<std::vector<double>>("extrinsic_R");
-        extrinsic_R << extrinsic_R_temp[0], extrinsic_R_temp[1], extrinsic_R_temp[2],
-                extrinsic_R_temp[3], extrinsic_R_temp[4], extrinsic_R_temp[5],
-                extrinsic_R_temp[6], extrinsic_R_temp[7], extrinsic_R_temp[8];
-
-        // 滤波器参数
-        laser_point_cov = node.declare_parameter<double>("laser_point_cov");
-        imu_meas_acc_cov = node.declare_parameter<double>("imu_meas_acc_cov");
-        imu_meas_omg_cov = node.declare_parameter<double>("imu_meas_omg_cov");
-        velocity_cov = node.declare_parameter<double>("velocity_cov");
-        acceleration_cov = node.declare_parameter<double>("acceleration_cov");
-        omg_cov = node.declare_parameter<double>("omg_cov");
-        ba_cov = node.declare_parameter<double>("ba_cov");
-        bg_cov = node.declare_parameter<double>("bg_cov");
-        plane_threshold = node.declare_parameter<double>("plane_threshold");
-        match_sqaured = node.declare_parameter<double>("match_sqaured");
-
-        // 数据发布
-        publish_odometry_without_downsample = node.declare_parameter<bool>("publish_odometry_without_downsample");
-        odom_publish_interval_s = node.declare_parameter<double>("odom_publish_interval_s", 0.01);
-        if (!std::isfinite(odom_publish_interval_s) || odom_publish_interval_s < 0.0) {
-            throw std::invalid_argument("odom_publish_interval_s must be finite and nonnegative");
-        }
+    adaptive_sampling.min_leaf =
+        node.declare_parameter<double>("adaptive_sampling.min_leaf_size", 0.25);
+    adaptive_sampling.max_leaf =
+        node.declare_parameter<double>("adaptive_sampling.max_leaf_size", 1.0);
+    adaptive_sampling.min_points_per_second =
+        node.declare_parameter<double>("adaptive_sampling.min_points_per_second", 16000.0);
+    adaptive_sampling.max_points_per_second =
+        node.declare_parameter<double>("adaptive_sampling.max_points_per_second", 40000.0);
+    adaptive_sampling.reference_range =
+        node.declare_parameter<double>("adaptive_sampling.reference_range", 15.0);
+    adaptive_sampling.validate();
+    if (point_filter_num < 1 || (space_downsample && (!std::isfinite(space_downsample_leaf_size) ||
+                                                         space_downsample_leaf_size <= 0))) {
+        throw std::invalid_argument("point_filter_num and sampling leaf size must be positive");
     }
 
-}// namespace small_point_lio
+    // IMU处理
+    std::vector<double> gravity_temp = node.declare_parameter<std::vector<double>>("gravity");
+    gravity << gravity_temp[0], gravity_temp[1], gravity_temp[2];
+    check_satu = node.declare_parameter<bool>("check_satu");
+    fix_gravity_direction = node.declare_parameter<bool>("fix_gravity_direction");
+    satu_acc = node.declare_parameter<double>("satu_acc") * 0.99;
+    satu_gyro = node.declare_parameter<double>("satu_gyro") * 0.99;
+    acc_norm = node.declare_parameter<double>("acc_norm");
+
+    // 地图
+    map_resolution = node.declare_parameter<float>("map_resolution");
+    init_map_size = static_cast<size_t>(node.declare_parameter<long>("init_map_size"));
+    const auto configured_capacity = node.declare_parameter<long>("ivox_capacity", 1000000);
+    const auto configured_batch_points =
+        node.declare_parameter<long>("point_update_batch_max_points", 128);
+    point_update_batch_interval_s =
+        node.declare_parameter<double>("point_update_batch_interval_s", 0.005);
+    if (configured_capacity < 5 || configured_batch_points < 1 || configured_batch_points > 4096 ||
+        !std::isfinite(point_update_batch_interval_s) || point_update_batch_interval_s <= 0.0 ||
+        point_update_batch_interval_s > 0.1) {
+        throw std::invalid_argument("invalid iVox capacity or point update batch parameters");
+    }
+    adaptive_timing.min_interval =
+        node.declare_parameter<double>("adaptive_timing.min_interval_s", 0.001);
+    adaptive_timing.max_interval =
+        node.declare_parameter<double>("adaptive_timing.max_interval_s", 0.005);
+    adaptive_timing.normalized_error =
+        node.declare_parameter<double>("adaptive_timing.normalized_error", 0.05);
+    adaptive_timing.validate();
+    ivox_capacity = static_cast<size_t>(configured_capacity);
+    point_update_batch_max_points = static_cast<size_t>(configured_batch_points);
+
+    // 雷达与IMU相对位姿
+    extrinsic_est_en = node.declare_parameter<bool>("extrinsic_est_en");
+    std::vector<double> extrinsic_T_temp =
+        node.declare_parameter<std::vector<double>>("extrinsic_T");
+    extrinsic_T << extrinsic_T_temp[0], extrinsic_T_temp[1], extrinsic_T_temp[2];
+    std::vector<double> extrinsic_R_temp =
+        node.declare_parameter<std::vector<double>>("extrinsic_R");
+    extrinsic_R << extrinsic_R_temp[0], extrinsic_R_temp[1], extrinsic_R_temp[2],
+        extrinsic_R_temp[3], extrinsic_R_temp[4], extrinsic_R_temp[5], extrinsic_R_temp[6],
+        extrinsic_R_temp[7], extrinsic_R_temp[8];
+
+    // 滤波器参数
+    laser_point_cov = node.declare_parameter<double>("laser_point_cov");
+    imu_meas_acc_cov = node.declare_parameter<double>("imu_meas_acc_cov");
+    imu_meas_omg_cov = node.declare_parameter<double>("imu_meas_omg_cov");
+    velocity_cov = node.declare_parameter<double>("velocity_cov");
+    acceleration_cov = node.declare_parameter<double>("acceleration_cov");
+    omg_cov = node.declare_parameter<double>("omg_cov");
+    ba_cov = node.declare_parameter<double>("ba_cov");
+    bg_cov = node.declare_parameter<double>("bg_cov");
+    plane_threshold = node.declare_parameter<double>("plane_threshold");
+    match_sqaured = node.declare_parameter<double>("match_sqaured");
+
+    // 数据发布
+    publish_odometry_without_downsample =
+        node.declare_parameter<bool>("publish_odometry_without_downsample");
+    odom_publish_interval_s = node.declare_parameter<double>("odom_publish_interval_s", 0.01);
+    if (!std::isfinite(odom_publish_interval_s) || odom_publish_interval_s < 0.0) {
+        throw std::invalid_argument("odom_publish_interval_s must be finite and nonnegative");
+    }
+}
+
+} // namespace small_point_lio

@@ -26,6 +26,6 @@ static const std::string BOLDMAGENTA = "\033[1m\033[35m";   /* Bold Magenta */
 static const std::string BOLDCYAN = "\033[1m\033[36m";      /* Bold Cyan */
 static const std::string BOLDWHITE = "\033[1m\033[37m";     /* Bold White */
 static const std::string BOLDREDPURPLE = "\033[1m\033[95m"; /* Bold Red Purple */
-}  // namespace color_text
+} // namespace color_text
 
-#endif  // SUPER_COLOR_TEXT_HPP
+#endif // SUPER_COLOR_TEXT_HPP

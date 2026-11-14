@@ -10,42 +10,42 @@
 
 namespace util {
 
-    class PointcloudMappingGrid {
-    private:
-        size_t points_size = 0;
-        Eigen::Vector3f points_sum = Eigen::Vector3f::Zero();
+class PointcloudMappingGrid {
+private:
+    size_t points_size = 0;
+    Eigen::Vector3f points_sum = Eigen::Vector3f::Zero();
 
-    public:
-        PointcloudMappingGrid() = default;
+public:
+    PointcloudMappingGrid() = default;
 
-        void add_point(const Eigen::Vector3f &point);
+    void add_point(const Eigen::Vector3f& point);
 
-        [[nodiscard]] Eigen::Vector3f get_point() const;
+    [[nodiscard]] Eigen::Vector3f get_point() const;
+};
+
+class PointcloudMapping {
+private:
+    using GridKeyType = Eigen::Vector3i;
+
+    struct GridKeyTypeHasher {
+        uint64_t operator()(const GridKeyType& v) const;
     };
 
-    class PointcloudMapping {
-    private:
-        using GridKeyType = Eigen::Vector3i;
+    ankerl::unordered_dense::map<GridKeyType, PointcloudMappingGrid, GridKeyTypeHasher> grids_map;
+    float inv_resolution;
 
-        struct GridKeyTypeHasher {
-            uint64_t operator()(const GridKeyType &v) const;
-        };
+public:
+    explicit PointcloudMapping(float resolution);
 
-        ankerl::unordered_dense::map<GridKeyType, PointcloudMappingGrid, GridKeyTypeHasher> grids_map;
-        float inv_resolution;
+private:
+    [[nodiscard]] GridKeyType get_position_index(const Eigen::Vector3f& point) const;
 
-    public:
-        explicit PointcloudMapping(float resolution);
+public:
+    void add_point(const Eigen::Vector3f& point);
 
-    private:
-        [[nodiscard]] GridKeyType get_position_index(const Eigen::Vector3f &point) const;
+    void add_pointcloud(const std::vector<Eigen::Vector3f>& point);
 
-    public:
-        void add_point(const Eigen::Vector3f &point);
+    [[nodiscard]] std::vector<Eigen::Vector3f> get_points() const;
+};
 
-        void add_pointcloud(const std::vector<Eigen::Vector3f> &point);
-
-        [[nodiscard]] std::vector<Eigen::Vector3f> get_points() const;
-    };
-
-}// namespace util
+} // namespace util

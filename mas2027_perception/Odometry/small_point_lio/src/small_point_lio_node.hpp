@@ -26,30 +26,30 @@
 
 namespace small_point_lio {
 
-    class SmallPointLioNode : public rclcpp::Node {
-    private:
-        std::unique_ptr<small_point_lio::SmallPointLio> small_point_lio;
-        std::vector<common::Point> pointcloud;
-        std::unique_ptr<LidarAdapterBase> lidar_adapter;
-        std::shared_ptr<rclcpp::Subscription<sensor_msgs::msg::Imu>> imu_subsciber;
-        std::shared_ptr<rclcpp::Publisher<nav_msgs::msg::Odometry>> odometry_publisher;
-        std::shared_ptr<rclcpp::Publisher<sensor_msgs::msg::PointCloud2>> pointcloud_publisher;
-        std::shared_ptr<rclcpp::Publisher<sensor_msgs::msg::PointCloud2>> pointcloud_full_publisher;
-        std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster;
-        std::unique_ptr<tf2_ros::Buffer> tf_buffer;
-        std::shared_ptr<tf2_ros::TransformListener> tf_listener;
-        rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr map_save_trigger;
-        rclcpp::Publisher<std_msgs::msg::String>::SharedPtr processing_stats_publisher;
-        rclcpp::TimerBase::SharedPtr processing_stats_timer;
-        std::size_t received_scans = 0, received_imus = 0, received_points = 0;
-        bool odom_frame_initialized = false;
-        tf2::Transform transform_odom_from_internal_world = tf2::Transform::getIdentity();
-        common::Odometry last_odometry;
-        double last_full_cloud_publish_stamp = -std::numeric_limits<double>::infinity();
-        std::unique_ptr<util::PointcloudMapping> pointcloud_mapping;
+class SmallPointLioNode : public rclcpp::Node {
+private:
+    std::unique_ptr<small_point_lio::SmallPointLio> small_point_lio;
+    std::vector<common::Point> pointcloud;
+    std::unique_ptr<LidarAdapterBase> lidar_adapter;
+    std::shared_ptr<rclcpp::Subscription<sensor_msgs::msg::Imu>> imu_subsciber;
+    std::shared_ptr<rclcpp::Publisher<nav_msgs::msg::Odometry>> odometry_publisher;
+    std::shared_ptr<rclcpp::Publisher<sensor_msgs::msg::PointCloud2>> pointcloud_publisher;
+    std::shared_ptr<rclcpp::Publisher<sensor_msgs::msg::PointCloud2>> pointcloud_full_publisher;
+    std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster;
+    std::unique_ptr<tf2_ros::Buffer> tf_buffer;
+    std::shared_ptr<tf2_ros::TransformListener> tf_listener;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr map_save_trigger;
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr processing_stats_publisher;
+    rclcpp::TimerBase::SharedPtr processing_stats_timer;
+    std::size_t received_scans = 0, received_imus = 0, received_points = 0;
+    bool odom_frame_initialized = false;
+    tf2::Transform transform_odom_from_internal_world = tf2::Transform::getIdentity();
+    common::Odometry last_odometry;
+    double last_full_cloud_publish_stamp = -std::numeric_limits<double>::infinity();
+    std::unique_ptr<util::PointcloudMapping> pointcloud_mapping;
 
-    public:
-        explicit SmallPointLioNode(const rclcpp::NodeOptions &options);
-    };
+public:
+    explicit SmallPointLioNode(const rclcpp::NodeOptions& options);
+};
 
-}// namespace small_point_lio
+} // namespace small_point_lio

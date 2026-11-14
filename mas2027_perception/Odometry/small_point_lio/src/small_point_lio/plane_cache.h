@@ -15,24 +15,36 @@ public:
         float offset = 0, maximum_residual = 0;
         bool valid = false;
     };
-    void clear() { for (auto &entry : entries_) entry.ready = false; hits = misses = 0; }
-    Fit fit(const std::vector<Eigen::Vector3f> &points) {
-        if (points.size() != 5) return {};
+    void clear() {
+        for (auto& entry : entries_)
+            entry.ready = false;
+        hits = misses = 0;
+    }
+    Fit fit(const std::vector<Eigen::Vector3f>& points) {
+        if (points.size() != 5)
+            return {};
         std::array<std::uint32_t, 15> key;
         std::size_t hash = 1469598103934665603ULL;
         for (std::size_t i = 0; i < 5; ++i) {
             std::memcpy(key.data() + i * 3, points[i].data(), 3 * sizeof(float));
-            for (int j = 0; j < 3; ++j) { hash ^= key[i * 3 + j]; hash *= 1099511628211ULL; }
+            for (int j = 0; j < 3; ++j) {
+                hash ^= key[i * 3 + j];
+                hash *= 1099511628211ULL;
+            }
         }
-        auto &entry = entries_[hash % entries_.size()];
-        if (entry.ready && entry.key == key) { ++hits; return entry.surface; }
+        auto& entry = entries_[hash % entries_.size()];
+        if (entry.ready && entry.key == key) {
+            ++hits;
+            return entry.surface;
+        }
         ++misses;
         Fit surface;
         Eigen::Vector3f center = Eigen::Vector3f::Zero();
-        for (const auto &p : points) center.noalias() += p;
+        for (const auto& p : points)
+            center.noalias() += p;
         center /= 5.f;
         Eigen::Matrix3f covariance = Eigen::Matrix3f::Zero();
-        for (const auto &p : points) {
+        for (const auto& p : points) {
             const Eigen::Vector3f delta = p - center;
             covariance.noalias() += delta * delta.transpose();
         }
@@ -41,15 +53,20 @@ public:
         surface.normal = solver.eigenvectors().col(0);
         surface.offset = -surface.normal.dot(center);
         surface.valid = solver.info() == Eigen::Success && surface.normal.allFinite();
-        for (const auto &p : points)
-            surface.maximum_residual = std::max(surface.maximum_residual,
-                std::abs(surface.normal.dot(p) + surface.offset));
+        for (const auto& p : points)
+            surface.maximum_residual = std::max(
+                surface.maximum_residual, std::abs(surface.normal.dot(p) + surface.offset));
         entry = {key, surface, true};
         return surface;
     }
     std::size_t hits = 0, misses = 0;
+
 private:
-    struct Entry { std::array<std::uint32_t, 15> key{}; Fit surface; bool ready = false; };
+    struct Entry {
+        std::array<std::uint32_t, 15> key{};
+        Fit surface;
+        bool ready = false;
+    };
     std::array<Entry, 1024> entries_{};
 };
 }

@@ -37,125 +37,115 @@
 #include <fmt/color.h>
 
 namespace rog_map {
-    using namespace std;
-    using super_utils::vec_Vec3i;
-    using super_utils::RobotState;
+using namespace std;
+using super_utils::vec_Vec3i;
+using super_utils::RobotState;
 
-    typedef pcl::PointXYZI PointType;
-    typedef pcl::PointCloud<PointType> PointCloudXYZIN;
+typedef pcl::PointXYZI PointType;
+typedef pcl::PointCloud<PointType> PointCloudXYZIN;
 
-    class ROGMap : public ProbMap {
-        const bool IS = true;
-        const bool NOT = false;
+class ROGMap : public ProbMap {
+    const bool IS = true;
+    const bool NOT = false;
 
-        virtual const double getSystemWalltimeNow() = 0;
+    virtual const double getSystemWalltimeNow() = 0;
 
-    public:
-        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+public:
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-        explicit ROGMap() = default;
+    explicit ROGMap() = default;
 
-        void init();
+    void init();
 
-        ~ROGMap() override = default;
+    ~ROGMap() override = default;
 
-        rog_map::Config getMapConfig() const {
-            return cfg_;
-        }
+    rog_map::Config getMapConfig() const {
+        return cfg_;
+    }
 
+    bool isLineFree(const Vec3f& start_pt, const Vec3f& end_pt, const double& max_dis = 999999,
+        const vec_Vec3i& neighbor_list = vec_Vec3i{}) const;
 
-        bool isLineFree(const Vec3f& start_pt, const Vec3f& end_pt,
-                        const double& max_dis = 999999,
-                        const vec_Vec3i& neighbor_list = vec_Vec3i{}) const;
+    bool isLineFree(const Vec3f& start_pt, const Vec3f& end_pt, Vec3f& free_local_goal,
+        const double& max_dis = 999999, const vec_Vec3i& neighbor_list = vec_Vec3i{}) const;
 
-        bool isLineFree(const Vec3f& start_pt, const Vec3f& end_pt,
-                        Vec3f& free_local_goal, const double& max_dis = 999999,
-                        const vec_Vec3i& neighbor_list = vec_Vec3i{}) const;
+    bool isLineFree(const Vec3f& start_pt, const Vec3f& end_pt, const bool& use_inf_map = false,
+        const bool& use_unk_as_occ = false) const;
 
-        bool isLineFree(const Vec3f& start_pt, const Vec3f& end_pt,
-                        const bool& use_inf_map = false,
-                        const bool& use_unk_as_occ = false) const;
+    bool getNearestCellIs(const GridType& target_type, const Vec3f& start_pos, Vec3f& nearest_pt,
+        const double& max_dis) const {
+        return findNearestCellThat(IS, target_type, start_pos, nearest_pt, max_dis);
+    }
 
-        bool getNearestCellIs(const GridType& target_type,
-                                const Vec3f& start_pos,
-                                Vec3f& nearest_pt, const double& max_dis) const {
-            return findNearestCellThat(IS, target_type, start_pos, nearest_pt, max_dis);
-        }
+    bool getNearestCellNot(const GridType& target_type, const Vec3f& start_pos, Vec3f& nearest_pt,
+        const double& max_dis) const {
+        return findNearestCellThat(NOT, target_type, start_pos, nearest_pt, max_dis);
+    }
 
-        bool getNearestCellNot(const GridType& target_type,
-                             const Vec3f& start_pos,
-                             Vec3f& nearest_pt, const double& max_dis) const {
-            return findNearestCellThat(NOT, target_type, start_pos, nearest_pt, max_dis);
-        }
+    bool getNearestInfCellIs(const GridType& target_type, const Vec3f& start_pos, Vec3f& nearest_pt,
+        const double& max_dis) const {
+        return findNearestInfCellThat(IS, target_type, start_pos, nearest_pt, max_dis);
+    }
 
-        bool getNearestInfCellIs(const GridType& target_type,
-                           const Vec3f& start_pos,
-                           Vec3f& nearest_pt, const double& max_dis) const {
-            return findNearestInfCellThat(IS, target_type, start_pos, nearest_pt, max_dis);
-        }
+    bool getNearestInfCellNot(const GridType& target_type, const Vec3f& start_pos,
+        Vec3f& nearest_pt, const double& max_dis) const {
+        return findNearestInfCellThat(NOT, target_type, start_pos, nearest_pt, max_dis);
+    }
 
-        bool getNearestInfCellNot(const GridType& target_type,
-                             const Vec3f& start_pos,
-                             Vec3f& nearest_pt, const double& max_dis) const {
-            return findNearestInfCellThat(NOT, target_type, start_pos, nearest_pt, max_dis);
-        }
+    void probMapPosToGlobalIndex(const Vec3f& pos, Vec3i& id_g) const {
+        this->posToGlobalIndex(pos, id_g);
+    }
 
-        void probMapPosToGlobalIndex(const Vec3f & pos, Vec3i & id_g) const {
-            this->posToGlobalIndex(pos, id_g);
-        }
+    void probMapGlobalIndexToPos(const Vec3i& id_g, Vec3f& pos) const {
+        this->globalIndexToPos(id_g, pos);
+    }
 
-        void probMapGlobalIndexToPos(const Vec3i & id_g, Vec3f & pos) const {
-            this->globalIndexToPos(id_g, pos);
-        }
+    void infMapPosToGlobalIndex(const Vec3f& pos, Vec3i& id_g) const {
+        inf_map_->infMapPosToGlobalIndex(pos, id_g);
+    }
 
-        void infMapPosToGlobalIndex(const Vec3f & pos, Vec3i & id_g) const {
-            inf_map_->infMapPosToGlobalIndex(pos, id_g);
-        }
+    void infMapGlobalIndexToPos(const Vec3i& id_g, Vec3f& pos) const {
+        inf_map_->infMapGlobalIndexToPos(id_g, pos);
+    }
 
-        void infMapGlobalIndexToPos(const Vec3i & id_g, Vec3f & pos) const {
-            inf_map_->infMapGlobalIndexToPos(id_g, pos);
-        }
+    void updateMap(const PointCloud& cloud, const Pose& pose);
 
+    RobotState getRobotState() const;
 
-        void updateMap(const PointCloud& cloud, const Pose& pose);
+    std::shared_ptr<MapQueryInterface> getQueryInterface() const {
+        return query_;
+    }
 
-        RobotState getRobotState() const;
+protected:
+    std::shared_ptr<ProjectionLayer> layer_;
+    LocalSurfaceGrid local_surface_;
+    std::shared_ptr<DynamicLayer> field_;
+    std::shared_ptr<QueryAdapter> query_;
+    std::unique_ptr<PerformanceMonitor> performance_monitor_;
+    uint64_t projection_sequence_{0};
+    uint64_t mask_sequence_{0};
+    uint64_t snapshot_sequence_{0};
+    double last_field_update_time_{-std::numeric_limits<double>::infinity()};
+    /// 上一次走全量重投影的时间戳；配合 cfg_.dirty_full_period_s 做周期性兜底。
+    double last_full_refresh_time_{-std::numeric_limits<double>::infinity()};
+    uint64_t field_sequence_{0};
+    double last_field_stamp_{0.0};
+    bool field_stale_{true};
 
-        std::shared_ptr<MapQueryInterface> getQueryInterface() const {
-            return query_;
-        }
+    void updateMapInternal(const PointCloud& cloud, const Pose& pose);
 
-    protected:
+    void refreshLayers();
 
-        std::shared_ptr<ProjectionLayer> layer_;
-        LocalSurfaceGrid local_surface_;
-        std::shared_ptr<DynamicLayer> field_;
-        std::shared_ptr<QueryAdapter> query_;
-        std::unique_ptr<PerformanceMonitor> performance_monitor_;
-        uint64_t projection_sequence_{0};
-        uint64_t mask_sequence_{0};
-        uint64_t snapshot_sequence_{0};
-        double last_field_update_time_{-std::numeric_limits<double>::infinity()};
-        /// 上一次走全量重投影的时间戳；配合 cfg_.dirty_full_period_s 做周期性兜底。
-        double last_full_refresh_time_{-std::numeric_limits<double>::infinity()};
-        uint64_t field_sequence_{0};
-        double last_field_stamp_{0.0};
-        bool field_stale_{true};
+    void refreshQuery();
 
-        void updateMapInternal(const PointCloud& cloud, const Pose& pose);
+    void updateRobotState(const Pose& pose);
 
-        void refreshLayers();
+    bool findNearestCellThat(const bool& is, const GridType& target_type, const Vec3f& start_pos,
+        Vec3f& nearest_pt, const double& max_dis) const;
 
-        void refreshQuery();
+    bool findNearestInfCellThat(const bool& is, const GridType& target_type, const Vec3f& start_pos,
+        Vec3f& nearest_pt, const double& max_dis) const;
 
-        void updateRobotState(const Pose& pose);
-
-        bool findNearestCellThat(const bool & is, const GridType& target_type,
-            const Vec3f & start_pos, Vec3f& nearest_pt, const double & max_dis) const ;
-
-        bool findNearestInfCellThat(const bool & is, const GridType& target_type,
-          const Vec3f & start_pos, Vec3f& nearest_pt, const double & max_dis) const ;
-
-        RobotState robot_state_;
-    };
+    RobotState robot_state_;
+};
 }

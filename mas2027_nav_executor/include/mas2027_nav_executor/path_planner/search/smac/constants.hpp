@@ -24,54 +24,51 @@
 namespace mas2027_nav_executor {
 namespace smac {
 
-enum class MotionModel
-{
-  UNKNOWN = 0,
-  TWOD = 1,
-  DUBIN = 2,
-  REEDS_SHEPP = 3,
-  STATE_LATTICE = 4,
+enum class MotionModel {
+    UNKNOWN = 0,
+    TWOD = 1,
+    DUBIN = 2,
+    REEDS_SHEPP = 3,
+    STATE_LATTICE = 4,
 };
 
-inline std::string toString(const MotionModel & n)
-{
-  switch (n) {
-  case MotionModel::TWOD:
-    return "2D";
-  case MotionModel::DUBIN:
-    return "Dubin";
-  case MotionModel::REEDS_SHEPP:
-    return "Reeds-Shepp";
-  case MotionModel::STATE_LATTICE:
-    return "State Lattice";
-  default:
-    return "Unknown";
-  }
+inline std::string toString(const MotionModel& n) {
+    switch (n) {
+    case MotionModel::TWOD:
+        return "2D";
+    case MotionModel::DUBIN:
+        return "Dubin";
+    case MotionModel::REEDS_SHEPP:
+        return "Reeds-Shepp";
+    case MotionModel::STATE_LATTICE:
+        return "State Lattice";
+    default:
+        return "Unknown";
+    }
 }
 
-inline MotionModel fromString(const std::string & n)
-{
-  if (n == "2D") {
-    return MotionModel::TWOD;
-  } else if (n == "DUBIN") {
-    return MotionModel::DUBIN;
-  } else if (n == "REEDS_SHEPP") {
-    return MotionModel::REEDS_SHEPP;
-  } else if (n == "STATE_LATTICE") {
-    return MotionModel::STATE_LATTICE;
-  } else {
-    return MotionModel::UNKNOWN;
-  }
+inline MotionModel fromString(const std::string& n) {
+    if (n == "2D") {
+        return MotionModel::TWOD;
+    } else if (n == "DUBIN") {
+        return MotionModel::DUBIN;
+    } else if (n == "REEDS_SHEPP") {
+        return MotionModel::REEDS_SHEPP;
+    } else if (n == "STATE_LATTICE") {
+        return MotionModel::STATE_LATTICE;
+    } else {
+        return MotionModel::UNKNOWN;
+    }
 }
 
 // 与 Nav2 costmap 取值一致，见 nav2_costmap_2d/cost_values.hpp。
-constexpr uint8_t UNKNOWN_COST = 255U;         // NO_INFORMATION
-constexpr uint8_t OCCUPIED_COST = 254U;        // LETHAL_OBSTACLE
-constexpr uint8_t INSCRIBED_COST = 253U;       // INSCRIBED_INFLATED_OBSTACLE
+constexpr uint8_t UNKNOWN_COST = 255U;   // NO_INFORMATION
+constexpr uint8_t OCCUPIED_COST = 254U;  // LETHAL_OBSTACLE
+constexpr uint8_t INSCRIBED_COST = 253U; // INSCRIBED_INFLATED_OBSTACLE
 constexpr uint8_t MAX_NON_OBSTACLE_COST = 252U;
 constexpr uint8_t FREE_COST = 0U;
 
-}  // namespace smac
-}  // namespace mas2027_nav_executor
+} // namespace smac
+} // namespace mas2027_nav_executor
 
-#endif  // MAS2027_NAV_EXECUTOR__PATH_PLANNER__SEARCH__SMAC__CONSTANTS_HPP_
+#endif // MAS2027_NAV_EXECUTOR__PATH_PLANNER__SEARCH__SMAC__CONSTANTS_HPP_

@@ -11,10 +11,11 @@
 
 namespace small_point_lio {
 
-    class LidarAdapterBase {
-    public:
-        virtual ~LidarAdapterBase() = default;
-        virtual void setup_subscription(rclcpp::Node *node, const std::string &topic, std::function<void(const std::vector<common::Point> &)> callback) = 0;
-    };
+class LidarAdapterBase {
+public:
+    virtual ~LidarAdapterBase() = default;
+    virtual void setup_subscription(rclcpp::Node* node, const std::string& topic,
+        std::function<void(const std::vector<common::Point>&)> callback) = 0;
+};
 
-}// namespace small_point_lio
+} // namespace small_point_lio
